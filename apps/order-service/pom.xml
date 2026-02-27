@@ -186,11 +186,12 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- WireMock: mock de serviços HTTP externos (ex: Keycloak JWKS em prod) -->
+        <!-- WireMock 3.x: migrado de com.github.tomakehurst:wiremock-jre8 (descontinuado)
+             para org.wiremock:wiremock (Java 11+ compatível, latest 3.x GA Dez 2025). -->
         <dependency>
-            <groupId>com.github.tomakehurst</groupId>
-            <artifactId>wiremock-jre8</artifactId>
-            <version>2.35.0</version>
+            <groupId>org.wiremock</groupId>
+            <artifactId>wiremock</artifactId>
+            <version>3.13.2</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

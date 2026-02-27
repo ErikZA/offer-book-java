@@ -23,11 +23,11 @@
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <spring-boot.version>3.2.3</spring-boot.version>
-        <!-- Override Testcontainers: 1.19.5 (docker-java 3.3.4 → API 1.32) incompatível
-             com Docker Desktop 4.62.0 (exige mínimo API 1.44).
-             1.20.4 usa docker-java 3.4.x que suporta negociação de API >= 1.44. -->
-        <testcontainers.version>1.20.4</testcontainers.version>
+        <!-- Spring Boot 3.4.13: inclui fix Testcontainers + Docker moderno (issue #48104)
+             compatível com Java 21 e Testcontainers 1.21.4. -->
+        <spring-boot.version>3.4.13</spring-boot.version>
+        <!-- Testcontainers 1.21.4: latest stable 1.x (Dez 2025), melhor suporte Docker Desktop 4.x. -->
+        <testcontainers.version>1.21.4</testcontainers.version>
     </properties>
 
     <dependencyManagement>
@@ -56,7 +56,7 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
-                    <version>3.0.0-M9</version>
+                    <version>3.5.2</version>
                     <configuration>
                         <includes>
                             <include>**/*Test.java</include>
@@ -70,7 +70,7 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-failsafe-plugin</artifactId>
-                    <version>3.0.0-M9</version>
+                    <version>3.5.2</version>
                     <configuration>
                         <includes>
                             <include>**/*IT.java</include>
@@ -91,7 +91,7 @@
                 <plugin>
                     <groupId>org.jacoco</groupId>
                     <artifactId>jacoco-maven-plugin</artifactId>
-                    <version>0.8.10</version>
+                    <version>0.8.14</version>
                     <executions>
                         <execution>
                             <goals>
