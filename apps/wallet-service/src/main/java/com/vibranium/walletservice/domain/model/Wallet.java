@@ -1,0 +1,186 @@
+package com.vibranium.walletservice.domain.model;
+
+import com.vibranium.contracts.enums.AssetType;
+import com.vibranium.walletservice.exception.InsufficientFundsException;
+import jakarta.persistence.*;
+
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.UUID;
+
+/**
+ * Aggregate Root da carteira do usuário.
+ *
+ * <p>Cada usuário possui exatamente uma carteira (UNIQUE em user_id).
+ * Mantém os saldos dos dois ativos da plataforma: BRL (moeda de cotação)
+ * e VIBRANIUM (ativo negociado).</p>
+ *
+ * <p>Os saldos são separados em "available" (disponível para operar)
+ * e "locked" (bloqueado aguardando match/liquidação). A invariante
+ * financeira — nunca negativo — é reforçada tanto pela lógica de domínio
+ * quanto pelas constraints CHECK do PostgreSQL.</p>
+ *
+ * <p>O lock pessimista ({@code SELECT FOR UPDATE}) é aplicado pelo
+ * {@code WalletRepository} antes de qualquer escrita, garantindo que
+ * atualizações concorrentes sejam serializadas sem race conditions.</p>
+ */
+@Entity
+@Table(name = "tb_wallet")
+public class Wallet {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    /**
+     * Referência ao usuário no Keycloak. Imutável após criação.
+     * Deve corresponder ao {@code sub} JWT do token de autenticação.
+     */
+    @Column(name = "user_id", nullable = false, unique = true, updatable = false)
+    private UUID userId;
+
+    @Column(name = "brl_available", nullable = false, precision = 19, scale = 8)
+    private BigDecimal brlAvailable;
+
+    @Column(name = "brl_locked", nullable = false, precision = 19, scale = 8)
+    private BigDecimal brlLocked;
+
+    @Column(name = "vib_available", nullable = false, precision = 19, scale = 8)
+    private BigDecimal vibAvailable;
+
+    @Column(name = "vib_locked", nullable = false, precision = 19, scale = 8)
+    private BigDecimal vibLocked;
+
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
+
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
+
+    /** Construtor protegido exigido pelo JPA. Não usar diretamente. */
+    protected Wallet() {}
+
+    // -------------------------------------------------------------------------
+    // Factory
+    // -------------------------------------------------------------------------
+
+    /**
+     * Cria uma nova carteira para o usuário com saldos iniciais configuráveis.
+     * Saldos "locked" iniciam sempre em zero.
+     *
+     * @param userId       UUID do usuário no Keycloak.
+     * @param brlAvailable Saldo BRL disponível inicial (ex: zero no onboarding).
+     * @param vibAvailable Saldo VIB disponível inicial (ex: zero no onboarding).
+     * @return Nova instância de Wallet não persistida.
+     */
+    public static Wallet create(UUID userId, BigDecimal brlAvailable, BigDecimal vibAvailable) {
+        Wallet w = new Wallet();
+        w.userId = userId;
+        w.brlAvailable = brlAvailable;
+        w.vibAvailable = vibAvailable;
+        w.brlLocked = BigDecimal.ZERO;
+        w.vibLocked = BigDecimal.ZERO;
+        w.createdAt = Instant.now();
+        w.updatedAt = Instant.now();
+        return w;
+    }
+
+    // -------------------------------------------------------------------------
+    // JPA lifecycle
+    // -------------------------------------------------------------------------
+
+    @PreUpdate
+    void touch() {
+        this.updatedAt = Instant.now();
+    }
+
+    // -------------------------------------------------------------------------
+    // Domain behaviour
+    // -------------------------------------------------------------------------
+
+    /**
+     * Reserva (bloqueia) saldo para uma ordem: move {@code amount} de
+     * "available" para "locked". Valida saldo antes de qualquer modificação.
+     *
+     * @param asset  Tipo do ativo (BRL para BUY, VIBRANIUM para SELL).
+     * @param amount Valor a bloquear — deve ser positivo.
+     * @throws InsufficientFundsException se saldo disponível for insuficiente.
+     */
+    public void reserveFunds(AssetType asset, BigDecimal amount) {
+        if (asset == AssetType.BRL) {
+            if (brlAvailable.compareTo(amount) < 0) {
+                throw new InsufficientFundsException(
+                        "saldo BRL insuficiente: disponível=" + brlAvailable + ", solicitado=" + amount);
+            }
+            brlAvailable = brlAvailable.subtract(amount);
+            brlLocked = brlLocked.add(amount);
+        } else {
+            if (vibAvailable.compareTo(amount) < 0) {
+                throw new InsufficientFundsException(
+                        "saldo VIB insuficiente: disponível=" + vibAvailable + ", solicitado=" + amount);
+            }
+            vibAvailable = vibAvailable.subtract(amount);
+            vibLocked = vibLocked.add(amount);
+        }
+    }
+
+    /**
+     * Ajusta o saldo disponível via delta (positivo = crédito, negativo = débito).
+     * Valida AMBOS os deltas antes de aplicar qualquer modificação — garantindo
+     * atomicidade: se um falhar, nenhum é aplicado.
+     *
+     * @param brlDelta Delta de BRL (pode ser nulo para não alterar).
+     * @param vibDelta Delta de VIB (pode ser nulo para não alterar).
+     * @throws InsufficientFundsException se qualquer saldo resultante for negativo.
+     */
+    public void adjustBalance(BigDecimal brlDelta, BigDecimal vibDelta) {
+        // Valida tudo antes de modificar qualquer campo
+        if (brlDelta != null && brlAvailable.add(brlDelta).compareTo(BigDecimal.ZERO) < 0) {
+            throw new InsufficientFundsException(
+                    "O saldo BRL ficaria negativo após o ajuste: disponível=" + brlAvailable + ", delta=" + brlDelta);
+        }
+        if (vibDelta != null && vibAvailable.add(vibDelta).compareTo(BigDecimal.ZERO) < 0) {
+            throw new InsufficientFundsException(
+                    "O saldo VIB ficaria negativo após o ajuste: disponível=" + vibAvailable + ", delta=" + vibDelta);
+        }
+        // Aplica as mudanças
+        if (brlDelta != null) {
+            brlAvailable = brlAvailable.add(brlDelta);
+        }
+        if (vibDelta != null) {
+            vibAvailable = vibAvailable.add(vibDelta);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Getters
+    // -------------------------------------------------------------------------
+
+    public UUID getId() { return id; }
+
+    public UUID getUserId() { return userId; }
+
+    public BigDecimal getBrlAvailable() { return brlAvailable; }
+
+    public BigDecimal getBrlLocked() { return brlLocked; }
+
+    public BigDecimal getVibAvailable() { return vibAvailable; }
+
+    public BigDecimal getVibLocked() { return vibLocked; }
+
+    public Instant getCreatedAt() { return createdAt; }
+
+    public Instant getUpdatedAt() { return updatedAt; }
+
+    // -------------------------------------------------------------------------
+    // Setters diretos (usados pelo serviço de liquidação e setup de testes)
+    // -------------------------------------------------------------------------
+
+    public void setBrlAvailable(BigDecimal brlAvailable) { this.brlAvailable = brlAvailable; }
+
+    public void setBrlLocked(BigDecimal brlLocked) { this.brlLocked = brlLocked; }
+
+    public void setVibAvailable(BigDecimal vibAvailable) { this.vibAvailable = vibAvailable; }
+
+    public void setVibLocked(BigDecimal vibLocked) { this.vibLocked = vibLocked; }
+}

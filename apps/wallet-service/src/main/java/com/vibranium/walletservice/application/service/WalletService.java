@@ -1,0 +1,324 @@
+package com.vibranium.walletservice.application.service;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vibranium.contracts.commands.wallet.ReserveFundsCommand;
+import com.vibranium.contracts.commands.wallet.SettleFundsCommand;
+import com.vibranium.contracts.enums.FailureReason;
+import com.vibranium.contracts.events.wallet.*;
+import com.vibranium.walletservice.application.dto.WalletResponse;
+import com.vibranium.walletservice.domain.model.IdempotencyKey;
+import com.vibranium.walletservice.domain.model.OutboxMessage;
+import com.vibranium.walletservice.domain.model.Wallet;
+import com.vibranium.walletservice.domain.repository.IdempotencyKeyRepository;
+import com.vibranium.walletservice.domain.repository.OutboxMessageRepository;
+import com.vibranium.walletservice.domain.repository.WalletRepository;
+import com.vibranium.walletservice.exception.InsufficientFundsException;
+import com.vibranium.walletservice.exception.WalletNotFoundException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * Serviço central do wallet-service — implementa toda a lógica de negócio
+ * de carteiras em transações ACID no PostgreSQL.
+ *
+ * <p>Responsabilidades principais:</p>
+ * <ul>
+ *   <li><b>Criação de carteiras</b> — disparada por evento REGISTER do Keycloak.</li>
+ *   <li><b>Reserva de fundos</b> — bloqueia saldo antes de uma ordem entrar no livro.</li>
+ *   <li><b>Liquidação de fundos</b> — executa as transferências BRL/VIB após um match.</li>
+ *   <li><b>Ajuste de saldo</b> — operação REST para crédito/débito administrativo.</li>
+ * </ul>
+ *
+ * <p>Todos os métodos que alteram estado utilizam:</p>
+ * <ul>
+ *   <li>Lock pessimista ({@code SELECT ... FOR UPDATE}) via {@code WalletRepository}.</li>
+ *   <li>Transactional Outbox gravado na mesma transação da alteração do saldo.</li>
+ *   <li>Chave de idempotência gravada atomicamente, prevenindo double-processing.</li>
+ * </ul>
+ */
+@Service
+public class WalletService {
+
+    private static final Logger logger = LoggerFactory.getLogger(WalletService.class);
+
+    private final WalletRepository walletRepository;
+    private final OutboxMessageRepository outboxMessageRepository;
+    private final IdempotencyKeyRepository idempotencyKeyRepository;
+    private final ObjectMapper objectMapper;
+
+    public WalletService(WalletRepository walletRepository,
+                         OutboxMessageRepository outboxMessageRepository,
+                         IdempotencyKeyRepository idempotencyKeyRepository,
+                         ObjectMapper objectMapper) {
+        this.walletRepository = walletRepository;
+        this.outboxMessageRepository = outboxMessageRepository;
+        this.idempotencyKeyRepository = idempotencyKeyRepository;
+        this.objectMapper = objectMapper;
+    }
+
+    // -------------------------------------------------------------------------
+    // Criação de carteira (triggered por Keycloak REGISTER)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Cria uma nova carteira zerada para o usuário recém-registrado.
+     *
+     * <p>Salva {@code WalletCreatedEvent} no outbox na mesma transação.
+     * A chave de idempotência é gravada atomicamente para evitar duplicatas
+     * em caso de re-entrega da mensagem do Keycloak.</p>
+     *
+     * @param userId        UUID do usuário no Keycloak.
+     * @param correlationId ID de correlação da Saga de onboarding.
+     * @param messageId     ID da mensagem AMQP (chave de idempotência).
+     */
+    @Transactional
+    public void createWallet(UUID userId, UUID correlationId, String messageId) {
+        logger.info("Creating wallet for userId={}", userId);
+
+        Wallet wallet = Wallet.create(userId, BigDecimal.ZERO, BigDecimal.ZERO);
+        wallet = walletRepository.save(wallet);
+
+        WalletCreatedEvent event = WalletCreatedEvent.of(correlationId, wallet.getId(), userId);
+        outboxMessageRepository.save(OutboxMessage.create(
+                "WalletCreatedEvent",
+                wallet.getId().toString(),
+                toJson(event)
+        ));
+
+        // Grava chave de idempotência na mesma transação — à prova de retries
+        idempotencyKeyRepository.save(new IdempotencyKey(messageId));
+
+        logger.info("Wallet created: walletId={}, userId={}", wallet.getId(), userId);
+    }
+
+    // -------------------------------------------------------------------------
+    // Reserva de fundos (Cenário de ordem no livro)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Tenta reservar (bloquear) o saldo especificado no comando.
+     *
+     * <p>Fluxo:</p>
+     * <ol>
+     *   <li>Adquire lock pessimista na carteira.</li>
+     *   <li>Verifica saldo disponível.</li>
+     *   <li>Sucesso: move available → locked, grava {@code FundsReservedEvent} no outbox.</li>
+     *   <li>Falha: não altera saldo, grava {@code FundsReservationFailedEvent} no outbox.</li>
+     * </ol>
+     *
+     * <p>A {@link InsufficientFundsException} é capturada internamente —
+     * a falha de negócio é representada como evento no outbox, não como exceção HTTP.</p>
+     *
+     * @param cmd       Comando com walletId, asset e amount.
+     * @param messageId ID da mensagem AMQP para idempotência.
+     */
+    @Transactional
+    public void reserveFunds(ReserveFundsCommand cmd, String messageId) {
+        logger.debug("Processing ReserveFundsCommand for walletId={}", cmd.walletId());
+
+        // Grava chave de idempotência antes de qualquer alteração de estado
+        idempotencyKeyRepository.save(new IdempotencyKey(messageId));
+
+        Wallet wallet = walletRepository.findByIdForUpdate(cmd.walletId())
+                .orElseThrow(() -> WalletNotFoundException.forWalletId(cmd.walletId()));
+
+        try {
+            wallet.reserveFunds(cmd.asset(), cmd.amount());
+            walletRepository.save(wallet);
+
+            FundsReservedEvent event = FundsReservedEvent.of(
+                    cmd.correlationId(), cmd.orderId(), cmd.walletId(), cmd.asset(), cmd.amount()
+            );
+            outboxMessageRepository.save(OutboxMessage.create(
+                    "FundsReservedEvent",
+                    wallet.getId().toString(),
+                    toJson(event)
+            ));
+            logger.info("Funds reserved: walletId={}, asset={}, amount={}",
+                    cmd.walletId(), cmd.asset(), cmd.amount());
+
+        } catch (InsufficientFundsException e) {
+            // Falha de negócio: saldo insuficiente. Não lançar exceção — registra evento de falha.
+            logger.warn("Insufficient funds for walletId={}: {}", cmd.walletId(), e.getMessage());
+
+            FundsReservationFailedEvent failedEvent = FundsReservationFailedEvent.of(
+                    cmd.correlationId(), cmd.orderId(),
+                    wallet.getId().toString(),
+                    FailureReason.INSUFFICIENT_FUNDS,
+                    e.getMessage()
+            );
+            outboxMessageRepository.save(OutboxMessage.create(
+                    "FundsReservationFailedEvent",
+                    wallet.getId().toString(),
+                    toJson(failedEvent)
+            ));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Liquidação de fundos (pós-match)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Executa a liquidação de um trade ACID: transfere BRL e VIB entre comprador e vendedor.
+     *
+     * <p>Fluxo happy path:</p>
+     * <ol>
+     *   <li>Adquire lock pessimista nas duas carteiras.</li>
+     *   <li>Comprador: brlLocked -= totalBrl, vibAvailable += matchAmount.</li>
+     *   <li>Vendedor: vibLocked -= matchAmount, brlAvailable += totalBrl.</li>
+     *   <li>Grava {@code FundsSettledEvent} no outbox.</li>
+     * </ol>
+     *
+     * <p>Em caso de falha (carteira não encontrada ou saldo insuficiente),
+     * grava {@code FundsSettlementFailedEvent} no outbox sem alterar saldos.</p>
+     *
+     * @param cmd       Comando com IDs das carteiras, preço e quantidade do match.
+     * @param messageId ID da mensagem AMQP para idempotência.
+     */
+    @Transactional
+    public void settleFunds(SettleFundsCommand cmd, String messageId) {
+        logger.debug("Processing SettleFundsCommand for matchId={}", cmd.matchId());
+
+        // Grava chave de idempotência atomicamente com a operação
+        idempotencyKeyRepository.save(new IdempotencyKey(messageId));
+
+        try {
+            Wallet buyer = walletRepository.findByIdForUpdate(cmd.buyerWalletId())
+                    .orElseThrow(() -> WalletNotFoundException.forWalletId(cmd.buyerWalletId()));
+
+            Wallet seller = walletRepository.findByIdForUpdate(cmd.sellerWalletId())
+                    .orElseThrow(() -> WalletNotFoundException.forWalletId(cmd.sellerWalletId()));
+
+            BigDecimal totalBrl = cmd.matchPrice().multiply(cmd.matchAmount());
+
+            if (buyer.getBrlLocked().compareTo(totalBrl) < 0) {
+                throw new InsufficientFundsException(
+                        "saldo BRL bloqueado insuficiente: locked=" + buyer.getBrlLocked() +
+                                ", necessário=" + totalBrl);
+            }
+
+            // Aplica a liquidação em ambas as carteiras
+            buyer.setBrlLocked(buyer.getBrlLocked().subtract(totalBrl));
+            buyer.setVibAvailable(buyer.getVibAvailable().add(cmd.matchAmount()));
+
+            seller.setVibLocked(seller.getVibLocked().subtract(cmd.matchAmount()));
+            seller.setBrlAvailable(seller.getBrlAvailable().add(totalBrl));
+
+            walletRepository.save(buyer);
+            walletRepository.save(seller);
+
+            FundsSettledEvent event = FundsSettledEvent.of(
+                    cmd.correlationId(), cmd.matchId(),
+                    cmd.buyOrderId(), cmd.sellOrderId(),
+                    cmd.buyerWalletId(), cmd.sellerWalletId(),
+                    cmd.matchPrice(), cmd.matchAmount()
+            );
+            outboxMessageRepository.save(OutboxMessage.create(
+                    "FundsSettledEvent",
+                    cmd.matchId().toString(),
+                    toJson(event)
+            ));
+            logger.info("Funds settled: matchId={}, totalBrl={}, vibAmount={}",
+                    cmd.matchId(), totalBrl, cmd.matchAmount());
+
+        } catch (WalletNotFoundException | InsufficientFundsException e) {
+            // Falha de negócio: grava evento compensatório sem alterar saldos
+            logger.warn("Settlement failed for matchId={}: {}", cmd.matchId(), e.getMessage());
+
+            FailureReason reason = (e instanceof WalletNotFoundException)
+                    ? FailureReason.WALLET_NOT_FOUND
+                    : FailureReason.INSUFFICIENT_FUNDS;
+
+            outboxMessageRepository.save(OutboxMessage.create(
+                    "FundsSettlementFailedEvent",
+                    cmd.matchId().toString(),
+                    toJson(FundsSettlementFailedEvent.of(
+                            cmd.correlationId(), cmd.matchId(), reason, e.getMessage()
+                    ))
+            ));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Ajuste de saldo via REST (PATCH /balance)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Aplica um delta de saldo na carteira (crédito ou débito administrativo).
+     *
+     * <p>Utiliza lock pessimista para garantir consistência em atualizações concorrentes.
+     * Valida que nenhum saldo ficará negativo antes de persisitir.</p>
+     *
+     * @param walletId  UUID da carteira a ser atualizada.
+     * @param brlDelta  Delta de BRL (pode ser nulo para não alterar BRL).
+     * @param vibDelta  Delta de VIB (pode ser nulo para não alterar VIB).
+     * @return {@link WalletResponse} com os saldos atualizados.
+     * @throws WalletNotFoundException    se a carteira não existir.
+     * @throws InsufficientFundsException se qualquer saldo resultante for negativo.
+     */
+    @Transactional
+    public WalletResponse adjustBalance(UUID walletId, BigDecimal brlDelta, BigDecimal vibDelta) {
+        Wallet wallet = walletRepository.findByIdForUpdate(walletId)
+                .orElseThrow(() -> WalletNotFoundException.forWalletId(walletId));
+
+        // adjustBalance valida ANTES de modificar — transação atômica
+        wallet.adjustBalance(brlDelta, vibDelta);
+        wallet = walletRepository.save(wallet);
+
+        logger.debug("Balance adjusted: walletId={}, brlDelta={}, vibDelta={}", walletId, brlDelta, vibDelta);
+        return WalletResponse.from(wallet);
+    }
+
+    // -------------------------------------------------------------------------
+    // Consultas (read-only)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Busca a carteira de um usuário pelo userId do Keycloak.
+     *
+     * @param userId UUID do usuário.
+     * @return DTO com os saldos da carteira.
+     * @throws WalletNotFoundException se não existir carteira para este userId.
+     */
+    @Transactional(readOnly = true)
+    public WalletResponse findByUserId(UUID userId) {
+        Wallet wallet = walletRepository.findByUserId(userId)
+                .orElseThrow(() -> WalletNotFoundException.forUserId(userId));
+        return WalletResponse.from(wallet);
+    }
+
+    /**
+     * Retorna todas as carteiras cadastradas.
+     * Utilizado pelo endpoint admin {@code GET /api/v1/wallets}.
+     */
+    @Transactional(readOnly = true)
+    public List<WalletResponse> findAll() {
+        return walletRepository.findAll().stream()
+                .map(WalletResponse::from)
+                .toList();
+    }
+
+    // -------------------------------------------------------------------------
+    // Helper
+    // -------------------------------------------------------------------------
+
+    /**
+     * Serializa um objeto para JSON. Encapsula {@link JsonProcessingException}
+     * em RuntimeException para não poluir as assinaturas dos métodos.
+     */
+    private String toJson(Object obj) {
+        try {
+            return objectMapper.writeValueAsString(obj);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("Falha ao serializar evento para JSON: " + obj.getClass().getSimpleName(), e);
+        }
+    }
+}
