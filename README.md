@@ -1,138 +1,144 @@
 # Vibranium Order Book Platform
 
-Uma plataforma de high-performance para matching de ordens com arquitetura baseada em eventos e integração de carteira digital.
+Plataforma de trading com microsserviços em Spring Boot com **ambiente TDD completo** e best practices de testes.
 
-## 🏗️ Arquitetura
+**❗ IMPORTANTE**: Todos os trabalhos (build, testes, desenvolvimento) devem ser executados via **Docker**. Não instale Java ou Maven na sua máquina.
 
-```
-vibranium-orderbook/
-├── apps/
-│   ├── order-service          # Serviço de Order Book (MongoDB + Redis)
-│   └── wallet-service         # Serviço de Carteira (PostgreSQL)
-├── libs/
-│   ├── common-contracts       # Contratos de eventos compartilhados
-│   └── common-utils           # Utilitários comuns
-├── infra/
-│   ├── docker-compose.dev.yml      # Desenvolvimento (instâncias únicas)
-│   ├── docker-compose.staging.yml  # Staging (3 réplicas, limites)
-│   ├── kong/                       # Configuração do API Gateway
-│   └── keycloak/                   # Autenticação JWT
-└── docs/                           # Documentação
+## 🚀 Quick Start
+
+### Setup Inicial (Primeiro uso)
+```powershell
+# 1. Valide Docker
+.\init.ps1
+
+# 2. Inicie ambiente de desenvolvimento
+.\build.ps1 docker-dev-up
+
+# Ou no Linux/Mac
+make docker-dev-up
 ```
 
-## 🚀 Pré-requisitos
-
-- **Java 21**
-- **Maven 3.8.1+**
-- **Docker & Docker Compose**
-- **Git**
-
-## 📦 Build
-
-### Build completo do monorepo
+### Comandos Principais
 ```bash
-mvn clean package
+# Windows PowerShell
+.\build.ps1 docker-dev-up       # Iniciar dev (hotreload)
+.\build.ps1 docker-test         # Executar testes
+.\build.ps1 docker-prod-up      # Iniciar produção
+.\build.ps1 docker-dev-logs -Service order-service
+
+# Linux / macOS
+make docker-dev-up
+make docker-test
+make docker-prod-up
+make docker-dev-logs SERVICE=order-service
+
+# Docker Compose direto
+docker compose -f docker/docker-compose.dev.yml up
+docker compose -f docker/docker-compose.test.yml up
+docker compose -f docker/docker-compose.yml up
 ```
 
-### Build de um módulo específico
-```bash
-# Order Service
-mvn clean package -pl apps/order-service
+## 📁 Estrutura
 
-# Wallet Service
-mvn clean package -pl apps/wallet-service
 ```
-
-### Build com skip tests
-```bash
-mvn clean package -DskipTests
+.
+├── apps/                    # Microsserviços
+│   ├── order-service/       # Trading orders
+│   └── wallet-service/      # Wallet & transactions
+├── libs/                    # Bibliotecas compartilhadas
+│   └── common-contracts/    # Eventos e DTOs
+├── docker/                  # Docker Compose files
+├── infra/                   # Configurações de infra
+├── scripts/                 # Utilitários
+├── docs/                    # Documentação detalhada
+├── init.ps1                 # Validação Docker (Windows)
+├── Makefile                 # Tasks Docker (Linux/Mac)
+└── pom.xml                  # POM raiz (Maven - uso interno)
 ```
-
-## 🐳 Ambientes
-
-### Desenvolvimento
-```bash
-docker-compose -f infra/docker-compose.dev.yml up -d
-```
-
-**Serviços:**
-- Order Service: http://localhost:8080
-- Wallet Service: http://localhost:8081
-- Kong Gateway: http://localhost:8000
-- Keycloak: http://localhost:8180
-- MongoDB: localhost:27017
-- PostgreSQL: localhost:5432
-- RabbitMQ: http://localhost:15672 (guest/guest)
-- Redis: localhost:6379
-
-### Staging
-```bash
-docker-compose -f infra/docker-compose.staging.yml up -d
-```
-
-**Features:**
-- 3 réplicas por serviço
-- Limites de memória: 512MB
-- Limites de CPU: 0.5 cores
-- Healthchecks configurados
-
-## 📝 Eventos
-
-### Contratos em `libs/common-contracts/`
-
-- `OrderCreatedEvent`: Notifica criação de ordem
-- `OrderMatchedEvent`: Notifica matching de ordem
-- `WalletDebitedEvent`: Notifica débito de carteira
-- `WalletCreditedEvent`: Notifica crédito de carteira
-
-## 🔐 Autenticação
-
-JWT validado via Keycloak (Kong como gateway).
 
 ## 📚 Documentação
 
-Veja [docs/](./docs/) para arquitetura detalhada, diagramas e guia de deployment.
+- **[docs/testing/COMPREHENSIVE_TESTING.md](docs/testing/COMPREHENSIVE_TESTING.md)** - Guia completo com padrões de teste
+- **[docker/README.md](docker/README.md)** - Como usar cada ambiente Docker
+- **[docs/architecture/order-book-mvp.md](docs/architecture/order-book-mvp.md)** - Arquitetura
+- **[docs/README.md](docs/README.md)** - Índice completo de documentação
+- **[scripts/README.md](scripts/README.md)** - Scripts disponíveis
 
-## 🛠️ Desenvolvimento Local
+## 📦 Stack
 
-1. **Build dos módulos**:
-   ```bash
-   mvn clean package
-   ```
+| Componente | Versão | Local |
+|-----------|--------|-------|
+| Java | 21 | Container |
+| Spring Boot | 3.2.3 | Container |
+| Maven | 3.9+ | Container |
+| JUnit 5 | Por Spring Boot | Container |
+| AssertJ | 3.x | Container |
+| REST Assured | 5.x | Container |
+| Docker | Compose | Máquina Host |
 
-2. **Subir infraestrutura**:
-   ```bash
-   docker-compose -f infra/docker-compose.dev.yml up -d
-   ```
+## 🧪 Testes
 
-3. **Executar serviços** (via IDE ou Maven):
-   ```bash
-   mvn -pl apps/order-service spring-boot:run
-   mvn -pl apps/wallet-service spring-boot:run
-   ```
+✅ **Todos os testes executam no Docker**
 
-4. **Verificar saúde**:
-   ```bash
-   curl http://localhost:8080/actuator/health
-   curl http://localhost:8081/actuator/health
-   ```
+```bash
+# Windows
+.\build.ps1 docker-test
 
-## 📌 Commits Estruturados
+# Linux/Mac
+make docker-test
 
-Utilizamos conventional commits:
-- `feat(module)`: Nova feature
-- `fix(module)`: Correção de bug
-- `docs(module)`: Documentação
-- `infra(docker)`: Mudanças de infraestrutura
-- `refactor(module)`: Refatoração sem mudança de comportamento
+# Direto com Docker Compose
+docker compose -f docker/docker-compose.test.yml up
+```
 
-## 📚 Documentação Completa
+Ver logs detalhados:
+```bash
+docker compose -f docker/docker-compose.test.yml logs -f test-runner
+```
 
-- [🚀 Quick Reference](./QUICK_REFERENCE.md) - Comandos essenciais (copiar-colar)
-- [🏗️ Architecture](./docs/ARCHITECTURE.md) - Design patterns e fluxos
-- [🔨 Build & Deployment](./docs/BUILD_AND_DEPLOYMENT.md) - Guia passo-a-passo
-- [🎯 Getting Started](./docs/GETTING_STARTED.md) - Primeiros passos
+## 🐳 Docker Environments
+
+### Desenvolvimento (com hotreload)
+```bash
+.\build.ps1 docker-dev-up
+
+# Acesse: http://localhost:8080 (Order Service)
+# Debug:  localhost:5005
+```
+
+### Testes Automatizados
+```bash
+.\build.ps1 docker-test
+
+# Todos os testes rodam em containers
+```
+
+### Produção
+```bash
+.\build.ps1 docker-prod-up
+
+# Serviços otimizados para produção
+```
+
+## ✅ Pré-requisitos
+
+O projeto requer **apenas Docker** na sua máquina:
+- ✅ Docker Desktop (Windows/Mac) ou Docker Engine (Linux)
+- ✅ Docker Compose (incluído no Docker Desktop)
+
+**NÃO precisa instalar**:
+- ❌ Java/JDK
+- ❌ Maven
+- ❌ Node.js ou outra Tools
+
+## 💡 Recursos
+
+- **Hotreload**: Spring Boot DevTools + Docker volumes
+- **Testing**: JUnit 5, Mockito, AssertJ, REST Assured, WireMock (todos em container)
+- **Debug**: Remote debugging via porta 5005 (dev) / 5006 (wallet)
+- **Debug**: Portas 5005 (Order) e 5006 (Wallet)
+- **Cobertura**: Jacoco integration
 
 ---
 
-**Mantido por:** Vibranium DevOps Team | **Última atualização:** 2026-02-26
+Para mais detalhes, veja: [docs/](docs/)

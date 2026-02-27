@@ -1,52 +1,52 @@
 spring:
-  application:
-    name: wallet-service
-  profiles:
-    active: dev
+    application:
+        name: wallet-service
+    profiles:
+        active: dev
 
-  # PostgreSQL
-  datasource:
-    url: jdbc:postgresql://localhost:5432/vibranium_wallet
-    username: postgres
-    password: postgres
-    driver-class-name: org.postgresql.Driver
+    # PostgreSQL
+    datasource:
+        url: jdbc:postgresql://localhost:5432/vibranium_wallet
+        username: postgres
+        password: postgres
+        driver-class-name: org.postgresql.Driver
 
-  jpa:
-    hibernate:
-      ddl-auto: validate
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
-        jdbc:
-          batch_size: 20
-        order_inserts: true
-        order_updates: true
+    jpa:
+        hibernate:
+            ddl-auto: validate
+        properties:
+            hibernate:
+                dialect: org.hibernate.dialect.PostgreSQLDialect
+                jdbc:
+                    batch_size: 20
+                order_inserts: true
+                order_updates: true
 
-  # RabbitMQ
-  rabbitmq:
-    host: localhost
-    port: 5672
-    username: guest
-    password: guest
-    listener:
-      simple:
-        acknowledge-mode: manual
-        prefetch: 1
-        default-requeue-rejected: false
+    # RabbitMQ
+    rabbitmq:
+        host: localhost
+        port: 5672
+        username: guest
+        password: guest
+        listener:
+            simple:
+                acknowledge-mode: manual
+                prefetch: 1
+                default-requeue-rejected: false
 
 server:
-  port: 8081
+    port: 8081
 
 logging:
-  level:
-    root: INFO
-    com.vibranium: DEBUG
+    level:
+        root: INFO
+        com.vibranium: DEBUG
 
 management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info,metrics
-  endpoint:
-    health:
-      show-details: always
+    endpoints:
+        web:
+            exposure:
+                include: health,info,metrics
+    endpoint:
+        health:
+            show-details: always

@@ -1,0 +1,29 @@
+# Dockerfile de desenvolvimento com hotreload para Wallet Service
+FROM maven:3.9-eclipse-temurin-21-alpine
+
+WORKDIR /app
+
+# Instalar wget para healthcheck
+RUN apk add --no-cache wget
+
+# Copiar pom.xml raiz e estrutura de módulos
+COPY pom.xml ./
+COPY apps/order-service/pom.xml ./apps/order-service/
+COPY apps/wallet-service/pom.xml ./apps/wallet-service/
+COPY libs/common-contracts/pom.xml ./libs/common-contracts/
+
+# Copiar código-fonte
+COPY libs/common-contracts/src ./libs/common-contracts/src
+COPY apps/order-service/src ./apps/order-service/src
+COPY apps/wallet-service/src ./apps/wallet-service/src
+
+# Build completo (com todos os módulos) para cache Maven
+RUN mvn clean install -DskipTests -q 2>/dev/null || true
+
+# O código-fonte será montado via volume para hotreload
+# O comando será adaptado para usar o código com reload
+CMD ["mvn", "spring-boot:run", "-pl", "apps/wallet-service", "-Dspring-boot.run.fork=false"]
+
+# O código-fonte será montado via volume
+# O comando será executado via docker-compose command override
+CMD ["mvn", "spring-boot:run", "-pl", "apps/wallet-service", "-Dspring-boot.run.fork=false"]

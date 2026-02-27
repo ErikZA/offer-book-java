@@ -13,20 +13,21 @@
     </parent>
 
     <artifactId>common-contracts</artifactId>
-    <name>Common Contracts - Event DTOs</name>
-    <description>Contratos de eventos compartilhados entre microsserviços</description>
+    <name>Common Contracts</name>
+    <description>Contratos compartilhados</description>
 
     <dependencies>
-        <!-- Jackson for JSON serialization -->
+        <!-- Jackson for JSON -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
         </dependency>
 
-        <!-- Validation -->
+        <!-- Lombok -->
         <dependency>
-            <groupId>jakarta.validation</groupId>
-            <artifactId>jakarta.validation-api</artifactId>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
         </dependency>
     </dependencies>
 

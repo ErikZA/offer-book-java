@@ -1,0 +1,125 @@
+version: '3.8'
+
+services:
+    # ================== Test Infrastructure ==================
+
+    mongodb:
+        image: mongo:7.0
+        container_name: vibranium-mongodb-test
+        ports:
+            - '27017:27017'
+        environment:
+            MONGO_INITDB_ROOT_USERNAME: admin
+            MONGO_INITDB_ROOT_PASSWORD: admin123
+            MONGO_INITDB_DATABASE: vibranium_orders
+        volumes:
+            - mongodb_data_test:/data/db
+        networks:
+            - vibranium-network-test
+        healthcheck:
+            test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test -u admin -p admin123
+            interval: 5s
+            timeout: 3s
+            retries: 3
+
+    postgres:
+        image: postgres:16-alpine
+        container_name: vibranium-postgres-test
+        ports:
+            - '5432:5432'
+        environment:
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres
+            POSTGRES_DB: vibranium_wallet_test
+        volumes:
+            - postgres_data_test:/var/lib/postgresql/data
+        networks:
+            - vibranium-network-test
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U postgres']
+            interval: 5s
+            timeout: 3s
+            retries: 3
+
+    redis:
+        image: redis:7-alpine
+        container_name: vibranium-redis-test
+        ports:
+            - '6379:6379'
+        volumes:
+            - redis_data_test:/data
+        networks:
+            - vibranium-network-test
+        healthcheck:
+            test: ['CMD', 'redis-cli', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 3
+
+    rabbitmq:
+        image: rabbitmq:3.13-management-alpine
+        container_name: vibranium-rabbitmq-test
+        ports:
+            - '5672:5672'
+            - '15672:15672'
+        environment:
+            RABBITMQ_DEFAULT_USER: guest
+            RABBITMQ_DEFAULT_PASS: guest
+        volumes:
+            - rabbitmq_data_test:/var/lib/rabbitmq
+        networks:
+            - vibranium-network-test
+        healthcheck:
+            test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 3
+
+    # ================== Test Runner ==================
+
+    test-runner:
+        build:
+            context: ..
+            dockerfile: infra/docker/Dockerfile
+        container_name: vibranium-test-runner
+        environment:
+            MAVEN_CONFIG: /root/.m2
+            SPRING_PROFILES_ACTIVE: test
+        volumes:
+            - ../pom.xml:/app/pom.xml
+            - ../apps:/app/apps
+            - ../libs:/app/libs
+            - m2_cache_test:/root/.m2
+            - ../test-results:/app/test-results
+        working_dir: /app
+        depends_on:
+            mongodb:
+                condition: service_healthy
+            postgres:
+                condition: service_healthy
+            redis:
+                condition: service_healthy
+            rabbitmq:
+                condition: service_healthy
+        networks:
+            - vibranium-network-test
+        command: /bin/sh -c "
+            echo '=== Running all tests ===' &&
+            mvn clean test -U &&
+            echo '=== Generating test reports ===' &&
+            mkdir -p /app/test-results &&
+            find /app -path '*target/surefire-reports/*.xml' -exec cp {} /app/test-results/ \; &&
+            echo '=== Test execution completed ===' &&
+            echo 'Test reports available in target/surefire-reports/'
+            "
+
+networks:
+    vibranium-network-test:
+        driver: bridge
+
+volumes:
+    mongodb_data_test:
+    postgres_data_test:
+    redis_data_test:
+    rabbitmq_data_test:
+    m2_cache_test:

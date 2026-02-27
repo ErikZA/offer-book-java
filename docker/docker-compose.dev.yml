@@ -1,0 +1,155 @@
+version: '3.8'
+
+services:
+    # ================== Shared Infrastructure ==================
+
+    mongodb:
+        image: mongo:7.0
+        container_name: vibranium-mongodb
+        ports:
+            - '27017:27017'
+        environment:
+            MONGO_INITDB_ROOT_USERNAME: admin
+            MONGO_INITDB_ROOT_PASSWORD: admin123
+            MONGO_INITDB_DATABASE: vibranium_orders
+        volumes:
+            - mongodb_data:/data/db
+        networks:
+            - vibranium-network-dev
+        healthcheck:
+            test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test -u admin -p admin123
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    postgres:
+        image: postgres:16-alpine
+        container_name: vibranium-postgres
+        ports:
+            - '5432:5432'
+        environment:
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres
+            POSTGRES_DB: vibranium_wallet
+        volumes:
+            - postgres_data:/var/lib/postgresql/data
+        networks:
+            - vibranium-network-dev
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U postgres']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    redis:
+        image: redis:7-alpine
+        container_name: vibranium-redis
+        ports:
+            - '6379:6379'
+        command: redis-server --appendonly yes
+        volumes:
+            - redis_data:/data
+        networks:
+            - vibranium-network-dev
+        healthcheck:
+            test: ['CMD', 'redis-cli', 'ping']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    rabbitmq:
+        image: rabbitmq:3.13-management-alpine
+        container_name: vibranium-rabbitmq
+        ports:
+            - '5672:5672'
+            - '15672:15672'
+        environment:
+            RABBITMQ_DEFAULT_USER: guest
+            RABBITMQ_DEFAULT_PASS: guest
+        volumes:
+            - rabbitmq_data:/var/lib/rabbitmq
+        networks:
+            - vibranium-network-dev
+        healthcheck:
+            test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    # ================== Development Services with Hot Reload ==================
+
+    order-service:
+        build:
+            context: ..
+            dockerfile: apps/order-service/docker/Dockerfile.dev
+        container_name: vibranium-order-service-dev
+        ports:
+            - '8080:8080'
+            - '5005:5005'
+        environment:
+            SERVER_PORT: 8080
+            SPRING_APPLICATION_NAME: order-service
+            SPRING_PROFILES_ACTIVE: dev
+            JAVA_OPTS: '-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005'
+        volumes:
+            - ../apps/order-service:/app/apps/order-service
+            - ../libs:/app/libs
+            - ../pom.xml:/app/pom.xml
+            - m2_cache:/root/.m2
+        working_dir: /app
+        command: mvn spring-boot:run -pl apps/order-service -Dspring-boot.run.fork=false
+        depends_on:
+            - mongodb
+            - redis
+            - rabbitmq
+        networks:
+            - vibranium-network-dev
+        healthcheck:
+            test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:8080/actuator/health']
+            interval: 10s
+            timeout: 5s
+            retries: 3
+            start_period: 60s
+
+    wallet-service:
+        build:
+            context: ..
+            dockerfile: apps/wallet-service/docker/Dockerfile.dev
+        container_name: vibranium-wallet-service-dev
+        ports:
+            - '8081:8081'
+            - '5006:5006'
+        environment:
+            SERVER_PORT: 8081
+            SPRING_APPLICATION_NAME: wallet-service
+            SPRING_PROFILES_ACTIVE: dev
+            JAVA_OPTS: '-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5006'
+        volumes:
+            - ../apps/wallet-service:/app/apps/wallet-service
+            - ../libs:/app/libs
+            - ../pom.xml:/app/pom.xml
+            - m2_cache:/root/.m2
+        working_dir: /app
+        command: mvn spring-boot:run -pl apps/wallet-service -Dspring-boot.run.fork=false
+        depends_on:
+            - postgres
+            - rabbitmq
+        networks:
+            - vibranium-network-dev
+        healthcheck:
+            test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:8081/actuator/health']
+            interval: 10s
+            timeout: 5s
+            retries: 3
+            start_period: 60s
+
+networks:
+    vibranium-network-dev:
+        driver: bridge
+
+volumes:
+    mongodb_data:
+    postgres_data:
+    redis_data:
+    rabbitmq_data:
+    m2_cache:
