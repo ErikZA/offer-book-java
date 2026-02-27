@@ -4,6 +4,36 @@ Utilitários de automação para desenvolvimento e deployment.
 
 ## 📋 Scripts Disponíveis
 
+### **verify-infra.sh** (Linux/Mac) & **verify-infra.ps1** (Windows)
+
+Scripts de validação determinística da infraestrutura Kong + Keycloak + PostgreSQL.
+
+**7 Requisitos Validados**:
+1. ✅ Kong rodando e saudável
+2. ✅ Kong conectado ao PostgreSQL
+3. ✅ Tabelas Kong criadas
+4. ✅ Keycloak rodando e saudável
+5. ✅ Keycloak conectado ao PostgreSQL
+6. ✅ Tabelas Keycloak criadas
+7. ✅ Docker Compose testes pronto
+
+```bash
+# Linux/Mac
+chmod +x scripts/verify-infra.sh
+./scripts/verify-infra.sh
+
+# Windows
+powershell -ExecutionPolicy Bypass -File scripts/verify-infra.ps1
+
+# Exit codes
+# 0 = Sucesso (todos 7 requisitos validados)
+# 1 = Falha (um ou mais requisitos falharam)
+```
+
+**Exit Codes**:
+- `0`: ✅ Infraestrutura validada com sucesso
+- `1`: ❌ Um ou mais requisitos falharam
+
 ### **build.ps1** (Windows)
 PowerShell script com funções de build, testes e docker.
 
@@ -49,6 +79,7 @@ make docker-dev-logs
 ```powershell
 cd C:\path\to\project
 .\init.ps1                          # Setup inicial
+.\scripts\verify-infra.ps1          # Validar infraestrutura
 .\scripts\build.ps1 test            # Executar testes
 .\scripts\build.ps1 docker-dev-up   # Dev com hotreload
 ```
@@ -56,11 +87,13 @@ cd C:\path\to\project
 ### Linux/macOS
 ```bash
 cd /path/to/project
-make test               # Testes
-make docker-dev-up      # Dev
-make coverage           # Cobertura
+./scripts/verify-infra.sh           # Validar infraestrutura
+make test                           # Testes
+make docker-dev-up                  # Dev
+make coverage                       # Cobertura
 ```
 
 ---
 
-Para mais detalhes, consulte o [README principal](../README.md).
+Para mais detalhes sobre verificação de infraestrutura, consulte [INFRASTRUCTURE_DECISIONS.md](../docs/INFRASTRUCTURE_DECISIONS.md).
+

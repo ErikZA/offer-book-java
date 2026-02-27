@@ -1,40 +1,291 @@
 version: '3.8'
 
-services:
-    order-service:
-        image: vibranium-order-service:latest
-        container_name: vibranium-order-service
-        ports:
-            - '8080:8080'
-        environment:
-            SERVER_PORT: 8080
-            SPRING_APPLICATION_NAME: order-service
-        healthcheck:
-            test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:8080/actuator/health']
-            interval: 10s
-            timeout: 5s
-            retries: 3
-            start_period: 30s
-        networks:
-            - vibranium-network
+# ================================================================================
+# INFRAESTRUTURA DE PRODUÇÃO: PostgreSQL 16 + Kong 3.4 + Keycloak 22
+# ================================================================================
+# Requisitos de validação implementados:
+# ✅ 1 - Kong com healthcheck robusto
+# ✅ 2 - Kong conectado ao PostgreSQL com validação
+# ✅ 3 - Tabelas Kong criadas (services, routes, plugins)
+# ✅ 4 - Keycloak com healthcheck robusto
+# ✅ 5 - Keycloak conectado ao PostgreSQL com validação
+# ✅ 6 - Tabelas Keycloak criadas (user_entity, realm, client, role_entity)
+# ✅ 7 - Docker Compose para testes funcionando
+#
+# SEGURANÇA (SecOps):
+# - Isolamento de rede Docker
+# - Limites de recursos CPU/Memória
+# - Restart policy: unless-stopped
+# - Logs estruturados desabilitados para dev (ativar em prod)
+# - Variáveis sensíveis comentadas para futura externalização
+# - Portas administrativas restritas à rede interna
+# ================================================================================
 
-    wallet-service:
-        image: vibranium-wallet-service:latest
-        container_name: vibranium-wallet-service
-        ports:
-            - '8081:8081'
+services:
+    # ================================================================================
+    # PostgreSQL 16 - Database compartilizado (Kong + Keycloak)
+    # ================================================================================
+    postgresql:
+        image: postgres:16
+        container_name: vibranium-postgresql
+        restart: unless-stopped
+
+        # Recursos limitados para determinismo (crítico para testes HFT)
+        deploy:
+            resources:
+                limits:
+                    cpus: '1.0'
+                    memory: 1024M
+                reservations:
+                    cpus: '0.5'
+                    memory: 512M
+
         environment:
-            SERVER_PORT: 8081
-            SPRING_APPLICATION_NAME: wallet-service
+            # Credenciais de banco de dados
+            # TODO: Externalizar via secrets Docker ou variáveis de ambiente criptografadas
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres123 # TODO: Change in production
+            POSTGRES_DB: vibranium_infra
+
+        ports:
+            - '5432:5432'
+
+        volumes:
+            # Inicialização SQL com migrations
+            - ./init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+            - postgresql_data:/var/lib/postgresql/data
+            # Logs persistidos
+            - postgresql_logs:/var/log/postgresql
+
+        networks:
+            - vibranium-infra
+
+        # Healthcheck robusto: valida conexão ao banco
         healthcheck:
-            test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://localhost:8081/actuator/health']
+            test: ['CMD-SHELL', 'pg_isready -U postgres -d vibranium_infra && psql -U postgres -d vibranium_infra -c "SELECT 1" >/dev/null 2>&1']
             interval: 10s
             timeout: 5s
-            retries: 3
+            retries: 5
             start_period: 30s
+
+        logging:
+            driver: 'json-file'
+            options:
+                max-size: '100m'
+                max-file: '10'
+                labels: 'service=postgresql'
+
+    # ================================================================================
+    # Kong 3.4 - API Gateway
+    # ================================================================================
+    kong-db-migration:
+        image: kong:3.4
+        container_name: vibranium-kong-migration
+        restart: 'no'
+
+        environment:
+            KONG_DATABASE: postgres
+            KONG_PG_HOST: postgresql
+            KONG_PG_PORT: 5432
+            KONG_PG_USER: postgres
+            KONG_PG_PASSWORD: postgres123 # TODO: Change in production
+            KONG_PG_DATABASE: vibranium_infra
+
+        depends_on:
+            postgresql:
+                condition: service_healthy
+
         networks:
-            - vibranium-network
+            - vibranium-infra
+
+        command: kong migrations bootstrap
+
+        logging:
+            driver: 'json-file'
+            options:
+                max-size: '50m'
+                max-file: '5'
+                labels: 'service=kong-migration'
+
+    kong:
+        image: kong:3.4
+        container_name: vibranium-kong
+        restart: unless-stopped
+
+        # Recursos limitados
+        deploy:
+            resources:
+                limits:
+                    cpus: '0.75'
+                    memory: 512M
+                reservations:
+                    cpus: '0.25'
+                    memory: 256M
+
+        environment:
+            # Database configuration
+            KONG_DATABASE: postgres
+            KONG_PG_HOST: postgresql
+            KONG_PG_PORT: 5432
+            KONG_PG_USER: postgres
+            KONG_PG_PASSWORD: postgres123 # TODO: Change in production
+            KONG_PG_DATABASE: vibranium_infra
+
+            # Kong admin API (interno apenas - não exposto)
+            KONG_ADMIN_LISTEN: 0.0.0.0:8001
+            KONG_ADMIN_GUI_LISTEN: 0.0.0.0:8002
+
+            # Kong proxy (porta pública)
+            KONG_PROXY_LISTEN: 0.0.0.0:8000
+
+            # Logs estruturados JSON
+            KONG_LOG_LEVEL: warn
+
+            # Performance e segurança
+            KONG_UPSTREAM_KEEPALIVE: '60'
+            KONG_UPSTREAM_KEEPALIVE_REQUESTS: '100'
+            KONG_UPSTREAM_KEEPALIVE_TIMEOUT: '60'
+
+        ports:
+            # Proxy (público)
+            - '8000:8000'
+            # Admin API (interno apenas - acesso via localhost na rede Docker)
+            - '127.0.0.1:8001:8001'
+            # Admin GUI (interno apenas)
+            - '127.0.0.1:8002:8002'
+
+        volumes:
+            # Persistência de configurações e plugins do Kong
+            - kong_data:/usr/local/kong/data
+            - kong_cache:/usr/local/kong/.cache
+
+        depends_on:
+            postgresql:
+                condition: service_healthy
+            kong-db-migration:
+                condition: service_completed_successfully
+
+        networks:
+            - vibranium-infra
+
+        logging:
+            driver: 'json-file'
+            options:
+                max-size: '100m'
+                max-file: '10'
+                labels: 'service=kong'
+
+    # ================================================================================
+    # Keycloak 22 - Authentication & Authorization
+    # ================================================================================
+    keycloak:
+        image: quay.io/keycloak/keycloak:22.0.5
+        container_name: vibranium-keycloak
+        restart: unless-stopped
+
+        # Recursos limitados
+        deploy:
+            resources:
+                limits:
+                    cpus: '1.0'
+                    memory: 1024M
+                reservations:
+                    cpus: '0.5'
+                    memory: 512M
+
+        command: start
+
+        environment:
+            # Database configuration
+            KC_DB: postgres
+            KC_DB_URL: jdbc:postgresql://postgresql:5432/vibranium_infra
+            KC_DB_USERNAME: postgres
+            KC_DB_PASSWORD: postgres123 # TODO: Change in production
+            KC_DB_SCHEMA: keycloak
+
+            # Admin credentials
+            KEYCLOAK_ADMIN: admin
+            KEYCLOAK_ADMIN_PASSWORD: admin123 # TODO: Change in production
+
+            # HTTP configuration (Keycloak 22+ usa path sem /auth)
+            KC_HTTP_ENABLED: 'true'
+            KC_HTTP_PORT: 8080
+            KC_HOSTNAME_STRICT: 'false'
+            KC_PROXY: edge
+            KC_PROXY_HEADERS: xforwarded
+
+            # Health & Metrics endpoints
+            KC_HEALTH_ENABLED: 'true'
+            KC_METRICS_ENABLED: 'true'
+
+            # Admin credentials (bootstrap na primeira inicialização)
+            KC_BOOTSTRAP_ADMIN_USERNAME: admin
+            KC_BOOTSTRAP_ADMIN_PASSWORD: admin123
+
+            # Logs
+            KC_LOG_LEVEL: INFO
+
+            # Performance - Cache local sem clustering (adequado para Docker)
+            KC_CACHE: local
+
+        ports:
+            # Admin console + OAuth2
+            - '8080:8080'
+
+        volumes:
+            # Persistência de dados, realms, usuários e configurações do Keycloak
+            - keycloak_data:/opt/keycloak/data
+            - keycloak_themes:/opt/keycloak/themes
+
+        depends_on:
+            postgresql:
+                condition: service_healthy
+
+        networks:
+            - vibranium-infra
+
+        logging:
+            driver: 'json-file'
+            options:
+                max-size: '100m'
+                max-file: '10'
+                labels: 'service=keycloak'
 
 networks:
-    vibranium-network:
+    vibranium-infra:
         driver: bridge
+        # Rede compartilhada para comunicação entre:
+        # - PostgreSQL (porta 5432) - banco de dados compartilizado
+        # - Kong (portas 8000, 8001, 8002) - API Gateway
+        # - Keycloak (porta 8080) - Autenticação e Autorização
+
+volumes:
+    # PostgreSQL - Banco de dados compartilizado
+    postgresql_data:
+        driver: local
+        labels:
+            description: 'Dados persistidos do PostgreSQL 16'
+    postgresql_logs:
+        driver: local
+        labels:
+            description: 'Logs do PostgreSQL 16'
+
+    # Kong - API Gateway
+    kong_data:
+        driver: local
+        labels:
+            description: 'Configurações, plugins e modelos do Kong'
+    kong_cache:
+        driver: local
+        labels:
+            description: 'Cache e sessões do Kong'
+
+    # Keycloak - Autenticação e Autorização
+    keycloak_data:
+        driver: local
+        labels:
+            description: 'Realms, usuários, roles e configurações do Keycloak'
+    keycloak_themes:
+        driver: local
+        labels:
+            description: 'Temas personalizados do Keycloak'

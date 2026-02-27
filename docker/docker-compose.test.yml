@@ -1,9 +1,41 @@
 version: '3.8'
 
-services:
-    # ================== Test Infrastructure ==================
+# ================================================================================
+# TEST ENVIRONMENT - PostgreSQL 16 + Kong 3.4 + Keycloak 22 + Application Services
+# ================================================================================
+# This compose file is used for running tests in isolated environment
+# It mirrors production but with optimized settings for fast test execution
+# ================================================================================
 
-    mongodb:
+services:
+    # ================== Shared Test Infrastructure ==================
+
+    postgresql-test:
+        image: postgres:16
+        container_name: vibranium-postgresql-test
+        ports:
+            - '5433:5432' # Different port to avoid conflicts
+        environment:
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres123
+            POSTGRES_DB: vibranium_infra_test
+        volumes:
+            - ../docker/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+            - postgres_data_test:/var/lib/postgresql/data
+        networks:
+            - vibranium-network-test
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U postgres -d vibranium_infra_test']
+            interval: 5s
+            timeout: 3s
+            retries: 3
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                    cpus: '0.5'
+
+    mongodb-test:
         image: mongo:7.0
         container_name: vibranium-mongodb-test
         ports:
@@ -21,27 +53,13 @@ services:
             interval: 5s
             timeout: 3s
             retries: 3
+        deploy:
+            resources:
+                limits:
+                    memory: 256M
+                    cpus: '0.25'
 
-    postgres:
-        image: postgres:16-alpine
-        container_name: vibranium-postgres-test
-        ports:
-            - '5432:5432'
-        environment:
-            POSTGRES_USER: postgres
-            POSTGRES_PASSWORD: postgres
-            POSTGRES_DB: vibranium_wallet_test
-        volumes:
-            - postgres_data_test:/var/lib/postgresql/data
-        networks:
-            - vibranium-network-test
-        healthcheck:
-            test: ['CMD-SHELL', 'pg_isready -U postgres']
-            interval: 5s
-            timeout: 3s
-            retries: 3
-
-    redis:
+    redis-test:
         image: redis:7-alpine
         container_name: vibranium-redis-test
         ports:
@@ -55,8 +73,13 @@ services:
             interval: 5s
             timeout: 3s
             retries: 3
+        deploy:
+            resources:
+                limits:
+                    memory: 256M
+                    cpus: '0.25'
 
-    rabbitmq:
+    rabbitmq-test:
         image: rabbitmq:3.13-management-alpine
         container_name: vibranium-rabbitmq-test
         ports:
@@ -74,6 +97,104 @@ services:
             interval: 5s
             timeout: 3s
             retries: 3
+        deploy:
+            resources:
+                limits:
+                    memory: 256M
+                    cpus: '0.25'
+
+    # ================== Kong Test Instance ==================
+
+    kong-migration-test:
+        image: kong:3.4
+        container_name: vibranium-kong-migration-test
+        restart: 'no'
+        environment:
+            KONG_DATABASE: postgres
+            KONG_PG_HOST: postgresql-test
+            KONG_PG_PORT: 5432
+            KONG_PG_USER: postgres
+            KONG_PG_PASSWORD: postgres123
+            KONG_PG_DATABASE: vibranium_infra_test
+        depends_on:
+            postgresql-test:
+                condition: service_healthy
+        networks:
+            - vibranium-network-test
+        command: kong migrations bootstrap
+
+    kong-test:
+        image: kong:3.4
+        container_name: vibranium-kong-test
+        restart: 'no'
+        environment:
+            KONG_DATABASE: postgres
+            KONG_PG_HOST: postgresql-test
+            KONG_PG_PORT: 5432
+            KONG_PG_USER: postgres
+            KONG_PG_PASSWORD: postgres123
+            KONG_PG_DATABASE: vibranium_infra_test
+            KONG_ADMIN_LISTEN: 0.0.0.0:8001
+            KONG_PROXY_LISTEN: 0.0.0.0:8000
+            KONG_LOG_LEVEL: error
+        ports:
+            - '8000:8000'
+            - '127.0.0.1:8001:8001'
+        depends_on:
+            postgresql-test:
+                condition: service_healthy
+            kong-migration-test:
+                condition: service_completed_successfully
+        networks:
+            - vibranium-network-test
+        healthcheck:
+            test: ['CMD-SHELL', 'curl -f http://localhost:8001/status 2>/dev/null | grep -q "\"database\":true" && echo "healthy" || false']
+            interval: 5s
+            timeout: 3s
+            retries: 3
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                    cpus: '0.5'
+
+    # ================== Keycloak Test Instance ==================
+
+    keycloak-test:
+        image: quay.io/keycloak/keycloak:22.0.5
+        container_name: vibranium-keycloak-test
+        restart: 'no'
+        environment:
+            KC_DB: postgres
+            KC_DB_URL: jdbc:postgresql://postgresql-test:5432/vibranium_infra_test
+            KC_DB_USERNAME: postgres
+            KC_DB_PASSWORD: postgres123
+            KC_DB_SCHEMA: keycloak_test
+            KEYCLOAK_ADMIN: admin
+            KEYCLOAK_ADMIN_PASSWORD: admin123
+            KC_HTTP_ENABLED: 'true'
+            KC_HTTP_PORT: 8080
+            KC_HTTP_RELATIVE_PATH: /auth
+            KC_HOSTNAME_STRICT: 'false'
+            KC_LOG_LEVEL: ERROR
+        ports:
+            - '8081:8080'
+        depends_on:
+            postgresql-test:
+                condition: service_healthy
+        networks:
+            - vibranium-network-test
+        healthcheck:
+            test: ['CMD-SHELL', 'curl -s http://localhost:8080/auth/health/live | grep -q "UP" && echo "ready" || false']
+            interval: 10s
+            timeout: 5s
+            retries: 3
+            start_period: 30s
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                    cpus: '0.5'
 
     # ================== Test Runner ==================
 
@@ -93,13 +214,17 @@ services:
             - ../test-results:/app/test-results
         working_dir: /app
         depends_on:
-            mongodb:
+            mongodb-test:
                 condition: service_healthy
-            postgres:
+            postgresql-test:
                 condition: service_healthy
-            redis:
+            redis-test:
                 condition: service_healthy
-            rabbitmq:
+            rabbitmq-test:
+                condition: service_healthy
+            kong-test:
+                condition: service_healthy
+            keycloak-test:
                 condition: service_healthy
         networks:
             - vibranium-network-test
@@ -112,12 +237,18 @@ services:
             echo '=== Test execution completed ===' &&
             echo 'Test reports available in target/surefire-reports/'
             "
+        deploy:
+            resources:
+                limits:
+                    memory: 2048M
+                    cpus: '2.0'
 
 networks:
     vibranium-network-test:
         driver: bridge
 
 volumes:
+    postgresql_data_test:
     mongodb_data_test:
     postgres_data_test:
     redis_data_test:
