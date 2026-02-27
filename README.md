@@ -126,6 +126,13 @@ Utilizamos conventional commits:
 - `infra(docker)`: Mudanças de infraestrutura
 - `refactor(module)`: Refatoração sem mudança de comportamento
 
+## 📚 Documentação Completa
+
+- [🚀 Quick Reference](./QUICK_REFERENCE.md) - Comandos essenciais (copiar-colar)
+- [🏗️ Architecture](./docs/ARCHITECTURE.md) - Design patterns e fluxos
+- [🔨 Build & Deployment](./docs/BUILD_AND_DEPLOYMENT.md) - Guia passo-a-passo
+- [🎯 Getting Started](./docs/GETTING_STARTED.md) - Primeiros passos
+
 ---
 
 **Mantido por:** Vibranium DevOps Team | **Última atualização:** 2026-02-26
