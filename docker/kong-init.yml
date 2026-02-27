@@ -16,7 +16,7 @@
 # dinamicamente pelo script `kong-setup.sh` após o Keycloak estar disponível.
 # ==============================================================================
 
-_format_version: "3.0"
+_format_version: '3.0'
 _transform: true
 
 services:
@@ -25,10 +25,10 @@ services:
     # ---------------------------------------------------------------------------
     - name: order-service
       url: http://order-service:8080
-      connect_timeout: 5000   # ms — falha rápida se o pod não responder
-      read_timeout: 10000     # ms — tempo máximo de resposta do upstream
-      write_timeout: 10000    # ms — tempo máximo de escrita
-      retries: 0              # sem retry em operações de comando (não-idempotentes)
+      connect_timeout: 5000 # ms — falha rápida se o pod não responder
+      read_timeout: 10000 # ms — tempo máximo de resposta do upstream
+      write_timeout: 10000 # ms — tempo máximo de escrita
+      retries: 0 # sem retry em operações de comando (não-idempotentes)
 
       routes:
           # -----------------------------------------------------------------------
@@ -40,8 +40,8 @@ services:
                 - /api/v1/orders
             methods:
                 - POST
-                - OPTIONS       # necessário para preflight CORS
-            strip_path: false   # preserva o path completo ao encaminhar ao upstream
+                - OPTIONS # necessário para preflight CORS
+            strip_path: false # preserva o path completo ao encaminhar ao upstream
             preserve_host: false
 
       plugins:
@@ -61,16 +61,16 @@ services:
           # -----------------------------------------------------------------------
           - name: jwt
             config:
-                uri_param_names: []        # não aceitar JWT via query param (segurança)
-                cookie_names: []           # não aceitar JWT via cookie
+                uri_param_names: [] # não aceitar JWT via query param (segurança)
+                cookie_names: [] # não aceitar JWT via cookie
                 header_names:
-                    - Authorization        # padrão Bearer token
+                    - Authorization # padrão Bearer token
                 claims_to_verify:
-                    - exp                  # rejeita tokens expirados
-                key_claim_name: iss        # mapeia consumer pelo campo `iss` do payload
-                maximum_expiration: 3600   # rejeita tokens com expiração > 1h no futuro
-                secret_is_base64: false    # chave RSA em formato PEM, não base64
-                run_on_preflight: false    # permite OPTIONS sem token (CORS preflight)
+                    - exp # rejeita tokens expirados
+                key_claim_name: iss # mapeia consumer pelo campo `iss` do payload
+                maximum_expiration: 3600 # rejeita tokens com expiração > 1h no futuro
+                secret_is_base64: false # chave RSA em formato PEM, não base64
+                run_on_preflight: false # permite OPTIONS sem token (CORS preflight)
 
           # -----------------------------------------------------------------------
           # Plugin Rate-Limiting: 100 req/s por IP para proteger o upstream
@@ -86,10 +86,10 @@ services:
             config:
                 second: 100
                 minute: 5000
-                policy: local          # single-node; use redis em produção
+                policy: local # single-node; use redis em produção
                 limit_by: ip
-                hide_client_headers: false  # expõe X-RateLimit-* headers ao cliente
-                fault_tolerant: true        # não bloqueia requisições se o rate-limiter falhar
+                hide_client_headers: false # expõe X-RateLimit-* headers ao cliente
+                fault_tolerant: true # não bloqueia requisições se o rate-limiter falhar
 
           # -----------------------------------------------------------------------
           # Plugin CORS: permissivo para ambiente de desenvolvimento
@@ -98,7 +98,7 @@ services:
           - name: cors
             config:
                 origins:
-                    - "*"
+                    - '*'
                 methods:
                     - GET
                     - POST
@@ -112,6 +112,101 @@ services:
                 exposed_headers:
                     - X-Auth-Token
                     - X-Correlation-ID
-                credentials: false          # false quando origins = "*"
+                credentials: false # false quando origins = "*"
                 max_age: 3600
-                preflight_continue: false   # Kong responde ao preflight, não encaminha
+                preflight_continue: false # Kong responde ao preflight, não encaminha
+
+    # ---------------------------------------------------------------------------
+    # wallet-service: upstream do microsserviço Spring Boot na rede Docker interna
+    # ---------------------------------------------------------------------------
+    - name: wallet-service
+      url: http://wallet-service:8081
+      connect_timeout: 5000
+      read_timeout: 10000
+      write_timeout: 10000
+      retries: 0 # PATCH de saldo não é retentado automaticamente (não-idempotente)
+
+      routes:
+          # -----------------------------------------------------------------------
+          # Rota de Consulta: GET /api/v1/wallets/{userId}
+          # Retorna id da carteira, id do usuário, saldos BRL e VIB disponíveis/bloqueados.
+          # Aceita apenas GET — cliente autenticado via Bearer JWT (Keycloak RS256).
+          # -----------------------------------------------------------------------
+          - name: get-wallet-route
+            paths:
+                - /api/v1/wallets
+            methods:
+                - GET
+                - OPTIONS
+            strip_path: false
+            preserve_host: false
+
+          # -----------------------------------------------------------------------
+          # Rota de Atualização de Saldo: PATCH /api/v1/wallets/{walletId}/balance
+          # Atualiza brlAvailable e/ou vibAvailable da carteira.
+          # Regra de negócio (validada no wallet-service): saldo não pode ficar negativo.
+          # PATCH é usado porque a operação é parcial (pode atualizar apenas um asset).
+          # -----------------------------------------------------------------------
+          - name: update-wallet-balance-route
+            paths:
+                - ~/api/v1/wallets/[^/]+/balance
+            methods:
+                - PATCH
+                - OPTIONS
+            strip_path: false
+            preserve_host: false
+
+      plugins:
+          # -----------------------------------------------------------------------
+          # Plugin JWT (Kong CE): valida tokens RS256 emitidos pelo Keycloak.
+          # Mesma configuração do order-service — consumer compartilhado (keycloak-realm-consumer).
+          # -----------------------------------------------------------------------
+          - name: jwt
+            config:
+                uri_param_names: []
+                cookie_names: []
+                header_names:
+                    - Authorization
+                claims_to_verify:
+                    - exp
+                key_claim_name: iss
+                maximum_expiration: 3600
+                secret_is_base64: false
+                run_on_preflight: false
+
+          # -----------------------------------------------------------------------
+          # Rate-Limiting: mais permissivo que orders (operação de leitura + atualização
+          # administrativa). Em produção ajustar por consumer (não só por IP).
+          # -----------------------------------------------------------------------
+          - name: rate-limiting
+            config:
+                second: 200
+                minute: 10000
+                policy: local
+                limit_by: ip
+                hide_client_headers: false
+                fault_tolerant: true
+
+          # -----------------------------------------------------------------------
+          # CORS: mesmo padrão do order-service (permissivo para dev)
+          # -----------------------------------------------------------------------
+          - name: cors
+            config:
+                origins:
+                    - '*'
+                methods:
+                    - GET
+                    - PATCH
+                    - OPTIONS
+                headers:
+                    - Accept
+                    - Authorization
+                    - Content-Type
+                    - X-Requested-With
+                    - X-Correlation-ID
+                exposed_headers:
+                    - X-Auth-Token
+                    - X-Correlation-ID
+                credentials: false
+                max_age: 3600
+                preflight_continue: false

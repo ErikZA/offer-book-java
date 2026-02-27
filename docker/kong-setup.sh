@@ -135,8 +135,81 @@ http_call POST "${KONG_ADMIN_URL}/routes/${ROUTE_ID}/plugins" \
     "Plugin cors"
 
 # ==============================================================================
-# STEP 5 — Consumer + Credencial JWT RS256 (chave pública Keycloak via JWKS)
+# STEP 4b — Service + Routes: wallet-service
 # ==============================================================================
+echo ""
+echo "--- [3b/4] Configurando wallet-service ---"
+
+# Service: wallet-service
+http_call PUT "${KONG_ADMIN_URL}/services/wallet-service" \
+    '{"name":"wallet-service","url":"http://wallet-service:8081","connect_timeout":5000,"read_timeout":10000,"write_timeout":10000,"retries":0}' \
+    "Service wallet-service"
+
+# Route: GET /api/v1/wallets (listagem/consulta de carteira por userId)
+# Aceita GET e OPTIONS (preflight CORS). O userId é passado como path param
+# ou query param dependendo do design da API.
+http_call PUT "${KONG_ADMIN_URL}/services/wallet-service/routes/get-wallet-route" \
+    '{"name":"get-wallet-route","paths":["/api/v1/wallets"],"methods":["GET","OPTIONS"],"strip_path":false,"preserve_host":false}' \
+    "Route get-wallet-route"
+
+# Route: PATCH /api/v1/wallets/{walletId}/balance (atualização parcial de saldo)
+# Regex path: ~/api/v1/wallets/[^/]+/balance
+# PATCH → atualização parcial (pode enviar só brlAvailable ou só vibAvailable)
+http_call PUT "${KONG_ADMIN_URL}/services/wallet-service/routes/update-wallet-balance-route" \
+    '{"name":"update-wallet-balance-route","paths":["~/api/v1/wallets/[^/]+/balance"],"methods":["PATCH","OPTIONS"],"strip_path":false,"preserve_host":false}' \
+    "Route update-wallet-balance-route"
+
+# Plugins na Route get-wallet-route
+GET_ROUTE_ID=$(curl -s "${KONG_ADMIN_URL}/services/wallet-service/routes/get-wallet-route" | \
+    grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')
+echo "[kong] get-wallet-route ID: ${GET_ROUTE_ID}"
+
+for PNAME in jwt rate-limiting cors; do
+    OLD_PID=$(curl -s "${KONG_ADMIN_URL}/routes/${GET_ROUTE_ID}/plugins" | \
+        grep -B2 "\"name\":\"${PNAME}\"" | grep '"id"' | head -1 | \
+        sed 's/.*"id":"\([^"]*\)".*/\1/')
+    [ -n "$OLD_PID" ] && curl -s -o /dev/null \
+        -X DELETE "${KONG_ADMIN_URL}/plugins/${OLD_PID}"
+done
+
+http_call POST "${KONG_ADMIN_URL}/routes/${GET_ROUTE_ID}/plugins" \
+    '{"name":"jwt","config":{"uri_param_names":[],"cookie_names":[],"header_names":["Authorization"],"claims_to_verify":["exp"],"key_claim_name":"iss","maximum_expiration":3600,"secret_is_base64":false,"run_on_preflight":false}}' \
+    "Plugin jwt (get-wallet)"
+
+http_call POST "${KONG_ADMIN_URL}/routes/${GET_ROUTE_ID}/plugins" \
+    '{"name":"rate-limiting","config":{"second":200,"minute":10000,"policy":"local","limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
+    "Plugin rate-limiting (get-wallet)"
+
+http_call POST "${KONG_ADMIN_URL}/routes/${GET_ROUTE_ID}/plugins" \
+    '{"name":"cors","config":{"origins":["*"],"methods":["GET","OPTIONS"],"headers":["Accept","Authorization","Content-Type","X-Requested-With","X-Correlation-ID"],"exposed_headers":["X-Correlation-ID"],"credentials":false,"max_age":3600,"preflight_continue":false}}' \
+    "Plugin cors (get-wallet)"
+
+# Plugins na Route update-wallet-balance-route
+PATCH_ROUTE_ID=$(curl -s "${KONG_ADMIN_URL}/services/wallet-service/routes/update-wallet-balance-route" | \
+    grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')
+echo "[kong] update-wallet-balance-route ID: ${PATCH_ROUTE_ID}"
+
+for PNAME in jwt rate-limiting cors; do
+    OLD_PID=$(curl -s "${KONG_ADMIN_URL}/routes/${PATCH_ROUTE_ID}/plugins" | \
+        grep -B2 "\"name\":\"${PNAME}\"" | grep '"id"' | head -1 | \
+        sed 's/.*"id":"\([^"]*\)".*/\1/')
+    [ -n "$OLD_PID" ] && curl -s -o /dev/null \
+        -X DELETE "${KONG_ADMIN_URL}/plugins/${OLD_PID}"
+done
+
+http_call POST "${KONG_ADMIN_URL}/routes/${PATCH_ROUTE_ID}/plugins" \
+    '{"name":"jwt","config":{"uri_param_names":[],"cookie_names":[],"header_names":["Authorization"],"claims_to_verify":["exp"],"key_claim_name":"iss","maximum_expiration":3600,"secret_is_base64":false,"run_on_preflight":false}}' \
+    "Plugin jwt (update-balance)"
+
+http_call POST "${KONG_ADMIN_URL}/routes/${PATCH_ROUTE_ID}/plugins" \
+    '{"name":"rate-limiting","config":{"second":50,"minute":2000,"policy":"local","limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
+    "Plugin rate-limiting (update-balance)"
+
+http_call POST "${KONG_ADMIN_URL}/routes/${PATCH_ROUTE_ID}/plugins" \
+    '{"name":"cors","config":{"origins":["*"],"methods":["PATCH","OPTIONS"],"headers":["Accept","Authorization","Content-Type","X-Requested-With","X-Correlation-ID"],"exposed_headers":["X-Correlation-ID"],"credentials":false,"max_age":3600,"preflight_continue":false}}' \
+    "Plugin cors (update-balance)"
+
+
 echo ""
 echo "--- [4/4] Consumer + JWT Credential (Keycloak JWKS) ---"
 

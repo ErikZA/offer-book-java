@@ -169,6 +169,60 @@ services:
             retries: 10
             start_period: 60s
 
+    # ================================================================================
+    # Kong 3.4 - API Gateway (dev)
+    # Modo DB-less (declarativo via kong-init.yml) para simplicidade no ambiente dev.
+    # Em produção usar mode=postgres (docker-compose.yml).
+    # Proxy: localhost:8000 | Admin API: localhost:8001
+    # ================================================================================
+    kong:
+        image: kong:3.4
+        container_name: vibranium-kong-dev
+        environment:
+            KONG_DATABASE: 'off'
+            KONG_DECLARATIVE_CONFIG: /etc/kong/kong.yml
+            KONG_ADMIN_LISTEN: 0.0.0.0:8001
+            KONG_PROXY_LISTEN: 0.0.0.0:8000
+            KONG_LOG_LEVEL: warn
+        ports:
+            - '8000:8000' # Proxy (entrada pública)
+            - '8001:8001' # Admin API (dev only)
+        volumes:
+            # Configuração declarativa com todos os serviços, rotas e plugins
+            - ./kong-init.yml:/etc/kong/kong.yml:ro
+        networks:
+            - vibranium-network-dev
+        healthcheck:
+            test: ['CMD-SHELL', 'curl -sf http://localhost:8001/status || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 10
+            start_period: 20s
+
+    # ================================================================================
+    # Kong-init: provisiona JWT consumer com a chave pública do Keycloak (dev)
+    # Roda após Kong e Keycloak estarem healthy — executa kong-setup.sh
+    # ================================================================================
+    kong-init:
+        image: alpine:3.19
+        container_name: vibranium-kong-init-dev
+        environment:
+            KONG_ADMIN_URL: http://kong:8001
+            KEYCLOAK_URL: http://keycloak:8080
+            KEYCLOAK_REALM: vibranium-realm
+            KONG_CONSUMER_NAME: keycloak-realm-consumer
+            KEYCLOAK_ISSUER: http://localhost:8180/realms/vibranium-realm
+        volumes:
+            - ./kong-setup.sh:/kong-setup.sh:ro
+        command: ['sh', '/kong-setup.sh']
+        depends_on:
+            kong:
+                condition: service_healthy
+            keycloak:
+                condition: service_healthy
+        networks:
+            - vibranium-network-dev
+
     # ================== Development Services with Hot Reload ==================
 
     order-service:
