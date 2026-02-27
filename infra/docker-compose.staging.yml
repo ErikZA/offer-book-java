@@ -1,0 +1,568 @@
+version: '3.8'
+
+services:
+  # ================== MongoDB (3 Replicas) ==================
+  mongodb-1:
+    image: mongo:7.0
+    container_name: vibranium-mongodb-1
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin123
+      MONGO_INITDB_DATABASE: vibranium_orders
+    volumes:
+      - mongodb_1_data:/data/db
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test -u admin -p admin123
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb-2:
+    image: mongo:7.0
+    container_name: vibranium-mongodb-2
+    ports:
+      - "27018:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin123
+      MONGO_INITDB_DATABASE: vibranium_orders
+    volumes:
+      - mongodb_2_data:/data/db
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test -u admin -p admin123
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb-3:
+    image: mongo:7.0
+    container_name: vibranium-mongodb-3
+    ports:
+      - "27019:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin123
+      MONGO_INITDB_DATABASE: vibranium_orders
+    volumes:
+      - mongodb_3_data:/data/db
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test -u admin -p admin123
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ================== PostgreSQL (3 Replicas) ==================
+  postgres-primary:
+    image: postgres:16-alpine
+    container_name: vibranium-postgres-primary
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: vibranium_wallet
+    volumes:
+      - postgres_primary_data:/var/lib/postgresql/data
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-replica-1:
+    image: postgres:16-alpine
+    container_name: vibranium-postgres-replica-1
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: vibranium_wallet
+    volumes:
+      - postgres_replica_1_data:/var/lib/postgresql/data
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+    depends_on:
+      - postgres-primary
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-replica-2:
+    image: postgres:16-alpine
+    container_name: vibranium-postgres-replica-2
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: vibranium_wallet
+    volumes:
+      - postgres_replica_2_data:/var/lib/postgresql/data
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+    depends_on:
+      - postgres-primary
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ================== Redis (3 Replicas via Cluster) ==================
+  redis-1:
+    image: redis:7-alpine
+    container_name: vibranium-redis-1
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379
+    volumes:
+      - redis_1_data:/data
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+
+  redis-2:
+    image: redis:7-alpine
+    container_name: vibranium-redis-2
+    ports:
+      - "6380:6379"
+    command: redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379
+    volumes:
+      - redis_2_data:/data
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+    depends_on:
+      - redis-1
+
+  redis-3:
+    image: redis:7-alpine
+    container_name: vibranium-redis-3
+    ports:
+      - "6381:6379"
+    command: redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379
+    volumes:
+      - redis_3_data:/data
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+    depends_on:
+      - redis-1
+
+  # ================== RabbitMQ (3 Replicas) ==================
+  rabbitmq-1:
+    image: rabbitmq:3.13-management-alpine
+    container_name: vibranium-rabbitmq-1
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_ERLANG_COOKIE: secret-cookie
+      RABBITMQ_NODENAME: rabbit@rabbitmq-1
+    volumes:
+      - rabbitmq_1_data:/var/lib/rabbitmq
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq-2:
+    image: rabbitmq:3.13-management-alpine
+    container_name: vibranium-rabbitmq-2
+    ports:
+      - "5673:5672"
+      - "15673:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_ERLANG_COOKIE: secret-cookie
+      RABBITMQ_NODENAME: rabbit@rabbitmq-2
+    volumes:
+      - rabbitmq_2_data:/var/lib/rabbitmq
+    networks:
+      - vibranium-staging-network
+    depends_on:
+      - rabbitmq-1
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq-3:
+    image: rabbitmq:3.13-management-alpine
+    container_name: vibranium-rabbitmq-3
+    ports:
+      - "5674:5672"
+      - "15674:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_ERLANG_COOKIE: secret-cookie
+      RABBITMQ_NODENAME: rabbit@rabbitmq-3
+    volumes:
+      - rabbitmq_3_data:/var/lib/rabbitmq
+    networks:
+      - vibranium-staging-network
+    depends_on:
+      - rabbitmq-1
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ================== Order Service (3 Replicas) ==================
+  order-service-1:
+    image: order-service:latest
+    container_name: vibranium-order-service-1
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_APPLICATION_NAME: order-service
+      SPRING_DATA_MONGODB_URI: mongodb://admin:admin123@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
+      SPRING_REDIS_HOST: redis-1
+      SPRING_REDIS_PORT: 6379
+      SPRING_RABBITMQ_HOST: rabbitmq-1
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: guest
+      SPRING_RABBITMQ_PASSWORD: guest
+    depends_on:
+      - mongodb-1
+      - redis-1
+      - rabbitmq-1
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  order-service-2:
+    image: order-service:latest
+    container_name: vibranium-order-service-2
+    ports:
+      - "8081:8080"
+    environment:
+      SPRING_APPLICATION_NAME: order-service
+      SPRING_DATA_MONGODB_URI: mongodb://admin:admin123@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
+      SPRING_REDIS_HOST: redis-2
+      SPRING_REDIS_PORT: 6379
+      SPRING_RABBITMQ_HOST: rabbitmq-2
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: guest
+      SPRING_RABBITMQ_PASSWORD: guest
+    depends_on:
+      - order-service-1
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  order-service-3:
+    image: order-service:latest
+    container_name: vibranium-order-service-3
+    ports:
+      - "8082:8080"
+    environment:
+      SPRING_APPLICATION_NAME: order-service
+      SPRING_DATA_MONGODB_URI: mongodb://admin:admin123@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
+      SPRING_REDIS_HOST: redis-3
+      SPRING_REDIS_PORT: 6379
+      SPRING_RABBITMQ_HOST: rabbitmq-3
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: guest
+      SPRING_RABBITMQ_PASSWORD: guest
+    depends_on:
+      - order-service-1
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ================== Wallet Service (3 Replicas) ==================
+  wallet-service-1:
+    image: wallet-service:latest
+    container_name: vibranium-wallet-service-1
+    ports:
+      - "8083:8081"
+    environment:
+      SPRING_APPLICATION_NAME: wallet-service
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-primary:5432/vibranium_wallet
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_RABBITMQ_HOST: rabbitmq-1
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: guest
+      SPRING_RABBITMQ_PASSWORD: guest
+    depends_on:
+      - postgres-primary
+      - rabbitmq-1
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  wallet-service-2:
+    image: wallet-service:latest
+    container_name: vibranium-wallet-service-2
+    ports:
+      - "8084:8081"
+    environment:
+      SPRING_APPLICATION_NAME: wallet-service
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-replica-1:5432/vibranium_wallet
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_RABBITMQ_HOST: rabbitmq-2
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: guest
+      SPRING_RABBITMQ_PASSWORD: guest
+    depends_on:
+      - wallet-service-1
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  wallet-service-3:
+    image: wallet-service:latest
+    container_name: vibranium-wallet-service-3
+    ports:
+      - "8085:8081"
+    environment:
+      SPRING_APPLICATION_NAME: wallet-service
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-replica-2:5432/vibranium_wallet
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_RABBITMQ_HOST: rabbitmq-3
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: guest
+      SPRING_RABBITMQ_PASSWORD: guest
+    depends_on:
+      - wallet-service-1
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          cpus: '0.25'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ================== Kong + Konga ==================
+  kong-database:
+    image: postgres:16-alpine
+    container_name: kong-db-staging
+    environment:
+      POSTGRES_USER: kong
+      POSTGRES_PASSWORD: kong
+      POSTGRES_DB: kong
+    volumes:
+      - kong_db_staging_data:/var/lib/postgresql/data
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+
+  kong-migration:
+    image: kong:3.5-alpine
+    container_name: kong-migration-staging
+    command: kong migrations bootstrap -v
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_PORT: 5432
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kong
+    depends_on:
+      - kong-database
+    networks:
+      - vibranium-staging-network
+
+  kong:
+    image: kong:3.5-alpine
+    container_name: vibranium-kong-staging
+    ports:
+      - "8000:8000"
+      - "8443:8443"
+      - "8001:8001"
+      - "8444:8444"
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+    depends_on:
+      - kong-migration
+    networks:
+      - vibranium-staging-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+
+networks:
+  vibranium-staging-network:
+    driver: bridge
+
+volumes:
+  mongodb_1_data:
+  mongodb_2_data:
+  mongodb_3_data:
+  postgres_primary_data:
+  postgres_replica_1_data:
+  postgres_replica_2_data:
+  redis_1_data:
+  redis_2_data:
+  redis_3_data:
+  rabbitmq_1_data:
+  rabbitmq_2_data:
+  rabbitmq_3_data:
+  kong_db_staging_data:

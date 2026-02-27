@@ -1,0 +1,201 @@
+version: '3.8'
+
+services:
+  # ================== MongoDB (Order Service) ==================
+  mongodb:
+    image: mongo:7.0
+    container_name: vibranium-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin123
+      MONGO_INITDB_DATABASE: vibranium_orders
+    volumes:
+      - mongodb_data:/data/db
+      - ./init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js
+    networks:
+      - vibranium-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test -u admin -p admin123
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ================== PostgreSQL (Wallet Service) ==================
+  postgres:
+    image: postgres:16-alpine
+    container_name: vibranium-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: vibranium_wallet
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-postgres.sql:/docker-entrypoint-initdb.d/01-init.sql
+    networks:
+      - vibranium-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ================== Redis (Order Matching Engine) ==================
+  redis:
+    image: redis:7-alpine
+    container_name: vibranium-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - vibranium-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ================== RabbitMQ (Event Bus) ==================
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: vibranium-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - vibranium-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ================== Keycloak (Auth Server) ==================
+  keycloak:
+    image: quay.io/keycloak/keycloak:23.0
+    container_name: vibranium-keycloak
+    ports:
+      - "8180:8080"
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin123
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/vibranium_wallet
+      KC_DB_USERNAME: postgres
+      KC_DB_PASSWORD: postgres
+      KC_PROXY: edge
+      KC_HTTP_ENABLED: "true"
+    command: start-dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - vibranium-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ================== Kong API Gateway ==================
+  kong-database:
+    image: postgres:16-alpine
+    container_name: kong-db
+    environment:
+      POSTGRES_USER: kong
+      POSTGRES_PASSWORD: kong
+      POSTGRES_DB: kong
+    volumes:
+      - kong_db_data:/var/lib/postgresql/data
+    networks:
+      - vibranium-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kong"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kong-migration:
+    image: kong:3.5-alpine
+    container_name: kong-migration
+    command: kong migrations bootstrap -v
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_PORT: 5432
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kong
+    depends_on:
+      kong-database:
+        condition: service_healthy
+    networks:
+      - vibranium-network
+    restart: on-failure
+
+  kong:
+    image: kong:3.5-alpine
+    container_name: vibranium-kong
+    ports:
+      - "8000:8000"    # Proxy (client requests)
+      - "8443:8443"    # Proxy SSL
+      - "8001:8001"    # Admin API
+      - "8444:8444"    # Admin API SSL
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_PORT: 5432
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kong
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_LOG_LEVEL: notice
+    depends_on:
+      - kong-migration
+    networks:
+      - vibranium-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  konga:
+    image: pantsel/konga:latest
+    container_name: vibranium-konga
+    ports:
+      - "1337:1337"
+    environment:
+      NODE_ENV: production
+      DB_ADAPTER: postgres
+      DB_HOST: kong-database
+      DB_USER: kong
+      DB_PASSWORD: kong
+      DB_DATABASE: konga_db
+      DB_PORT: 5432
+    depends_on:
+      - kong
+    networks:
+      - vibranium-network
+
+networks:
+  vibranium-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  kong_db_data:
