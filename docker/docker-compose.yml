@@ -47,8 +47,13 @@ services:
             POSTGRES_PASSWORD: postgres123 # TODO: Change in production
             POSTGRES_DB: vibranium_infra
 
-        ports:
-            - '5432:5432'
+        # Porta 5432 NÃO exposta ao host intencionalmente:
+        # Kong e Keycloak acessam via rede Docker interna (hostname: postgresql).
+        # Expor a porta causaria conflito com o postgres do docker-compose.dev.yml
+        # (vibranium_wallet). Para acesso direto ao banco de infra use:
+        #   docker exec -it vibranium-postgresql psql -U postgres -d vibranium_infra
+        # ports:
+        #     - '5432:5432'
 
         volumes:
             # Inicialização SQL com migrations

@@ -33,13 +33,17 @@ services:
             POSTGRES_DB: vibranium_wallet
         volumes:
             - postgres_data:/var/lib/postgresql/data
+            # Script de inicialização: habilita extensões necessárias para o wallet-service
+            - ../apps/wallet-service/docker/init-wallet-db.sql:/docker-entrypoint-initdb.d/01-init-wallet.sql:ro
         networks:
             - vibranium-network-dev
         healthcheck:
-            test: ['CMD-SHELL', 'pg_isready -U postgres']
-            interval: 10s
-            timeout: 5s
-            retries: 5
+            # Valida que o banco vibranium_wallet está acessível (não só o processo)
+            test: ['CMD-SHELL', 'pg_isready -U postgres -d vibranium_wallet && psql -U postgres -d vibranium_wallet -c "SELECT 1" -q --no-align --tuples-only']
+            interval: 5s
+            timeout: 3s
+            retries: 10
+            start_period: 10s
 
     redis:
         image: redis:7-alpine
@@ -214,6 +218,14 @@ services:
             SPRING_APPLICATION_NAME: wallet-service
             SPRING_PROFILES_ACTIVE: dev
             JAVA_OPTS: '-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5006'
+            # Sobrescreve as credenciais do application.yaml para o ambiente Docker.
+            # O postgres do dev compose usa user/password simples (postgres/postgres).
+            SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/vibranium_wallet
+            SPRING_DATASOURCE_USERNAME: postgres
+            SPRING_DATASOURCE_PASSWORD: postgres
+            # RabbitMQ via container dev (não o do infra compose)
+            SPRING_RABBITMQ_HOST: rabbitmq
+            SPRING_RABBITMQ_PORT: '5672'
         volumes:
             - ../apps/wallet-service:/app/apps/wallet-service
             - ../libs:/app/libs
@@ -222,9 +234,15 @@ services:
         working_dir: /app
         command: mvn spring-boot:run -pl apps/wallet-service -Dspring-boot.run.fork=false
         depends_on:
-            - postgres
-            - rabbitmq
-            - keycloak
+            # Aguarda o postgres estar healthy (banco vibranium_wallet acessível)
+            # antes de subir o wallet-service. O Flyway executa as migrations
+            # no startup da aplicação Spring Boot.
+            postgres:
+                condition: service_healthy
+            rabbitmq:
+                condition: service_healthy
+            keycloak:
+                condition: service_healthy
         networks:
             - vibranium-network-dev
         healthcheck:

@@ -1,0 +1,207 @@
+package com.vibranium.walletservice.integration;
+
+import com.vibranium.contracts.commands.wallet.SettleFundsCommand;
+import com.vibranium.walletservice.AbstractIntegrationTest;
+import com.vibranium.walletservice.domain.model.Wallet;
+import com.vibranium.walletservice.domain.repository.OutboxMessageRepository;
+import com.vibranium.walletservice.domain.repository.WalletRepository;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.core.MessageProperties;
+import org.springframework.beans.factory.annotation.Autowired;
+
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
+/**
+ * FASE RED — Testa a liquidação de fundos após um match executado.
+ *
+ * <p>O {@code SettleFundsCommand} é disparado pelo {@code order-service} após o motor
+ * de match cruzar uma compra com uma venda. O wallet-service deve:
+ * <ul>
+ *   <li>Remover BRL bloqueado do comprador e adicionar VIB disponível.</li>
+ *   <li>Remover VIB bloqueado do vendedor e adicionar BRL disponível.</li>
+ *   <li>Salvar {@code FundsSettledEvent} no Outbox na mesma transação.</li>
+ * </ul>
+ *
+ * <p><b>RED:</b> Falharão até a Fase Green.</p>
+ */
+@DisplayName("[RED] WalletSettleFunds - Liquidação pós-match com atomicidade garantida")
+class WalletSettleFundsIntegrationTest extends AbstractIntegrationTest {
+
+    private static final String WALLET_COMMANDS_EXCHANGE = "wallet.commands";
+    private static final String SETTLE_FUNDS_ROUTING_KEY = "wallet.command.settle-funds";
+
+    @Autowired
+    private WalletRepository walletRepository;
+
+    @Autowired
+    private OutboxMessageRepository outboxMessageRepository;
+
+    private Wallet buyerWallet;
+    private Wallet sellerWallet;
+    private UUID buyOrderId;
+    private UUID sellOrderId;
+
+    @BeforeEach
+    void setupWallets() {
+        // Comprador: tem R$200 bloqueados aguardando match
+        buyerWallet = Wallet.create(UUID.randomUUID(), BigDecimal.ZERO, BigDecimal.ZERO);
+        buyerWallet.setBrlAvailable(BigDecimal.ZERO);
+        buyerWallet.setBrlLocked(new BigDecimal("200.00"));
+        buyerWallet = walletRepository.save(buyerWallet);
+
+        // Vendedor: tem 10 VIB bloqueados aguardando match
+        sellerWallet = Wallet.create(UUID.randomUUID(), BigDecimal.ZERO, BigDecimal.ZERO);
+        sellerWallet.setVibLocked(new BigDecimal("10"));
+        sellerWallet.setVibAvailable(BigDecimal.ZERO);
+        sellerWallet = walletRepository.save(sellerWallet);
+
+        buyOrderId = UUID.randomUUID();
+        sellOrderId = UUID.randomUUID();
+
+        outboxMessageRepository.deleteAll();
+    }
+
+    // -------------------------------------------------------------------------
+    // Happy Path
+    // -------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("Liquidação bem-sucedida: comprador recebe VIB, vendedor recebe BRL")
+    void shouldSettleFundsCorrectlyForBothParties() throws Exception {
+        // Arrange — match de 10 VIB a R$20 cada (total R$200)
+        SettleFundsCommand command = new SettleFundsCommand(
+                UUID.randomUUID(),
+                UUID.randomUUID(),       // matchId
+                buyOrderId,
+                sellOrderId,
+                buyerWallet.getId(),
+                sellerWallet.getId(),
+                new BigDecimal("20.00"), // matchPrice
+                new BigDecimal("10")     // matchAmount (VIB)
+        );
+
+        sendCommand(command, UUID.randomUUID().toString());
+
+        // Assert — comprador: BRL locked decrementado, VIB available incrementado
+        await()
+                .atMost(10, TimeUnit.SECONDS)
+                .pollInterval(500, TimeUnit.MILLISECONDS)
+                .untilAsserted(() -> {
+                    var buyer = walletRepository.findById(buyerWallet.getId()).orElseThrow();
+                    assertThat(buyer.getBrlLocked()).isEqualByComparingTo("0.00");
+                    assertThat(buyer.getVibAvailable()).isEqualByComparingTo("10");
+                });
+
+        // Assert — vendedor: VIB locked decrementado, BRL available incrementado
+        await()
+                .atMost(10, TimeUnit.SECONDS)
+                .pollInterval(500, TimeUnit.MILLISECONDS)
+                .untilAsserted(() -> {
+                    var seller = walletRepository.findById(sellerWallet.getId()).orElseThrow();
+                    assertThat(seller.getVibLocked()).isEqualByComparingTo("0");
+                    assertThat(seller.getBrlAvailable()).isEqualByComparingTo("200.00");
+                });
+    }
+
+    @Test
+    @DisplayName("Deve gravar FundsSettledEvent no Outbox na mesma transação da liquidação")
+    void shouldPersistFundsSettledEventInOutbox() throws Exception {
+        UUID matchId = UUID.randomUUID();
+        SettleFundsCommand command = new SettleFundsCommand(
+                UUID.randomUUID(), matchId, buyOrderId, sellOrderId,
+                buyerWallet.getId(), sellerWallet.getId(),
+                new BigDecimal("20.00"), new BigDecimal("10")
+        );
+
+        sendCommand(command, UUID.randomUUID().toString());
+
+        await()
+                .atMost(10, TimeUnit.SECONDS)
+                .pollInterval(500, TimeUnit.MILLISECONDS)
+                .untilAsserted(() -> {
+                    var events = outboxMessageRepository.findAll();
+                    assertThat(events)
+                            .anyMatch(e -> e.getEventType().equals("FundsSettledEvent"));
+                });
+    }
+
+    // -------------------------------------------------------------------------
+    // Cenário de Falha
+    // -------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("Liquidação com carteira compradora inexistente deve gerar FundsSettlementFailedEvent")
+    void shouldGenerateFailedEventWhenBuyerWalletNotFound() throws Exception {
+        // Arrange — buyerWalletId inválido
+        SettleFundsCommand command = new SettleFundsCommand(
+                UUID.randomUUID(), UUID.randomUUID(), buyOrderId, sellOrderId,
+                UUID.randomUUID(), // walletId inexistente
+                sellerWallet.getId(),
+                new BigDecimal("20.00"), new BigDecimal("10")
+        );
+
+        sendCommand(command, UUID.randomUUID().toString());
+
+        await()
+                .atMost(10, TimeUnit.SECONDS)
+                .pollInterval(500, TimeUnit.MILLISECONDS)
+                .untilAsserted(() -> {
+                    var events = outboxMessageRepository.findAll();
+                    assertThat(events)
+                            .anyMatch(e -> e.getEventType().equals("FundsSettlementFailedEvent"));
+                });
+    }
+
+    @Test
+    @DisplayName("Liquidação com saldo bloqueado insuficiente (inconsistência) deve gerar falha e não alterar saldos")
+    void shouldFailAndNotAlterBalancesWhenLockedFundsAreInsufficient() throws Exception {
+        // Arrange — comprador tem apenas R$50 bloqueados, mas o match é de R$200
+        buyerWallet.setBrlLocked(new BigDecimal("50.00"));
+        walletRepository.save(buyerWallet);
+
+        SettleFundsCommand command = new SettleFundsCommand(
+                UUID.randomUUID(), UUID.randomUUID(), buyOrderId, sellOrderId,
+                buyerWallet.getId(), sellerWallet.getId(),
+                new BigDecimal("20.00"), new BigDecimal("10") // total = $200
+        );
+
+        sendCommand(command, UUID.randomUUID().toString());
+
+        // Assert — saldo do comprador permanece inalterado
+        await()
+                .atMost(10, TimeUnit.SECONDS)
+                .pollInterval(500, TimeUnit.MILLISECONDS)
+                .untilAsserted(() -> {
+                    var buyer = walletRepository.findById(buyerWallet.getId()).orElseThrow();
+                    assertThat(buyer.getBrlLocked()).isEqualByComparingTo("50.00");
+                    assertThat(buyer.getVibAvailable()).isEqualByComparingTo("0");
+
+                    var events = outboxMessageRepository.findAll();
+                    assertThat(events)
+                            .anyMatch(e -> e.getEventType().equals("FundsSettlementFailedEvent"));
+                });
+    }
+
+    // -------------------------------------------------------------------------
+    // Helper
+    // -------------------------------------------------------------------------
+
+    private void sendCommand(SettleFundsCommand command, String messageId) throws Exception {
+        String json = objectMapper.writeValueAsString(command);
+        MessageProperties props = new MessageProperties();
+        props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
+        props.setMessageId(messageId);
+        props.setType(SettleFundsCommand.class.getName());
+        Message message = new Message(json.getBytes(StandardCharsets.UTF_8), props);
+        rabbitTemplate.send(WALLET_COMMANDS_EXCHANGE, SETTLE_FUNDS_ROUTING_KEY, message);
+    }
+}

@@ -5,14 +5,19 @@ spring:
         active: dev
 
     # PostgreSQL
+    # Credenciais via variáveis de ambiente com fallback para desenvolvimento local.
+    # - Rodando direto na IDE (sem Docker): conecta ao infra postgres (porta 5432, senha postgres123)
+    # - Rodando via docker-compose.dev.yml: o compose injeta SPRING_DATASOURCE_PASSWORD=postgres
     datasource:
-        url: jdbc:postgresql://localhost:5432/vibranium_wallet
-        username: postgres
-        password: postgres
+        url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/vibranium_wallet}
+        username: ${SPRING_DATASOURCE_USERNAME:postgres}
+        password: ${SPRING_DATASOURCE_PASSWORD:postgres123}
         driver-class-name: org.postgresql.Driver
 
     jpa:
         hibernate:
+            # validate: Hibernate verifica que as entidades batem com o schema criado pelo Flyway.
+            # Nunca use create/update em produção — o schema é versionado via migrations.
             ddl-auto: validate
         properties:
             hibernate:
@@ -22,12 +27,22 @@ spring:
                 order_inserts: true
                 order_updates: true
 
+    # Flyway — gerencia o versionamento do schema do banco de dados.
+    # As migrations em classpath:db/migration são executadas na ordem V1, V2, V3...
+    # antes do Hibernate validar as entidades. Garante que o banco está sempre atualizado.
+    flyway:
+        enabled: true
+        locations: classpath:db/migration
+        baseline-on-migrate: false
+        validate-on-migrate: true
+        out-of-order: false
+
     # RabbitMQ
     rabbitmq:
-        host: localhost
-        port: 5672
-        username: guest
-        password: guest
+        host: ${SPRING_RABBITMQ_HOST:localhost}
+        port: ${SPRING_RABBITMQ_PORT:5672}
+        username: ${SPRING_RABBITMQ_USERNAME:guest}
+        password: ${SPRING_RABBITMQ_PASSWORD:guest}
         listener:
             simple:
                 acknowledge-mode: manual
