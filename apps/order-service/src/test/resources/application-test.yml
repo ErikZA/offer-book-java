@@ -29,7 +29,7 @@ spring:
     rabbitmq:
         listener:
             simple:
-                acknowledge-mode: auto   # AUTO em testes para simplificar setup
+                acknowledge-mode: auto # AUTO em testes para simplificar setup
                 prefetch: 1
 
     # Security: desabilita o resource server JWT em testes (sem Keycloak real)
@@ -62,7 +62,7 @@ app:
             funds-failed: wallet.funds.failed
             match-executed: order.match.executed
             book-added: order.book.added
-            keycloak-register: "KK.EVENT.CLIENT.orderbook-realm.REGISTER"
+            keycloak-register: 'KK.EVENT.CLIENT.orderbook-realm.REGISTER'
     redis:
         keys:
             asks: vibranium:asks
