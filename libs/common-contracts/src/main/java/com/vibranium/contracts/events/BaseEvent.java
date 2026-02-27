@@ -1,55 +1,32 @@
 package com.vibranium.contracts.events;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-
 import java.io.Serializable;
 import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Classe base para todos os eventos do domínio.
- * Garante consistência e rastreabilidade dos eventos.
+ * @deprecated Substituída pela interface {@link DomainEvent} + {@code record}s imutáveis.
+ * Esta classe abstrata foi mantida apenas para compatibilidade durante a transição.
+ * Utilize os eventos em {@code com.vibranium.contracts.events.wallet} e
+ * {@code com.vibranium.contracts.events.order} que implementam {@link DomainEvent}.
  */
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
+@Deprecated(since = "1.0.0", forRemoval = true)
 public abstract class BaseEvent implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    /**
-     * ID único do evento (idempotência)
-     */
-    @JsonProperty("event_id")
     private String eventId = UUID.randomUUID().toString();
-
-    /**
-     * Timestamp de criação do evento
-     */
-    @JsonProperty("timestamp")
     private Instant timestamp = Instant.now();
-
-    /**
-     * Versão do contrato (versionamento de eventos)
-     */
-    @JsonProperty("version")
     private Integer version = 1;
+    private String correlationId;
 
-    /**
-     * Tipo de evento (usar nome da classe)
-     */
-    @JsonProperty("event_type")
     public String getEventType() {
         return this.getClass().getSimpleName();
     }
 
-    /**
-     * Correlação com operação ou usuário
-     */
-    @JsonProperty("correlation_id")
-    private String correlationId;
-
+    public String getEventId()        { return eventId; }
+    public Instant getTimestamp()     { return timestamp; }
+    public Integer getVersion()       { return version; }
+    public String getCorrelationId()  { return correlationId; }
 }
+

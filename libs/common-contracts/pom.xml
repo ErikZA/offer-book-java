@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
                              http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
@@ -14,21 +14,87 @@
 
     <artifactId>common-contracts</artifactId>
     <name>Common Contracts</name>
-    <description>Contratos compartilhados</description>
+    <description>
+        Biblioteca de contratos compartilhados: Comandos e Eventos de Domínio
+        que trafegam pelo RabbitMQ entre order-service e wallet-service.
+        Framework-agnostic: sem dependências de JPA, Spring ou mensageria.
+    </description>
 
     <dependencies>
-        <!-- Jackson for JSON -->
+
+        <!-- =====================================================
+             RUNTIME: Jackson — serialização/deserialização JSON
+             para mensagens que trafegam no RabbitMQ.
+        ====================================================== -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
         </dependency>
 
-        <!-- Lombok -->
+        <!-- Suporte a tipos java.time (Instant, LocalDate) no Jackson -->
         <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <scope>provided</scope>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
         </dependency>
+
+        <!-- =====================================================
+             RUNTIME: Jakarta Validation API — apenas as anotações
+             (@NotNull, @Positive, etc.). Sem provider em runtime;
+             o provider (Hibernate Validator) entra só no escopo test.
+        ====================================================== -->
+        <dependency>
+            <groupId>jakarta.validation</groupId>
+            <artifactId>jakarta.validation-api</artifactId>
+        </dependency>
+
+        <!-- =====================================================
+             TEST: JUnit 5 — motor de testes
+        ====================================================== -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- TEST: AssertJ — asserções fluentes -->
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- TEST: Mockito — mocks para testes de integração intra-lib -->
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- TEST: Hibernate Validator — provider JSR-380 para executar
+             validações de constraints nos testes sem Spring -->
+        <dependency>
+            <groupId>org.hibernate.validator</groupId>
+            <artifactId>hibernate-validator</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- TEST: EL API necessário pelo Hibernate Validator -->
+        <dependency>
+            <groupId>org.glassfish</groupId>
+            <artifactId>jakarta.el</artifactId>
+            <version>4.0.2</version>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
 
 </project>
