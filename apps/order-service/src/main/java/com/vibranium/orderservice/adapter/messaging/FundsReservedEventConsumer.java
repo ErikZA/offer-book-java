@@ -58,9 +58,13 @@ public class FundsReservedEventConsumer {
     /**
      * Recebe o evento de fundos reservados e tenta executar o match.
      *
+     * <p>Concurrency {@code 5} no listener permite processar múltiplos eventos
+     * em paralelo, aumentando o throughput para o cenário de 500 ordens
+     * simultâneas. Cada consumer tem sua própria transação JPA (@Transactional).</p>
+     *
      * @param event Evento publicado pelo wallet-service confirmando o bloqueio.
      */
-    @RabbitListener(queues = RabbitMQConfig.QUEUE_FUNDS_RESERVED)
+    @RabbitListener(queues = RabbitMQConfig.QUEUE_FUNDS_RESERVED, concurrency = "5")
     @Transactional
     public void onFundsReserved(FundsReservedEvent event) {
         logger.info("Fundos reservados — iniciando match: correlationId={} orderId={}",

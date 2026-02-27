@@ -78,11 +78,13 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- TEST: EL API necessário pelo Hibernate Validator -->
+        <!-- TEST: EL implementation necessária pelo Hibernate Validator 8.x (Spring Boot 3.x).
+             org.glassfish:jakarta.el foi descontinuado; o substituto oficial é
+             org.glassfish.expressly:expressly (Jakarta EE 10 / EL 5.0). -->
         <dependency>
-            <groupId>org.glassfish</groupId>
-            <artifactId>jakarta.el</artifactId>
-            <version>4.0.2</version>
+            <groupId>org.glassfish.expressly</groupId>
+            <artifactId>expressly</artifactId>
+            <version>5.0.0</version>
             <scope>test</scope>
         </dependency>
 

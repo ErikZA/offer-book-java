@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.support.AmqpHeaders;
 import org.springframework.messaging.handler.annotation.Header;
+import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 
 /**
@@ -66,12 +67,27 @@ public class KeycloakEventConsumer {
      * bloqueio da fila. A mensagem será NAcked e roteada para a DLQ após
      * esgotar as tentativas configuradas no Spring Retry.</p>
      *
+     * <p>O parâmetro é {@code byte[]} (e não {@code String}) para que o
+     * {@code Jackson2JsonMessageConverter} global passe os bytes brutos sem
+     * tentar desserializar o JSON Object como scalar String — o que causaria
+     * {@code MismatchedInputException}. A conversão para String é feita
+     * manualmente com UTF-8.</p>
+     *
+     * <p>O parâmetro é {@code String} porque o teste envia via
+     * {@code rabbitTemplate.convertAndSend(exchange, rk, stringPayload)}: o
+     * {@code Jackson2JsonMessageConverter} serializa a String como um JSON string
+     * value {@code "\"...\""} e a desserializa de volta corretamente no receptor.
+     * Payloads malformados enviados via {@code rabbitTemplate.send()} com bytes
+     * brutos falham na conversão ANTES de chegar ao listener — gerando
+     * {@code ListenerExecutionFailedException} que o Spring Retry trata e após
+     * esgotamento roteia para a DLQ.</p>
+     *
      * @param payload       JSON bruto publicado pelo plugin aznamier.
      * @param routingKey    Routing key da mensagem (usada para log/debug).
      */
     @RabbitListener(queues = RabbitMQConfig.QUEUE_KEYCLOAK_REG)
     public void onKeycloakEvent(
-            String payload,
+            @Payload String payload,
             @Header(AmqpHeaders.RECEIVED_ROUTING_KEY) String routingKey) {
 
         logger.debug("Evento Keycloak recebido: routingKey={}", routingKey);
@@ -112,9 +128,18 @@ public class KeycloakEventConsumer {
             return;
         }
 
-        String userId = tree.path("userId").asText("");
+        // Usa isNull()/isMissingNode() para distinguir JSON null de string vazia.
+        // asText("") retorna "null" (literalmente) para NullNode — não o default —
+        // portanto a verificação de isBlank() sozinha não é suficiente.
+        JsonNode userIdNode = tree.path("userId");
+        if (userIdNode.isNull() || userIdNode.isMissingNode()) {
+            logger.warn("Evento REGISTER sem userId (null/ausente) — descartando: payload={}",
+                    tree);
+            return;
+        }
+        String userId = userIdNode.asText("");
         if (userId.isBlank()) {
-            logger.warn("Evento REGISTER sem userId — descartando: payload={}", tree);
+            logger.warn("Evento REGISTER sem userId (vazio) — descartando: payload={}", tree);
             return;
         }
 

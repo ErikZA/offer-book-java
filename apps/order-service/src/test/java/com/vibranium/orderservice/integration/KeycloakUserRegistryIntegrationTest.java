@@ -1,6 +1,7 @@
 package com.vibranium.orderservice.integration;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vibranium.orderservice.config.RabbitMQConfig;
 import com.vibranium.orderservice.domain.model.UserRegistry;                     // [RED] classe ainda não existe
 import com.vibranium.orderservice.domain.repository.UserRegistryRepository;       // [RED] classe ainda não existe
 import org.junit.jupiter.api.BeforeEach;
@@ -56,8 +57,18 @@ class KeycloakUserRegistryIntegrationTest extends AbstractIntegrationTest {
     private ObjectMapper objectMapper;
 
     @BeforeEach
-    void cleanDatabase() {
-        // Garante isolamento entre testes: limpa o registry antes de cada teste
+    void cleanDatabase() throws InterruptedException {
+        // 1. Drena mensagens pendentes na fila (leftover de testes anteriores).
+        //    Com acknowledge-mode=auto, mensagens já entregues ao consumer
+        //    são auto-acked; mas mensagens ainda na fila seriam processadas
+        //    DEPOIS do deleteAll, criando registros “stale” que quebram
+        //    os asserts dos testes subsequentes.
+        while (rabbitTemplate.receive(RabbitMQConfig.QUEUE_KEYCLOAK_REG, 200) != null) {
+            // descarta mensagens residuais
+        }
+        // 2. Aguarda consumidores em-voo (já com a mensagem, antes do ack) concluírem.
+        Thread.sleep(300);
+        // 3. Limpa o banco com estado consistente.
         userRegistryRepository.deleteAll();
     }
 

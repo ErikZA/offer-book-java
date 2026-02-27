@@ -11,7 +11,6 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.containers.RabbitMQContainer;
-import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
@@ -29,21 +28,34 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 public abstract class AbstractIntegrationTest {
 
     // ---------------------------------------------------------------------------
-    // Containers estáticos — iniciados uma vez por JVM, compartilhados entre testes
+    // Singleton Containers — iniciados UMA VEZ por JVM, compartilhados entre classes
     // ---------------------------------------------------------------------------
+    // Padrão Singleton Container: campos static sem @Container + bloco static com .start().
+    // Isso garante que o mesmo container (mesma porta) seja reutilizado pelo
+    // ApplicationContext cacheado do Spring TestContext, evitando ShutdownSignalException
+    // causada por reconexão a um broker que foi parado/reiniciado entre classes de teste.
+    //
+    // .withReuse(true) evita restart de containers entre runs locais (requer
+    // ~/.testcontainers.properties com testcontainers.reuse.enable=true).
 
     /** PostgreSQL 15 com o banco de dados do wallet-service. */
-    @Container
     static final PostgreSQLContainer<?> POSTGRES =
             new PostgreSQLContainer<>("postgres:15-alpine")
                     .withDatabaseName("vibranium_wallet_test")
                     .withUsername("test")
-                    .withPassword("test");
+                    .withPassword("test")
+                    .withReuse(true);
 
-    /** RabbitMQ com Management UI (imagem oficial com tag management). */
-    @Container
+    /** RabbitMQ 3.13 com Management UI. */
     static final RabbitMQContainer RABBIT =
-            new RabbitMQContainer("rabbitmq:3.12-management-alpine");
+            new RabbitMQContainer("rabbitmq:3.13-management-alpine")
+                    .withReuse(true);
+
+    // Inicia os containers antes de qualquer subclasse ser carregada
+    static {
+        POSTGRES.start();
+        RABBIT.start();
+    }
 
     // ---------------------------------------------------------------------------
     // Injeção de propriedades dinâmicas no contexto Spring
@@ -61,8 +73,8 @@ public abstract class AbstractIntegrationTest {
 
         registry.add("spring.rabbitmq.host", RABBIT::getHost);
         registry.add("spring.rabbitmq.port", RABBIT::getAmqpPort);
-        registry.add("spring.rabbitmq.username", () -> "guest");
-        registry.add("spring.rabbitmq.password", () -> "guest");
+        registry.add("spring.rabbitmq.username", RABBIT::getAdminUsername);
+        registry.add("spring.rabbitmq.password", RABBIT::getAdminPassword);
     }
 
     // ---------------------------------------------------------------------------

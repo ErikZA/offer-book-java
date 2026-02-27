@@ -22,6 +22,10 @@
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
+        <!-- Spring Framework 6.1+ requer -parameters para detecção de nomes de parâmetro via
+             reflection em @PathVariable, @RequestParam, @RequestHeader sem nome explícito.
+             Sem este flag, Spring MVC lança IllegalArgumentException: "Name for argument not specified". -->
+        <maven.compiler.parameters>true</maven.compiler.parameters>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <!-- Spring Boot 3.4.13: inclui fix Testcontainers + Docker moderno (issue #48104)
              compatível com Java 21 e Testcontainers 1.21.4. -->
@@ -63,6 +67,7 @@
                             <include>**/*Tests.java</include>
                         </includes>
                         <testFailureIgnore>false</testFailureIgnore>
+                        <argLine>-XX:+EnableDynamicAgentLoading -Xshare:off</argLine>
                     </configuration>
                 </plugin>
 
@@ -76,6 +81,8 @@
                             <include>**/*IT.java</include>
                             <include>**/*ITCase.java</include>
                         </includes>
+                        <!-- Mesmo argLine do Surefire: silencia warnings ByteBuddy/Mockito no JDK 21 -->
+                        <argLine>-XX:+EnableDynamicAgentLoading -Xshare:off</argLine>
                     </configuration>
                     <executions>
                         <execution>

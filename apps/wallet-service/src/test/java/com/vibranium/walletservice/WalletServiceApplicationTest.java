@@ -2,16 +2,19 @@ package com.vibranium.walletservice;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Teste simples para verificar se a aplicação Spring Boot inicia corretamente.
+ * Teste de sanidade: verifica se o contexto Spring Boot inicializa corretamente.
+ *
+ * <p>Estende {@link AbstractIntegrationTest} para reutilizar os containers
+ * Testcontainers (PostgreSQL + RabbitMQ) já gerenciados na classe base,
+ * evitando tentativas de conexão em localhost:5432 que causariam falha
+ * quando não há banco externo disponível no ambiente de CI.
  */
-@SpringBootTest
 @DisplayName("WalletServiceApplicationTest - Testa inicialização da aplicação")
-class WalletServiceApplicationTest {
+class WalletServiceApplicationTest extends AbstractIntegrationTest {
 
     @Test
     @DisplayName("contexto da aplicação deve iniciar sem erros")

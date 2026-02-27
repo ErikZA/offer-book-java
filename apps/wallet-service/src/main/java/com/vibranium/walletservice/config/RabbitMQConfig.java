@@ -1,12 +1,8 @@
 package com.vibranium.walletservice.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.springframework.amqp.core.*;
-import org.springframework.amqp.rabbit.connection.ConnectionFactory;
-import org.springframework.amqp.rabbit.core.RabbitAdmin;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -79,8 +75,9 @@ public class RabbitMQConfig {
      * O wildcard {@code KK.EVENT.CLIENT.#} captura todos os eventos de todos os realms.
      */
     @Bean
-    public Binding keycloakEventsBinding(Queue walletKeycloakEventsQueue,
-                                         TopicExchange keycloakEventsExchange) {
+    public Binding keycloakEventsBinding(
+            @Qualifier("walletKeycloakEventsQueue") Queue walletKeycloakEventsQueue,
+            @Qualifier("keycloakEventsExchange")    TopicExchange keycloakEventsExchange) {
         return BindingBuilder
                 .bind(walletKeycloakEventsQueue)
                 .to(keycloakEventsExchange)
@@ -92,8 +89,9 @@ public class RabbitMQConfig {
      * O wildcard {@code wallet.command.#} captura reserve-funds e settle-funds.
      */
     @Bean
-    public Binding walletCommandsBinding(Queue walletCommandsQueue,
-                                         TopicExchange walletCommandsExchange) {
+    public Binding walletCommandsBinding(
+            @Qualifier("walletCommandsQueue")    Queue walletCommandsQueue,
+            @Qualifier("walletCommandsExchange") TopicExchange walletCommandsExchange) {
         return BindingBuilder
                 .bind(walletCommandsQueue)
                 .to(walletCommandsExchange)
@@ -108,35 +106,13 @@ public class RabbitMQConfig {
      * Conversor de mensagens Jackson. Serializa/deserializa payloads como JSON
      * com suporte a Java Time API (Instant, LocalDate, etc.).
      *
-     * <p>Registrar {@code JavaTimeModule} aqui garante que o conversor do broker
-     * use a mesma configuração do ObjectMapper principal da aplicação.</p>
+     * <p>O Spring Boot {@code RabbitAutoConfiguration} detecta automaticamente
+     * este bean via {@code ObjectProvider<MessageConverter>} e o injeta no
+     * {@code RabbitTemplate} auto-configurado — sem necessidade de redefinir
+     * {@code RabbitTemplate} manualmente.</p>
      */
     @Bean
-    public Jackson2JsonMessageConverter messageConverter() {
-        ObjectMapper mapper = new ObjectMapper()
-                .registerModule(new JavaTimeModule())
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        return new Jackson2JsonMessageConverter(mapper);
-    }
-
-    /**
-     * RabbitTemplate configurado com o conversor Jackson.
-     * Utilizado nos testes para publicar mensagens tipadas.
-     */
-    @Bean
-    public RabbitTemplate rabbitTemplate(ConnectionFactory connectionFactory,
-                                         Jackson2JsonMessageConverter messageConverter) {
-        RabbitTemplate template = new RabbitTemplate(connectionFactory);
-        template.setMessageConverter(messageConverter);
-        return template;
-    }
-
-    /**
-     * RabbitAdmin responsável por declarar exchanges, filas e bindings no broker
-     * na inicialização da aplicação.
-     */
-    @Bean
-    public RabbitAdmin rabbitAdmin(ConnectionFactory connectionFactory) {
-        return new RabbitAdmin(connectionFactory);
+    public Jackson2JsonMessageConverter messageConverter(ObjectMapper objectMapper) {
+        return new Jackson2JsonMessageConverter(objectMapper);
     }
 }

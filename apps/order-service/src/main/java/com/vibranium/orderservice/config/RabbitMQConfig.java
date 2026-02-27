@@ -1,15 +1,15 @@
 package com.vibranium.orderservice.config;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.amqp.core.Binding;
 import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.DirectExchange;
 import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.core.QueueBuilder;
 import org.springframework.amqp.core.TopicExchange;
-import org.springframework.amqp.rabbit.connection.ConnectionFactory;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -89,6 +89,25 @@ public class RabbitMQConfig {
         return QueueBuilder.durable(QUEUE_DEAD_LETTER).build();
     }
 
+    /**
+     * Binding obrigatório: {@code vibranium.dlq} exchange → {@code order.dead-letter} queue.
+     *
+     * <p>Sem este binding, as filas configuradas com
+     * {@code x-dead-letter-exchange=vibranium.dlq} e
+     * {@code x-dead-letter-routing-key=order.dead-letter} descartariam as
+     * mensagens silenciosamente (unroutable), pois a exchange não teria
+     * destino declarado para essa routing key.</p>
+     */
+    @Bean
+    Binding deadLetterBinding(
+            @Qualifier("orderDeadLetterQueue") Queue orderDeadLetterQueue,
+            @Qualifier("dlqExchange")          DirectExchange dlqExchange) {
+        return BindingBuilder
+                .bind(orderDeadLetterQueue)
+                .to(dlqExchange)
+                .with(QUEUE_DEAD_LETTER);
+    }
+
     // -------------------------------------------------------------------------
     // Fila de FundsReservedEvent (wallet → order: fundos bloqueados)
     // -------------------------------------------------------------------------
@@ -103,7 +122,9 @@ public class RabbitMQConfig {
     }
 
     @Bean
-    Binding fundsReservedBinding(Queue fundsReservedQueue, TopicExchange eventsExchange) {
+    Binding fundsReservedBinding(
+            @Qualifier("fundsReservedQueue") Queue fundsReservedQueue,
+            @Qualifier("eventsExchange")     TopicExchange eventsExchange) {
         return BindingBuilder
                 .bind(fundsReservedQueue)
                 .to(eventsExchange)
@@ -123,7 +144,9 @@ public class RabbitMQConfig {
     }
 
     @Bean
-    Binding fundsFailedBinding(Queue fundsFailedQueue, TopicExchange eventsExchange) {
+    Binding fundsFailedBinding(
+            @Qualifier("fundsFailedQueue") Queue fundsFailedQueue,
+            @Qualifier("eventsExchange")   TopicExchange eventsExchange) {
         return BindingBuilder
                 .bind(fundsFailedQueue)
                 .to(eventsExchange)
@@ -148,7 +171,8 @@ public class RabbitMQConfig {
      * {@code KK.EVENT.CLIENT.orderbook-realm.REGISTER}.
      */
     @Bean
-    Binding keycloakRegisterBinding(Queue keycloakRegisterQueue) {
+    Binding keycloakRegisterBinding(
+            @Qualifier("keycloakRegisterQueue") Queue keycloakRegisterQueue) {
         return BindingBuilder
                 .bind(keycloakRegisterQueue)
                 .to(new TopicExchange(KEYCLOAK_EXCHANGE))
@@ -165,7 +189,9 @@ public class RabbitMQConfig {
     }
 
     @Bean
-    Binding reserveFundsBinding(Queue reserveFundsQueue, DirectExchange commandsExchange) {
+    Binding reserveFundsBinding(
+            @Qualifier("reserveFundsQueue")  Queue reserveFundsQueue,
+            @Qualifier("commandsExchange")   DirectExchange commandsExchange) {
         return BindingBuilder
                 .bind(reserveFundsQueue)
                 .to(commandsExchange)
@@ -179,24 +205,17 @@ public class RabbitMQConfig {
     /**
      * Converte mensagens AMQP para/de JSON usando o ObjectMapper da aplicação.
      *
-     * <p>O ObjectMapper deve ter o JavaTimeModule registrado para serialização
-     * correta de {@code Instant} como epoch-millis (ver {@link JacksonConfig}).</p>
-     */
-    @Bean
-    MessageConverter jsonMessageConverter() {
-        return new Jackson2JsonMessageConverter();
-    }
-
-    /**
-     * Configura o RabbitTemplate para usar o conversor JSON.
+     * <p>Injeta o {@code @Primary ObjectMapper} configurado em {@link JacksonConfig},
+     * garantindo que {@code Instant} seja serializado como epoch-millis (long)
+     * conforme o contrato de {@link com.vibranium.contracts.events.DomainEvent}.</p>
      *
-     * @param connectionFactory Factory de conexão do Spring AMQP.
-     * @return RabbitTemplate pronto para publicar objetos Java como JSON.
+     * <p>O Spring Boot {@code RabbitAutoConfiguration} detecta automaticamente
+     * este bean via {@code ObjectProvider<MessageConverter>} e o injeta no
+     * {@code RabbitTemplate} auto-configurado — sem necessidade de redefinir
+     * {@code RabbitTemplate} manualmente.</p>
      */
     @Bean
-    RabbitTemplate rabbitTemplate(ConnectionFactory connectionFactory) {
-        RabbitTemplate template = new RabbitTemplate(connectionFactory);
-        template.setMessageConverter(jsonMessageConverter());
-        return template;
+    MessageConverter jsonMessageConverter(ObjectMapper objectMapper) {
+        return new Jackson2JsonMessageConverter(objectMapper);
     }
 }

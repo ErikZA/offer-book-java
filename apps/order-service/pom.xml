@@ -90,10 +90,16 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Flyway: migrations versionadas (V1__user_registry, V2__orders) -->
+        <!-- Flyway: migrations versionadas (V1__user_registry, V2__orders).
+             flyway-database-postgresql obrigatório no Flyway 10.x (Spring Boot 3.4+)
+             para suporte a PostgreSQL 10+. -->
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
 
         <!-- Lettuce: cliente Redis não-bloqueante (padrão do Spring Data Redis) -->
@@ -149,7 +155,7 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- Testcontainers — versão gerenciada pelo Spring Boot BOM 3.2.x -->
+        <!-- Testcontainers — versão gerenciada pelo Spring Boot BOM 3.4.x -->
 
         <!-- Core Testcontainers: GenericContainer (Redis via docker image) -->
         <dependency>

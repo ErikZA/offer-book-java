@@ -66,10 +66,18 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Flyway - Database migrations (PostgreSQL support já incluído no flyway-core 9.x / Boot 3.2.x) -->
+        <!-- Flyway - Database migrations.
+             Spring Boot 3.4.x usa Flyway 10.x, que quebrou o suporte embutido ao PostgreSQL.
+             No Flyway 10+, o driver por banco é separado: flyway-database-postgresql é
+             obrigatório para PostgreSQL 10+, caso contrário a inicialização falha com
+             "Unsupported Database: PostgreSQL 15.x". -->
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
 
         <!-- RabbitMQ / AMQP -->
