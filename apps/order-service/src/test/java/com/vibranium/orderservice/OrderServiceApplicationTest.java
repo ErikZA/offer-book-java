@@ -1,17 +1,17 @@
 package com.vibranium.orderservice;
 
+import com.vibranium.orderservice.integration.AbstractIntegrationTest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Teste simples para verificar se a aplicação Spring Boot inicia corretamente.
+ * Smoke test: verifica se o contexto Spring Boot sobe corretamente com os containers Testcontainers.
+ * Estende AbstractIntegrationTest para usar o @DynamicPropertySource com credenciais dos containers.
  */
-@SpringBootTest
 @DisplayName("OrderServiceApplicationTest - Testa inicialização da aplicação")
-class OrderServiceApplicationTest {
+class OrderServiceApplicationTest extends AbstractIntegrationTest {
 
     @Test
     @DisplayName("contexto da aplicação deve iniciar sem erros")

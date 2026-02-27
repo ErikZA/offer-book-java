@@ -32,14 +32,17 @@ spring:
                 acknowledge-mode: auto # AUTO em testes para simplificar setup
                 prefetch: 1
 
-    # Security: desabilita o resource server JWT em testes (sem Keycloak real)
-    # Controllers são testados com mockJwt() do spring-security-test
+    # Security: usa jwk-set-uri (lazy) em vez de issuer-uri (eager) para evitar
+    # chamada HTTP ao Keycloak no startup. Os testes usam mockJwt() do
+    # spring-security-test, que bypassa o JwtDecoder completamente.
     security:
         oauth2:
             resourceserver:
                 jwt:
-                    # URL fake — sobrescrita por WireMock quando necessário
-                    issuer-uri: http://localhost:9999/realms/test
+                    # jwk-set-uri é carregada LAZILY (apenas na 1ª validação real de JWT)
+                    # Como testes usam SecurityMockMvcRequestPostProcessors.jwt(),
+                    # o decoder nunca é invocado → sem chamada HTTP ao Keycloak
+                    jwk-set-uri: http://localhost:9999/realms/test/protocol/openid-connect/certs
 
 # Configuração de queues/exchanges espelhada do application.yaml
 app:
