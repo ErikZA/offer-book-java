@@ -37,7 +37,7 @@ docker/
 make docker-dev-up              # Linux/Mac
 
 # Ou direto com Docker Compose
-docker compose -f docker/docker-compose.dev.yml up order-service
+docker compose -f infra/docker-compose.dev.yml up order-service
 ```
 
 ### Testes via Docker
@@ -47,7 +47,7 @@ docker compose -f docker/docker-compose.dev.yml up order-service
 make docker-test                # Linux/Mac
 
 # Ou direto
-docker compose -f docker/docker-compose.test.yml up
+docker compose -f tests/docker-compose.test.yml up
 ```
 
 ### Debug Remoto
@@ -95,7 +95,7 @@ DELETE /api/orders/{id}         # Cancelar ordem
 # Veja: docs/testing/COMPREHENSIVE_TESTING.md#debug-remoto
 
 # Iniciar com variações de debug
-docker compose -f docker/docker-compose.dev.yml up order-service
+docker compose -f infra/docker-compose.dev.yml up order-service
 ```
 
 ---

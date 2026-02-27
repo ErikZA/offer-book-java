@@ -1,8 +1,23 @@
 version: '3.8'
 
-services:
-    # ================== Shared Infrastructure ==================
+# ================================================================================
+# AMBIENTE DE DESENVOLVIMENTO — Vibranium Platform
+# ================================================================================
+# Subir: docker compose -f infra/docker-compose.dev.yml up -d
+# Parar:  docker compose -f infra/docker-compose.dev.yml down -v
+#
+# Regra de inicialização dos bancos:
+#   O PostgreSQL executa `infra/postgres/init-app-databases.sh` no PRIMEIRO boot,
+#   criando vibranium_orders e vibranium_wallet. Os serviços de aplicação aguardam
+#   o healthcheck do postgres (que valida ambos os bancos) antes de subir.
+#   O Flyway é responsável por TODAS as migrations — não há DDL manual aqui.
+#   Se o banco não existir na URL de conexão, o serviço FALHA imediatamente.
+# ================================================================================
 
+services:
+    # ================================================================================
+    # MongoDB 7.0 — Banco de dados de eventos do order-service
+    # ================================================================================
     mongodb:
         image: mongo:7.0
         container_name: vibranium-mongodb
@@ -17,11 +32,14 @@ services:
         networks:
             - vibranium-network-dev
         healthcheck:
-            test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test -u admin -p admin123
+            test: ['CMD-SHELL', 'mongosh "mongodb://admin:admin123@localhost:27017/test?authSource=admin" --eval "db.runCommand(''ping'').ok" --quiet | grep -q "^1"']
             interval: 10s
             timeout: 5s
             retries: 5
 
+    # ================================================================================
+    # PostgreSQL 16 — Banco relacional compartilhado entre order-service e wallet-service
+    # ================================================================================
     postgres:
         image: postgres:16-alpine
         container_name: vibranium-postgres
@@ -30,33 +48,36 @@ services:
         environment:
             POSTGRES_USER: postgres
             POSTGRES_PASSWORD: postgres
-            # Banco padrão criado pelo entrypoint (vibranium_wallet).
-            # vibranium_orders é criado pelo 00-init-orders.sh antes do Flyway do order-service.
-            POSTGRES_DB: vibranium_wallet
+            # POSTGRES_DB é o banco padrão criado pelo entrypoint.
+            # Os bancos de aplicação (vibranium_orders, vibranium_wallet)
+            # são criados pelo script init-app-databases.sh abaixo.
+            POSTGRES_DB: postgres
         volumes:
             - postgres_data:/var/lib/postgresql/data
-            # 00 — cria vibranium_orders e habilita extensões (roda antes do 01)
-            - ../apps/order-service/docker/init-orders-db.sh:/docker-entrypoint-initdb.d/00-init-orders.sh:ro
-            # 01 — habilita extensões no vibranium_wallet (wallet-service)
-            - ../apps/wallet-service/docker/init-wallet-db.sql:/docker-entrypoint-initdb.d/01-init-wallet.sql:ro
+            # Script centralizado: cria vibranium_orders e vibranium_wallet
+            # com extensões e permissões necessárias para o Flyway.
+            # Executado apenas no primeiro boot do container.
+            - ./postgres/init-app-databases.sh:/docker-entrypoint-initdb.d/00-init-app-databases.sh:ro
         networks:
             - vibranium-network-dev
         healthcheck:
-            # Valida AMBOS os bancos de aplicação:
+            # Valida AMBOS os bancos de aplicação antes de liberar os serviços:
+            #   vibranium_orders  → order-service  (Flyway)
             #   vibranium_wallet  → wallet-service (Flyway)
-            #   vibranium_orders  → order-service  (Flyway, criado pelo 00-init-orders.sh)
-            # Garante que nenhum serviço sobe antes dos BDs estarem prontos.
             test:
                 - 'CMD-SHELL'
                 - >-
-                    pg_isready -U postgres -d vibranium_wallet &&
-                    psql -U postgres -d vibranium_wallet -c "SELECT 1" -q --no-align --tuples-only &&
-                    psql -U postgres -d vibranium_orders -c "SELECT 1" -q --no-align --tuples-only
+                    pg_isready -U postgres -d vibranium_orders &&
+                    psql -U postgres -d vibranium_orders -c "SELECT 1" -q --no-align --tuples-only &&
+                    psql -U postgres -d vibranium_wallet -c "SELECT 1" -q --no-align --tuples-only
             interval: 5s
             timeout: 5s
-            retries: 12
-            start_period: 15s
+            retries: 15
+            start_period: 20s
 
+    # ================================================================================
+    # Redis 7 — Cache e estruturas de dados para o order book (HFT)
+    # ================================================================================
     redis:
         image: redis:7-alpine
         container_name: vibranium-redis
@@ -73,6 +94,9 @@ services:
             timeout: 5s
             retries: 5
 
+    # ================================================================================
+    # RabbitMQ 3.13 — Message broker para eventos de domínio e auth (Keycloak plugin)
+    # ================================================================================
     rabbitmq:
         image: rabbitmq:3.13-management-alpine
         container_name: vibranium-rabbitmq
@@ -93,7 +117,7 @@ services:
             retries: 5
 
     # ================================================================================
-    # Keycloak PostgreSQL - Banco dedicado para o Keycloak (dev)
+    # Keycloak Database — Banco dedicado para o Keycloak (separado dos bancos de app)
     # ================================================================================
     keycloak-db:
         image: postgres:16-alpine
@@ -113,49 +137,37 @@ services:
             retries: 5
 
     # ================================================================================
-    # Keycloak 22 - Authentication & Authorization (dev)
-    # Plugin keycloak-event-listener-rabbitmq publica eventos de auth no RabbitMQ.
-    # Referência: https://github.com/aznamier/keycloak-event-listener-rabbitmq
+    # Keycloak 22 — Authentication & Authorization (dev)
+    # Imagem customizada com plugin keycloak-event-listener-rabbitmq.
+    # Ref: https://github.com/aznamier/keycloak-event-listener-rabbitmq
     # ================================================================================
     keycloak:
-        # Imagem customizada com o plugin JAR pré-instalado em /opt/keycloak/providers/
         build:
-            context: ../infra
+            # Context é o próprio diretório infra/ onde está o Dockerfile.keycloak
+            context: .
             dockerfile: docker/Dockerfile.keycloak
         image: vibranium-keycloak:22.0.5
         container_name: vibranium-keycloak-dev
         ports:
             - '8180:8080'
-        # start-dev: modo desenvolvimento | --import-realm: importa JSONs de data/import/
         command:
             - start-dev
             - --import-realm
         environment:
-            # Database configuration
             KC_DB: postgres
             KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak_db
             KC_DB_USERNAME: keycloak
             KC_DB_PASSWORD: keycloak
-
-            # Admin credentials
             KEYCLOAK_ADMIN: admin
             KEYCLOAK_ADMIN_PASSWORD: admin123
-
-            # HTTP configuration
             KC_HTTP_ENABLED: 'true'
             KC_HTTP_PORT: 8080
             KC_HOSTNAME_STRICT: 'false'
-
-            # Health & Metrics
             KC_HEALTH_ENABLED: 'true'
             KC_METRICS_ENABLED: 'true'
-
             KC_LOG_LEVEL: INFO
             KC_CACHE: local
-
-            # ---------------------------------------------------------------
             # Plugin keycloak-event-listener-rabbitmq
-            # ---------------------------------------------------------------
             KK_TO_RMQ_URL: rabbitmq
             KK_TO_RMQ_PORT: 5672
             KK_TO_RMQ_USERNAME: guest
@@ -165,8 +177,8 @@ services:
             KK_TO_RMQ_USE_TLS: 'false'
         volumes:
             - keycloak_dev_data:/opt/keycloak/data
-            # Realm importado automaticamente na subida via --import-realm
-            - ./realm-export.json:/opt/keycloak/data/import/realm.json:ro
+            # Realm importado automaticamente via --import-realm na subida
+            - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm.json:ro
         depends_on:
             keycloak-db:
                 condition: service_healthy
@@ -182,10 +194,9 @@ services:
             start_period: 60s
 
     # ================================================================================
-    # Kong 3.4 - API Gateway (dev)
-    # Modo DB-less (declarativo via kong-init.yml) para simplicidade no ambiente dev.
-    # Em produção usar mode=postgres (docker-compose.yml).
+    # Kong 3.4 — API Gateway (dev, mode DB-less via kong-init.yml declarativo)
     # Proxy: localhost:8000 | Admin API: localhost:8001
+    # Produção usa mode=postgres (infra/docker-compose.staging.yml).
     # ================================================================================
     kong:
         image: kong:3.4
@@ -197,23 +208,22 @@ services:
             KONG_PROXY_LISTEN: 0.0.0.0:8000
             KONG_LOG_LEVEL: warn
         ports:
-            - '8000:8000' # Proxy (entrada pública)
-            - '8001:8001' # Admin API (dev only)
+            - '8000:8000'
+            - '8001:8001'
         volumes:
-            # Configuração declarativa com todos os serviços, rotas e plugins
-            - ./kong-init.yml:/etc/kong/kong.yml:ro
+            - ./kong/kong-init.yml:/etc/kong/kong.yml:ro
         networks:
             - vibranium-network-dev
         healthcheck:
-            test: ['CMD-SHELL', 'curl -sf http://localhost:8001/status || exit 1']
+            test: ['CMD-SHELL', 'kong health 2>/dev/null | grep -q "Kong is healthy"']
             interval: 10s
             timeout: 5s
             retries: 10
             start_period: 20s
 
     # ================================================================================
-    # Kong-init: provisiona JWT consumer com a chave pública do Keycloak (dev)
-    # Roda após Kong e Keycloak estarem healthy — executa kong-setup.sh
+    # Kong-init — Provisiona JWT consumer com a chave pública do Keycloak
+    # Executa após Kong e Keycloak estarem healthy via kong-setup.sh
     # ================================================================================
     kong-init:
         image: alpine:3.19
@@ -225,7 +235,7 @@ services:
             KONG_CONSUMER_NAME: keycloak-realm-consumer
             KEYCLOAK_ISSUER: http://localhost:8180/realms/vibranium-realm
         volumes:
-            - ./kong-setup.sh:/kong-setup.sh:ro
+            - ./kong/kong-setup.sh:/kong-setup.sh:ro
         command: ['sh', '/kong-setup.sh']
         depends_on:
             kong:
@@ -235,8 +245,10 @@ services:
         networks:
             - vibranium-network-dev
 
-    # ================== Development Services with Hot Reload ==================
-
+    # ================================================================================
+    # order-service — Microsserviço Spring Boot com hot reload (dev)
+    # Debug JDWP: localhost:5005
+    # ================================================================================
     order-service:
         build:
             context: ..
@@ -250,12 +262,11 @@ services:
             SPRING_APPLICATION_NAME: order-service
             SPRING_PROFILES_ACTIVE: dev
             JAVA_OPTS: '-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005'
-            # Sobrescreve application.yaml para o ambiente Docker.
-            # BD dedicado ao order-service (evita shared-database anti-pattern).
+            # Banco dedicado — evita shared-database anti-pattern
+            # O Flyway FALHA se vibranium_orders não existir (garantido pelo healthcheck)
             SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/vibranium_orders
             SPRING_DATASOURCE_USERNAME: postgres
             SPRING_DATASOURCE_PASSWORD: postgres
-            # RabbitMQ via container dev
             SPRING_RABBITMQ_HOST: rabbitmq
             SPRING_RABBITMQ_PORT: '5672'
         volumes:
@@ -266,7 +277,7 @@ services:
         working_dir: /app
         command: mvn spring-boot:run -pl apps/order-service -Dspring-boot.run.fork=false
         depends_on:
-            # Postgres deve estar HEALTHY (vibranium_orders criado) antes do Flyway rodar
+            # postgres healthy = vibranium_orders E vibranium_wallet existem e respondem
             postgres:
                 condition: service_healthy
             mongodb:
@@ -286,6 +297,10 @@ services:
             retries: 3
             start_period: 60s
 
+    # ================================================================================
+    # wallet-service — Microsserviço Spring Boot com hot reload (dev)
+    # Debug JDWP: localhost:5006
+    # ================================================================================
     wallet-service:
         build:
             context: ..
@@ -299,12 +314,10 @@ services:
             SPRING_APPLICATION_NAME: wallet-service
             SPRING_PROFILES_ACTIVE: dev
             JAVA_OPTS: '-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5006'
-            # Sobrescreve as credenciais do application.yaml para o ambiente Docker.
-            # O postgres do dev compose usa user/password simples (postgres/postgres).
+            # Banco dedicado — o Flyway FALHA se vibranium_wallet não existir
             SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/vibranium_wallet
             SPRING_DATASOURCE_USERNAME: postgres
             SPRING_DATASOURCE_PASSWORD: postgres
-            # RabbitMQ via container dev (não o do infra compose)
             SPRING_RABBITMQ_HOST: rabbitmq
             SPRING_RABBITMQ_PORT: '5672'
         volumes:
@@ -315,9 +328,6 @@ services:
         working_dir: /app
         command: mvn spring-boot:run -pl apps/wallet-service -Dspring-boot.run.fork=false
         depends_on:
-            # Aguarda o postgres estar healthy (banco vibranium_wallet acessível)
-            # antes de subir o wallet-service. O Flyway executa as migrations
-            # no startup da aplicação Spring Boot.
             postgres:
                 condition: service_healthy
             rabbitmq:

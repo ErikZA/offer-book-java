@@ -78,13 +78,13 @@ make docker-dev-up
 
 ```bash
 # Validar
-docker compose -f docker/docker-compose.dev.yml ps
+docker compose -f infra/docker-compose.dev.yml ps
 
 # Testes
-docker compose -f docker/docker-compose.test.yml up
+docker compose -f tests/docker-compose.test.yml up
 
 # Dev
-docker compose -f docker/docker-compose.dev.yml up
+docker compose -f infra/docker-compose.dev.yml up
 ```
 
 ### **Resultados Esperados**
@@ -114,11 +114,11 @@ docker compose -f docker/docker-compose.dev.yml up
 
 ## 📚 Documentação Disponível
 
-1. **[../docker/README.md](../docker/README.md)** - SEU PRÓXIMO PASSO
+1. **[../infra/README.md](../infra/README.md)** - SEU PRÓXIMO PASSO
    - Como usar cada ambiente Docker
    - Troubleshooting
 
-2. **[../README.md](../README.md)** - Visão Geral do Projeto
+2. **[../tests/README.md](../tests/README.md)** - Ambientes de teste isolados
    - Estrutura de pastas
    - Comandos rápidos
 
@@ -196,8 +196,8 @@ docker compose -f docker/docker-compose.dev.yml up
 |----------|---------|
 | **"Docker não encontrado"** | Instale: [Docker Desktop](https://www.docker.com/products/docker-desktop) |
 | **"Docker daemon não responde"** | Inicie Docker Desktop e tente novamente |
-| **"Testes falhando"** | Ver logs: `docker compose -f docker/docker-compose.test.yml logs -f test-runner` |
-| **"Porta já em uso"** | Execute: `docker compose -f docker/docker-compose.dev.yml down` |
+| **"Testes falhando"** | Ver logs: `docker compose -f tests/docker-compose.test.yml logs -f test-runner` |
+| **"Porta já em uso"** | Execute: `docker compose -f infra/docker-compose.dev.yml down` |
 
 ---
 

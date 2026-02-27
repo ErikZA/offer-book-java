@@ -16,8 +16,12 @@ FROM quay.io/keycloak/keycloak:22.0.5
 # durante o build da imagem otimizada (passo RUN abaixo).
 COPY keycloak/keycloak-to-rabbit-3.0.5.jar /opt/keycloak/providers/keycloak-to-rabbit-3.0.5.jar
 
-# Reconstrói o servidor Keycloak incluindo o novo provider.
-# Necessário para que o plugin seja registrado no Service Loader do Quarkus.
-RUN /opt/keycloak/bin/kc.sh build
+# Reconstrói o servidor Keycloak incluindo o novo provider e configurando PostgreSQL.
+# --db=postgres         : OBRIGATÓRIO; modo `start --optimized` usa configuração compilada.
+#                         Se omitido, Keycloak tentaria usar H2 em staging/prod.
+# --health-enabled=true : habilita endpoints /health/* no modo otimizado (start --optimized).
+#                         Sem isso, /health/live retorna 404 e o healthcheck do Docker falha.
+# O modo `start-dev` (dev/test) ignora essas flags e processa KC_* via env var.
+RUN /opt/keycloak/bin/kc.sh build --db=postgres --health-enabled=true
 
 # Ponto de entrada padrão já definido na imagem base.

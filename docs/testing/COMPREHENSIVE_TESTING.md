@@ -72,16 +72,16 @@ make docker-dev-logs SERVICE=order-service
 
 ```bash
 # Executar testes e mostrar saída
-docker compose -f docker/docker-compose.test.yml up
+docker compose -f tests/docker-compose.test.yml up
 
 # Desenvolvimento (detached, sem ver logs)
-docker compose -f docker/docker-compose.dev.yml up -d
+docker compose -f infra/docker-compose.dev.yml up -d
 
 # Ver logs depois de iniciar
-docker compose -f docker/docker-compose.dev.yml logs -f
+docker compose -f infra/docker-compose.dev.yml logs -f
 
 # Parar tudo
-docker compose -f docker/docker-compose.dev.yml down
+docker compose -f infra/docker-compose.dev.yml down
 ```
 
 ---
@@ -652,16 +652,16 @@ make docker-test
 
 ```bash
 # Executar todos os testes
-docker compose -f docker/docker-compose.test.yml up
+docker compose -f tests/docker-compose.test.yml up
 
 # Executar e parar automaticamente após finalizar
-docker compose -f docker/docker-compose.test.yml up --exit-code-from test-runner
+docker compose -f tests/docker-compose.test.yml up --exit-code-from test-runner
 
 # Ver logs detalhados
-docker compose -f docker/docker-compose.test.yml logs -f test-runner
+docker compose -f tests/docker-compose.test.yml logs -f test-runner
 
 # Limpar ambiente de testes
-docker compose -f docker/docker-compose.test.yml down -v
+docker compose -f tests/docker-compose.test.yml down -v
 ```
 
 ### Ver Resultados dos Testes
@@ -835,7 +835,7 @@ Relatório de cobertura com **Jacoco** (automático em containers):
 
 ```bash
 # Executar testes com cobertura (automático)
-docker compose -f docker/docker-compose.test.yml up
+docker compose -f tests/docker-compose.test.yml up
 
 # Relatório será gerado em: target/site/jacoco/index.html
 # (Após testes finalizarem no container)
@@ -1042,7 +1042,7 @@ jobs:
       
       - name: Run tests in containers
         run: |
-          docker compose -f docker/docker-compose.test.yml up --abort-on-container-exit
+          docker compose -f tests/docker-compose.test.yml up --abort-on-container-exit
           
       - name: Upload coverage
         uses: codecov/codecov-action@v3

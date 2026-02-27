@@ -1,53 +1,80 @@
 # Infrastructure
 
-Configurações de infraestrutura e scripts de setup.
+Configurações de infraestrutura centralizada da plataforma Vibranium.
+Os arquivos Docker Compose foram reorganizados do diretório legado `docker/` para cá.
 
-## 📋 Estrutura
-
-### **postgres/**
-Configurações e scripts de inicialização do PostgreSQL.
+## 📁 Estrutura
 
 ```
-init-postgres.sql  # Schema e dados iniciais
+infra/
+├── docker-compose.yml          # Infra-only (Kong + Keycloak + PostgreSQL + RabbitMQ)
+├── docker-compose.dev.yml      # Dev completo (infra + order-service + wallet-service hot-reload)
+├── docker-compose.staging.yml  # Staging com réplicas (3× MongoDB, PostgreSQL, Redis, RabbitMQ)
+├── docker/
+│   ├── Dockerfile              # Imagem base para apps (build multi-stage Maven)
+│   ├── Dockerfile.keycloak     # Keycloak 22 + plugin keycloak-to-rabbit-3.0.5.jar
+│   │                           # Build com: --db=postgres --health-enabled=true
+│   └── Dockerfile.kong-init    # Kong-init: deck sync de configuração declarativa
+├── keycloak/
+│   ├── realm-export.json       # Realm "vibranium" (clientes, roles, mappers)
+│   ├── keycloak-setup.sh       # Provisionamento pós-subida (usuários, grupos)
+│   └── keycloak-to-rabbit-3.0.5.jar  # Plugin: eventos Keycloak → RabbitMQ
+├── kong/
+│   ├── kong-init.yml           # Configuração declarativa (services, routes, plugins)
+│   ├── kong-setup.sh           # Provisiona consumer JWT + credential Keycloak JWKS
+│   └── kong-config.md          # Documentação das rotas configuradas
+└── postgres/
+    ├── init-app-databases.sh   # Cria vibranium_orders + vibranium_wallet no 1º boot
+    ├── init-infra-db.sql       # Cria schemas kong + keycloak em vibranium_infra
+    ├── init-mongo.js           # Collections iniciais do MongoDB
+    └── init-postgres.sql       # Dados iniciais extras (seed opcional)
 ```
 
-### **mongo/** (opcional)
-MongoDB para audit logs e cache.
+## 🚀 Comandos
 
-```
-init-mongo.js      # Collections iniciais
-```
-
-### **kong/**
-API Gateway Kong (roteamento de requests).
-
-```
-kong-config.md     # Configuração de rotas
-```
-
-### **keycloak/**
-Autenticação e autorização (OAuth 2.0 / OIDC).
-
-```
-keycloak-setup.sh  # Deploy do Keycloak
-```
-
-## 🔧 Uso
-
-### Desenvolvimento
+### Desenvolvimento (infra + aplicações com hot-reload)
 ```bash
-# Docker Compose já inclui estas configurações
-docker-compose -f docker/docker-compose.dev.yml up
+# Subir tudo
+docker compose -f infra/docker-compose.dev.yml up -d
+
+# Subir apenas infraestrutura (sem apps)
+docker compose -f infra/docker-compose.dev.yml up -d postgres redis rabbitmq mongodb keycloak-db keycloak kong
 ```
 
-### Staging/Produção
+### Infra isolada (sem aplicações)
 ```bash
-# Configs customizadas por ambiente
-docker-compose -f docker/docker-compose.staging.yml up
-docker-compose -f docker/docker-compose.yml up
+docker compose -f infra/docker-compose.yml up -d
 ```
 
-## 📦 Serviços
+### Staging (réplicas)
+```bash
+# Apenas infra base (recomendado para validação)
+docker compose -f infra/docker-compose.staging.yml up -d \
+  mongodb-1 postgres-primary redis-1 rabbitmq-1 keycloak-db keycloak kong-database kong-migration kong
+
+# Stack completo (requer imagens pré-buildadas: order-service:latest, wallet-service:latest)
+docker compose -f infra/docker-compose.staging.yml up -d
+```
+
+## 🐳 Portas expostas (dev)
+
+| Serviço     | Porta |
+|-------------|-------|
+| PostgreSQL  | 5432  |
+| MongoDB     | 27017 |
+| Redis       | 6379  |
+| RabbitMQ    | 5672 / 15672 (UI) |
+| Keycloak    | 8080  |
+| Kong Proxy  | 8000 / 8443 |
+| Kong Admin  | 8001 / 8444 |
+
+## ⚠️ Observações técnicas
+
+- **Keycloak**: imagem customizada com `keycloak-to-rabbit-3.0.5.jar` compilada via `kc.sh build --db=postgres --health-enabled=true`. O modo `start --optimized` (staging) exige essas flags no build-time.
+- **Kong 3.4**: não possui `curl` na imagem — healthcheck usa `kong health`.
+- **MongoDB 7.0**: requer mínimo 512M de memória; healthcheck deve incluir `authSource=admin`.
+- **init-app-databases.sh**: usa heredoc para passar `\gexec` ao `psql` (metacomando não funciona com `--command`).
+
 
 | Serviço | Porta | Uso |
 |---------|-------|-----|

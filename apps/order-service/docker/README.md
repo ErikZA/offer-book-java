@@ -16,12 +16,16 @@ Este diretório contém os Dockerfiles para o Order Service em diferentes ambien
   - Debug remoto via JDWP (porta 5005)
   - Automatic restart ao editar código
 
+> **Nota:** O script de inicialização do banco `vibranium_orders` foi consolidado em
+> `infra/postgres/init-app-databases.sh`, que é executado centralmente pelo
+> PostgreSQL de aplicação no primeiro boot. Este serviço usa Flyway para migrations.
+
 ## Uso
 
 ### Desenvolvimento (com hotreload)
 
 ```bash
-docker-compose -f docker-compose.dev.yml up order-service
+docker compose -f infra/docker-compose.dev.yml up order-service
 
 # Via scripts
 make docker-dev-up     (Linux/Mac)

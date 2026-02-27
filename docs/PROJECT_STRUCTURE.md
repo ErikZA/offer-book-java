@@ -152,8 +152,8 @@ apps/order-service/.../order/
 
 ### 4. 🐳 `docker/` e ☁️ `infra/` — O Ambiente
 
-- **`docker/`:** Arquivos de teste local. Execute `docker-compose -f docker/docker-compose.dev.yml up` para subir RabbitMQ, PostgreSQL, MongoDB, Redis e Keycloak.
-- **`infra/`:** Configurações mais densas (arquivos JSON de importação de *Realm* do Keycloak, configurações do Kong, etc.)
+- **`infra/`:** Docker Compose e configs de infraestrutura centralizada. Execute `docker compose -f infra/docker-compose.dev.yml up` para subir RabbitMQ, PostgreSQL, MongoDB, Redis e Keycloak.
+- **`tests/`:** Docker Compose isolado para testes de integração. Execute `docker compose -f tests/docker-compose.test.yml up` para rodar a suite completa.
 
 ---
 
@@ -163,7 +163,7 @@ apps/order-service/.../order/
 ```
 README.md 
   ↓
-docker/README.md
+infra/README.md
   ↓
 .\init.ps1
   ↓
@@ -176,9 +176,9 @@ README.md
   ↓
 apps/order-service/README.md (ou wallet-service/)
   ↓
-docker/README.md
+infra/README.md
   ↓
-docker-compose -f docker/docker-compose.dev.yml up
+docker compose -f infra/docker-compose.dev.yml up
 ```
 
 ### 3️⃣ **Entender Testes**

@@ -68,7 +68,7 @@ Assim como o Keycloak, o Kong precisa de um lugar seguro para salvar suas config
 **"Espera aí, eu vou ter que subir 5 servidores de banco de dados na minha máquina para trabalhar?!"**
 
 **Não!** Fique tranquilo. Na vida real (Produção na AWS/GCP), sim, teremos servidores separados para não misturar os recursos.
-Mas, no seu ambiente de desenvolvimento local (usando o nosso `docker/docker-compose.yml`), nós subiremos apenas **3 contêineres** de banco:
+Mas, no seu ambiente de desenvolvimento local (usando o nosso `infra/docker-compose.yml`), nós subiremos apenas **3 contêineres** de banco:
 
 1. **1 Contêiner MongoDB** (Para o histórico de Ordens).
 2. **1 Contêiner Redis** (Para o Motor de Match).

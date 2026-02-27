@@ -1,0 +1,44 @@
+version: '3.8'
+
+# ================================================================================
+# INFRA MÍNIMA DE TESTE — PostgreSQL de Infra apenas
+# ================================================================================
+# Compose simplificado para testes unitários e de integração que precisam
+# apenas do PostgreSQL de infra (Kong/Keycloak schemas).
+#
+# Use este arquivo quando não precisar de Kong, Keycloak, RabbitMQ ou MongoDB.
+# Para o ambiente de testes completo use: docker-compose.test.yml
+#
+# Subir:  docker compose -f tests/docker-compose-test.yml up -d
+# Parar:  docker compose -f tests/docker-compose-test.yml down -v
+# ================================================================================
+
+services:
+    postgresql:
+        image: postgres:16
+        container_name: vibranium-postgresql
+        restart: unless-stopped
+        environment:
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres123
+            POSTGRES_DB: vibranium_infra
+        ports:
+            - '5432:5432'
+        volumes:
+            - ../infra/postgres/init-infra-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+            - postgresql_data:/var/lib/postgresql/data
+        networks:
+            - vibranium-infra
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U postgres -d vibranium_infra']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+            start_period: 30s
+
+volumes:
+    postgresql_data:
+
+networks:
+    vibranium-infra:
+        driver: bridge

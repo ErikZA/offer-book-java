@@ -1,36 +1,32 @@
 version: '3.8'
 
 # ================================================================================
-# INFRAESTRUTURA DE PRODUÇÃO: PostgreSQL 16 + Kong 3.4 + Keycloak 22
+# INFRAESTRUTURA GERAL — PostgreSQL 16 + Kong 3.4 + Keycloak 22 + RabbitMQ
 # ================================================================================
-# Requisitos de validação implementados:
-# ✅ 1 - Kong com healthcheck robusto
-# ✅ 2 - Kong conectado ao PostgreSQL com validação
-# ✅ 3 - Tabelas Kong criadas (services, routes, plugins)
-# ✅ 4 - Keycloak com healthcheck robusto
-# ✅ 5 - Keycloak conectado ao PostgreSQL com validação
-# ✅ 6 - Tabelas Keycloak criadas (user_entity, realm, client, role_entity)
-# ✅ 7 - Docker Compose para testes funcionando
+# Sobe a infraestrutura compartilhada (não inclui serviços de aplicação).
+# Para desenvolvimento local use: docker-compose.dev.yml
+# Para staging com réplicas use:  docker-compose.staging.yml
+#
+# Subir: docker compose -f infra/docker-compose.yml up -d
+# Parar: docker compose -f infra/docker-compose.yml down
 #
 # SEGURANÇA (SecOps):
 # - Isolamento de rede Docker
 # - Limites de recursos CPU/Memória
 # - Restart policy: unless-stopped
-# - Logs estruturados desabilitados para dev (ativar em prod)
-# - Variáveis sensíveis comentadas para futura externalização
-# - Portas administrativas restritas à rede interna
+# - Variáveis sensíveis devem ser externalizadas em produção real (Docker Secrets)
+# - Portas administrativas restritas ao loopback onde possível
 # ================================================================================
 
 services:
     # ================================================================================
-    # PostgreSQL 16 - Database compartilizado (Kong + Keycloak)
+    # PostgreSQL 16 — Banco compartilhado para Kong + Keycloak (schemas separados)
     # ================================================================================
     postgresql:
         image: postgres:16
         container_name: vibranium-postgresql
         restart: unless-stopped
 
-        # Recursos limitados para determinismo (crítico para testes HFT)
         deploy:
             resources:
                 limits:
@@ -41,31 +37,25 @@ services:
                     memory: 512M
 
         environment:
-            # Credenciais de banco de dados
-            # TODO: Externalizar via secrets Docker ou variáveis de ambiente criptografadas
             POSTGRES_USER: postgres
-            POSTGRES_PASSWORD: postgres123 # TODO: Change in production
+            POSTGRES_PASSWORD: postgres123 # TODO: Externalizar via Docker Secrets em produção
             POSTGRES_DB: vibranium_infra
 
         # Porta 5432 NÃO exposta ao host intencionalmente:
         # Kong e Keycloak acessam via rede Docker interna (hostname: postgresql).
-        # Expor a porta causaria conflito com o postgres do docker-compose.dev.yml
-        # (vibranium_wallet). Para acesso direto ao banco de infra use:
-        #   docker exec -it vibranium-postgresql psql -U postgres -d vibranium_infra
+        # Para acesso direto: docker exec -it vibranium-postgresql psql -U postgres -d vibranium_infra
         # ports:
-        #     - '5432:5432'
+        #   - '5432:5432'
 
         volumes:
-            # Inicialização SQL com migrations
-            - ./init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+            # Script de inicialização da infra (schemas Kong e Keycloak)
+            - ./postgres/init-infra-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
             - postgresql_data:/var/lib/postgresql/data
-            # Logs persistidos
             - postgresql_logs:/var/log/postgresql
 
         networks:
             - vibranium-infra
 
-        # Healthcheck robusto: valida conexão ao banco
         healthcheck:
             test: ['CMD-SHELL', 'pg_isready -U postgres -d vibranium_infra && psql -U postgres -d vibranium_infra -c "SELECT 1" >/dev/null 2>&1']
             interval: 10s
@@ -81,7 +71,7 @@ services:
                 labels: 'service=postgresql'
 
     # ================================================================================
-    # Kong 3.4 - API Gateway
+    # Kong 3.4 — API Gateway (modo database com PostgreSQL)
     # ================================================================================
     kong-db-migration:
         image: kong:3.4
@@ -93,7 +83,7 @@ services:
             KONG_PG_HOST: postgresql
             KONG_PG_PORT: 5432
             KONG_PG_USER: postgres
-            KONG_PG_PASSWORD: postgres123 # TODO: Change in production
+            KONG_PG_PASSWORD: postgres123
             KONG_PG_DATABASE: vibranium_infra
 
         depends_on:
@@ -117,7 +107,6 @@ services:
         container_name: vibranium-kong
         restart: unless-stopped
 
-        # Recursos limitados
         deploy:
             resources:
                 limits:
@@ -128,39 +117,26 @@ services:
                     memory: 256M
 
         environment:
-            # Database configuration
             KONG_DATABASE: postgres
             KONG_PG_HOST: postgresql
             KONG_PG_PORT: 5432
             KONG_PG_USER: postgres
-            KONG_PG_PASSWORD: postgres123 # TODO: Change in production
+            KONG_PG_PASSWORD: postgres123
             KONG_PG_DATABASE: vibranium_infra
-
-            # Kong admin API (interno apenas - não exposto)
             KONG_ADMIN_LISTEN: 0.0.0.0:8001
             KONG_ADMIN_GUI_LISTEN: 0.0.0.0:8002
-
-            # Kong proxy (porta pública)
             KONG_PROXY_LISTEN: 0.0.0.0:8000
-
-            # Logs estruturados JSON
             KONG_LOG_LEVEL: warn
-
-            # Performance e segurança
             KONG_UPSTREAM_KEEPALIVE: '60'
             KONG_UPSTREAM_KEEPALIVE_REQUESTS: '100'
             KONG_UPSTREAM_KEEPALIVE_TIMEOUT: '60'
 
         ports:
-            # Proxy (público)
             - '8000:8000'
-            # Admin API (interno apenas - acesso via localhost na rede Docker)
             - '127.0.0.1:8001:8001'
-            # Admin GUI (interno apenas)
             - '127.0.0.1:8002:8002'
 
         volumes:
-            # Persistência de configurações e plugins do Kong
             - kong_data:/usr/local/kong/data
             - kong_cache:/usr/local/kong/.cache
 
@@ -173,9 +149,8 @@ services:
         networks:
             - vibranium-infra
 
-        # Healthcheck via Admin API /status — confirma que Kong está operacional
         healthcheck:
-            test: ['CMD-SHELL', 'curl -sf http://localhost:8001/status || exit 1']
+            test: ['CMD-SHELL', 'kong health 2>/dev/null | grep -q "Kong is healthy"']
             interval: 10s
             timeout: 5s
             retries: 10
@@ -189,7 +164,7 @@ services:
                 labels: 'service=kong'
 
     # ================================================================================
-    # RabbitMQ 3.13 - Message Broker (necessário para o plugin Keycloak→RabbitMQ)
+    # RabbitMQ 3.13 — Message broker (necessário para o plugin Keycloak→RabbitMQ)
     # ================================================================================
     rabbitmq:
         image: rabbitmq:3.13-management-alpine
@@ -233,20 +208,19 @@ services:
                 labels: 'service=rabbitmq'
 
     # ================================================================================
-    # Keycloak 22 - Authentication & Authorization
-    # Plugin keycloak-event-listener-rabbitmq publica eventos de auth no RabbitMQ.
-    # Referência: https://github.com/aznamier/keycloak-event-listener-rabbitmq
+    # Keycloak 22 — Authentication & Authorization
+    # Imagem customizada com plugin keycloak-event-listener-rabbitmq.
+    # Ref: https://github.com/aznamier/keycloak-event-listener-rabbitmq
     # ================================================================================
     keycloak:
-        # Imagem customizada com o plugin JAR pré-instalado em /opt/keycloak/providers/
         build:
-            context: ../infra
+            # Build context = infra/ (diretório deste compose file)
+            context: .
             dockerfile: docker/Dockerfile.keycloak
         image: vibranium-keycloak:22.0.5
         container_name: vibranium-keycloak
         restart: unless-stopped
 
-        # Recursos limitados
         deploy:
             resources:
                 limits:
@@ -256,66 +230,45 @@ services:
                     cpus: '0.5'
                     memory: 512M
 
-        # start-dev: modo desenvolvimento (sem exigência de hostname/TLS)
-        # --import-realm: importa automaticamente JSONs de /opt/keycloak/data/import/
         command:
             - start-dev
             - --import-realm
 
         environment:
-            # Database configuration
             KC_DB: postgres
             KC_DB_URL: jdbc:postgresql://postgresql:5432/vibranium_infra
             KC_DB_USERNAME: postgres
-            KC_DB_PASSWORD: postgres123 # TODO: Change in production
+            KC_DB_PASSWORD: postgres123
             KC_DB_SCHEMA: keycloak
-
-            # Admin credentials
             KEYCLOAK_ADMIN: admin
-            KEYCLOAK_ADMIN_PASSWORD: admin123 # TODO: Change in production
-
-            # HTTP configuration
+            KEYCLOAK_ADMIN_PASSWORD: admin123
+            KC_BOOTSTRAP_ADMIN_USERNAME: admin
+            KC_BOOTSTRAP_ADMIN_PASSWORD: admin123
             KC_HTTP_ENABLED: 'true'
             KC_HTTP_PORT: 8080
             KC_HOSTNAME_STRICT: 'false'
             KC_PROXY: edge
             KC_PROXY_HEADERS: xforwarded
-
-            # Health & Metrics endpoints
             KC_HEALTH_ENABLED: 'true'
             KC_METRICS_ENABLED: 'true'
-
-            # Bootstrap credentials (primeira inicialização)
-            KC_BOOTSTRAP_ADMIN_USERNAME: admin
-            KC_BOOTSTRAP_ADMIN_PASSWORD: admin123
-
-            # Logs
             KC_LOG_LEVEL: INFO
-
-            # Cache local sem clustering (adequado para Docker single-node)
             KC_CACHE: local
-
-            # ---------------------------------------------------------------
             # Plugin keycloak-event-listener-rabbitmq
-            # Variáveis lidas pelo provider para conectar ao broker AMQP
-            # ---------------------------------------------------------------
             KK_TO_RMQ_URL: rabbitmq
             KK_TO_RMQ_PORT: 5672
             KK_TO_RMQ_USERNAME: guest
-            KK_TO_RMQ_PASSWORD: guest # TODO: Change in production
+            KK_TO_RMQ_PASSWORD: guest
             KK_TO_RMQ_VHOST: /
             KK_TO_RMQ_EXCHANGE: amq.topic
             KK_TO_RMQ_USE_TLS: 'false'
 
         ports:
-            # Admin console + OAuth2
             - '8080:8080'
 
         volumes:
-            # Persistência de dados do Keycloak
             - keycloak_data:/opt/keycloak/data
-            # Realm importado automaticamente na subida via --import-realm
-            - ./realm-export.json:/opt/keycloak/data/import/realm.json:ro
+            # Realm importado automaticamente via --import-realm
+            - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm.json:ro
 
         depends_on:
             postgresql:
@@ -326,7 +279,6 @@ services:
         networks:
             - vibranium-infra
 
-        # Healthcheck via bash /dev/tcp — curl não está disponível na imagem base do Keycloak 22 (UBI minimal)
         healthcheck:
             test: ['CMD-SHELL', 'exec 3<>/dev/tcp/localhost/8080 && echo -e "GET /health/live HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && grep -q "200 OK" <&3']
             interval: 15s
@@ -342,18 +294,17 @@ services:
                 labels: 'service=keycloak'
 
     # ================================================================================
-    # kong-init — Provisiona Service, Route e Plugins no Kong via Admin API
-    # Executa DEPOIS que Kong e Keycloak estão healthy.
+    # Kong-init — Provisiona Service, Route e Plugins no Kong via Admin API
     # Script kong-setup.sh:
-    #   1. Cria service order-service → upstream http://order-service:8080
-    #   2. Cria route POST /api/v1/orders
-    #   3. Adiciona plugins: jwt (validação RS256 Keycloak), rate-limiting (100 req/s), cors
-    #   4. Busca JWKS do Keycloak e registra credencial RSA no consumer
+    #   1. Cria services order-service e wallet-service
+    #   2. Cria routes e plugins (jwt RS256, rate-limiting, cors)
+    #   3. Busca JWKS do Keycloak e registra credencial RSA no consumer
     # ================================================================================
     kong-init:
         build:
+            # Build context = infra/ para acessar kong/kong-setup.sh e docker/Dockerfile.kong-init
             context: .
-            dockerfile: Dockerfile.kong-init
+            dockerfile: docker/Dockerfile.kong-init
         container_name: vibranium-kong-init
         restart: 'no'
 
@@ -362,9 +313,6 @@ services:
             KEYCLOAK_URL: http://keycloak:8080
             KEYCLOAK_REALM: orderbook-realm
             KONG_CONSUMER_NAME: keycloak-realm-consumer
-            # Issuer deve ser igual ao campo `iss` nos JWTs do Keycloak.
-            # Como o cliente acessa via localhost:8080, o iss é mapeado para localhost.
-            # Ajuste se KC_HOSTNAME for configurado diferentemente.
             KEYCLOAK_ISSUER: http://localhost:8080/realms/orderbook-realm
 
         depends_on:
@@ -386,40 +334,29 @@ services:
 networks:
     vibranium-infra:
         driver: bridge
-        # Rede compartilhada para comunicação entre:
-        # - PostgreSQL (porta 5432) - banco de dados compartilizado
-        # - Kong (portas 8000, 8001, 8002) - API Gateway
-        # - Keycloak (porta 8080) - Autenticação e Autorização
 
 volumes:
-    # PostgreSQL - Banco de dados compartilizado
     postgresql_data:
         driver: local
         labels:
-            description: 'Dados persistidos do PostgreSQL 16'
+            description: 'Dados persistidos do PostgreSQL 16 (infra: Kong + Keycloak)'
     postgresql_logs:
         driver: local
         labels:
             description: 'Logs do PostgreSQL 16'
-
-    # Kong - API Gateway
     kong_data:
         driver: local
         labels:
-            description: 'Configurações, plugins e modelos do Kong'
+            description: 'Configurações e plugins do Kong'
     kong_cache:
         driver: local
         labels:
             description: 'Cache e sessões do Kong'
-
-    # Keycloak - Autenticação e Autorização
     keycloak_data:
         driver: local
         labels:
-            description: 'Realms, usuários, roles e configurações do Keycloak'
-
-    # RabbitMQ - Message Broker
+            description: 'Realms, usuários e configurações do Keycloak'
     rabbitmq_data:
         driver: local
         labels:
-            description: 'Dados persistidos do RabbitMQ (filas, exchanges, mensagens)'
+            description: 'Dados do RabbitMQ (filas, exchanges, mensagens)'

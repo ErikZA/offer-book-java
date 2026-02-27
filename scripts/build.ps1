@@ -64,7 +64,7 @@ switch ($Command.ToLower()) {
     "docker-dev-up" {
         Show-Banner
         Write-Host "${YELLOW}🚀 Starting development environment with hotreload...${NC}"
-        docker compose -f docker/docker-compose.dev.yml up -d 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose -f infra/docker-compose.dev.yml up -d 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
         Write-Host "${GREEN}✓ Dev environment started${NC}"
         Write-Host "${BLUE}Services:${NC}"
         Write-Host "  Order Service: http://localhost:8080 (Debug: 5005)" -ForegroundColor Cyan
@@ -75,7 +75,7 @@ switch ($Command.ToLower()) {
     "docker-dev-down" {
         Show-Banner
         Write-Host "${YELLOW}🛑 Stopping development environment...${NC}"
-        docker compose -f docker/docker-compose.dev.yml down 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose -f infra/docker-compose.dev.yml down 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
         Write-Host "${GREEN}✓ Dev environment stopped${NC}"
     }
 
@@ -87,22 +87,22 @@ switch ($Command.ToLower()) {
             exit 1
         }
         Write-Host "${YELLOW}📋 Showing logs for $Service...${NC}"
-        docker compose -f docker/docker-compose.dev.yml logs -f $Service
+        docker compose -f infra/docker-compose.dev.yml logs -f $Service
     }
 
     "docker-test" {
         Show-Banner
         Write-Host "${YELLOW}🧪 Running tests in Docker...${NC}"
-        docker compose -f docker/docker-compose.test.yml up --abort-on-container-exit 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose -f tests/docker-compose.test.yml up --abort-on-container-exit 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
         Write-Host "${YELLOW}🧹 Cleaning test environment...${NC}"
-        docker compose -f docker/docker-compose.test.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose -f tests/docker-compose.test.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
         Write-Host "${GREEN}✓ Tests completed${NC}"
     }
 
     "docker-prod-up" {
         Show-Banner
         Write-Host "${YELLOW}🚀 Starting production environment...${NC}"
-        docker compose -f docker/docker-compose.yml up -d 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose -f infra/docker-compose.yml up -d 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
         Write-Host "${GREEN}✓ Production environment started${NC}"
         Write-Host "${BLUE}Containers:${NC}"
         docker ps | Select-String "vibranium" | ForEach-Object { Write-Host "  $_" -ForegroundColor Cyan }
@@ -111,7 +111,7 @@ switch ($Command.ToLower()) {
     "docker-prod-down" {
         Show-Banner
         Write-Host "${YELLOW}🛑 Stopping production environment...${NC}"
-        docker compose -f docker/docker-compose.yml down 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose -f infra/docker-compose.yml down 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
         Write-Host "${GREEN}✓ Production environment stopped${NC}"
     }
 
@@ -124,9 +124,9 @@ switch ($Command.ToLower()) {
     "docker-clean" {
         Show-Banner
         Write-Host "${YELLOW}🧹 Cleaning Docker artifacts...${NC}"
-        docker compose -f docker/docker-compose.dev.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
-        docker compose -f docker/docker-compose.test.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
-        docker compose -f docker/docker-compose.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose -f infra/docker-compose.dev.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose -f tests/docker-compose.test.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose -f infra/docker-compose.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
         Write-Host "${GREEN}✓ Clean completed${NC}"
     }
 

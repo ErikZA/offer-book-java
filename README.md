@@ -33,9 +33,9 @@ make docker-prod-up
 make docker-dev-logs SERVICE=order-service
 
 # Docker Compose direto
-docker compose -f docker/docker-compose.dev.yml up
-docker compose -f docker/docker-compose.test.yml up
-docker compose -f docker/docker-compose.yml up
+docker compose -f infra/docker-compose.dev.yml up
+docker compose -f tests/docker-compose.test.yml up
+docker compose -f infra/docker-compose.yml up
 ```
 
 ## 📁 Estrutura
@@ -47,8 +47,8 @@ docker compose -f docker/docker-compose.yml up
 │   └── wallet-service/      # Wallet & transactions
 ├── libs/                    # Bibliotecas compartilhadas
 │   └── common-contracts/    # Eventos e DTOs
-├── docker/                  # Docker Compose files
-├── infra/                   # Configurações de infra
+├── infra/                   # Docker Compose + configs de infra (dev, staging, prod)
+├── tests/                   # Docker Compose de testes de integração
 ├── scripts/                 # Utilitários
 ├── docs/                    # Documentação detalhada
 ├── init.ps1                 # Validação Docker (Windows)
@@ -59,7 +59,8 @@ docker compose -f docker/docker-compose.yml up
 ## 📚 Documentação
 
 - **[docs/testing/COMPREHENSIVE_TESTING.md](docs/testing/COMPREHENSIVE_TESTING.md)** - Guia completo com padrões de teste
-- **[docker/README.md](docker/README.md)** - Como usar cada ambiente Docker
+- **[infra/README.md](infra/README.md)** - Como usar cada ambiente Docker
+- **[tests/README.md](tests/README.md)** - Ambientes de testes isolados
 - **[docs/architecture/order-book-mvp.md](docs/architecture/order-book-mvp.md)** - Arquitetura
 - **[docs/README.md](docs/README.md)** - Índice completo de documentação
 - **[scripts/README.md](scripts/README.md)** - Scripts disponíveis
@@ -130,10 +131,12 @@ Sem o plugin, os serviços teriam que fazer polling na API do Keycloak (ineficie
 | Arquivo | Descrição |
 |---|---|
 | [`infra/docker/Dockerfile.keycloak`](infra/docker/Dockerfile.keycloak) | Imagem customizada com plugin JAR e `kc.sh build` |
-| [`docker/realm-export.json`](docker/realm-export.json) | Realm declarativo importado via `--import-realm` |
+| [`infra/keycloak/realm-export.json`](infra/keycloak/realm-export.json) | Realm declarativo importado via `--import-realm` |
 | [`infra/keycloak/realm-export.json`](infra/keycloak/realm-export.json) | Cópia do realm para o ambiente staging |
-| [`docker/docker-compose.yml`](docker/docker-compose.yml) | Adicionados `rabbitmq` + Keycloak customizado com `KK_TO_RMQ_*` |
-| [`docker/docker-compose.dev.yml`](docker/docker-compose.dev.yml) | Adicionados `keycloak-db`, `keycloak` e variáveis do plugin |
+| [`infra/docker-compose.yml`](infra/docker-compose.yml) | Infra-only: Kong + Keycloak + RabbitMQ + PostgreSQL |
+| [`infra/docker-compose.dev.yml`](infra/docker-compose.dev.yml) | Dev completo com hot-reload (infra + order-service + wallet-service) |
+| [`infra/docker-compose.staging.yml`](infra/docker-compose.staging.yml) | Staging com réplicas (3× MongoDB, PostgreSQL, Redis, RabbitMQ) |
+| [`tests/docker-compose.test.yml`](tests/docker-compose.test.yml) | Stack de integração isolada + test-runner Maven |
 | [`infra/docker-compose.staging.yml`](infra/docker-compose.staging.yml) | Adicionados `keycloak-db`, `keycloak` com `start --optimized` |
 
 ## 🧪 Testes
@@ -148,12 +151,12 @@ Sem o plugin, os serviços teriam que fazer polling na API do Keycloak (ineficie
 make docker-test
 
 # Direto com Docker Compose
-docker compose -f docker/docker-compose.test.yml up
+docker compose -f tests/docker-compose.test.yml up
 ```
 
 Ver logs detalhados:
 ```bash
-docker compose -f docker/docker-compose.test.yml logs -f test-runner
+docker compose -f tests/docker-compose.test.yml logs -f test-runner
 ```
 
 ## 🐳 Docker Environments

@@ -45,7 +45,7 @@ docker/
 make docker-dev-up              # Linux/Mac
 
 # Ou direto com Docker Compose
-docker compose -f docker/docker-compose.dev.yml up wallet-service
+docker compose -f infra/docker-compose.dev.yml up wallet-service
 ```
 
 ### Testes via Docker
@@ -55,7 +55,7 @@ docker compose -f docker/docker-compose.dev.yml up wallet-service
 make docker-test                # Linux/Mac
 
 # Ou direto
-docker compose -f docker/docker-compose.test.yml up
+docker compose -f tests/docker-compose.test.yml up
 ```
 
 ### Debug Remoto
@@ -149,7 +149,7 @@ public void onUserRegistered(KeycloakEvent event) {
 # Veja: docs/testing/COMPREHENSIVE_TESTING.md#debug-remoto
 
 # Iniciar com variações de debug
-docker compose -f docker/docker-compose.dev.yml up wallet-service
+docker compose -f infra/docker-compose.dev.yml up wallet-service
 ```
 
 ---

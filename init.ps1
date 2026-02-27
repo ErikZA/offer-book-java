@@ -53,9 +53,9 @@ Write-Host "`n✅ Ambiente Docker validado com sucesso!" -ForegroundColor Green
 Write-Host "`n📖 Próximos passos:" -ForegroundColor Cyan
 Write-Host "   1. Windows:  .\build.ps1 docker-dev-up" -ForegroundColor Yellow
 Write-Host "   2. Linux:    make docker-dev-up" -ForegroundColor Yellow
-Write-Host "   3. Ou use:   docker-compose -f docker/docker-compose.dev.yml up" -ForegroundColor Yellow
+Write-Host "   3. Ou use:   docker compose -f infra/docker-compose.dev.yml up" -ForegroundColor Yellow
 
 Write-Host "`n💡 Documentação:" -ForegroundColor Yellow
-Write-Host "   Leia: docs/docker/README.md para detalhes sobre cada ambiente" -ForegroundColor Cyan
+Write-Host "   Leia: infra/README.md para detalhes sobre cada ambiente" -ForegroundColor Cyan
 
 Write-Host ""

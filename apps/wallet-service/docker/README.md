@@ -16,12 +16,16 @@ Este diretório contém os Dockerfiles para o Wallet Service em diferentes ambie
   - Debug remoto via JDWP (porta 5006)
   - Automatic restart ao editar código
 
+> **Nota:** O script de inicialização do banco `vibranium_wallet` foi consolidado em
+> `infra/postgres/init-app-databases.sh`, que é executado centralmente pelo
+> PostgreSQL de aplicação no primeiro boot. Este serviço usa Flyway para migrations.
+
 ## Uso
 
 ### Desenvolvimento (com hotreload)
 
 ```bash
-docker-compose -f docker-compose.dev.yml up wallet-service
+docker compose -f infra/docker-compose.dev.yml up wallet-service
 
 # Via scripts
 make docker-dev-up     (Linux/Mac)

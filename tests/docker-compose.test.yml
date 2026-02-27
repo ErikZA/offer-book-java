@@ -1,26 +1,34 @@
 version: '3.8'
 
 # ================================================================================
-# TEST ENVIRONMENT - PostgreSQL 16 + Kong 3.4 + Keycloak 22 + Application Services
+# AMBIENTE DE TESTES — Vibranium Platform
 # ================================================================================
-# This compose file is used for running tests in isolated environment
-# It mirrors production but with optimized settings for fast test execution
+# Sobe toda a infra de testes isolada + test-runner com Maven.
+# Todos os serviços usam sufixo -test e portas alternativas para não conflitar
+# com ambientes dev/staging rodando em paralelo.
+#
+# Subir:    docker compose -f tests/docker-compose.test.yml up --abort-on-container-exit
+# Limpar:   docker compose -f tests/docker-compose.test.yml down -v
+#
+# Relatórios de teste: tests/test-results/ (montado do host)
 # ================================================================================
 
 services:
-    # ================== Shared Test Infrastructure ==================
-
+    # ================================================================================
+    # PostgreSQL 16 — Banco de infra para Kong e Keycloak (ambiente de teste)
+    # Porta 5433 para não conflitar com dev (5432)
+    # ================================================================================
     postgresql-test:
         image: postgres:16
         container_name: vibranium-postgresql-test
         ports:
-            - '5433:5432' # Different port to avoid conflicts
+            - '5433:5432'
         environment:
             POSTGRES_USER: postgres
             POSTGRES_PASSWORD: postgres123
             POSTGRES_DB: vibranium_infra_test
         volumes:
-            - ../docker/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+            - ../infra/postgres/init-infra-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
             - postgres_data_test:/var/lib/postgresql/data
         networks:
             - vibranium-network-test
@@ -35,6 +43,9 @@ services:
                     memory: 512M
                     cpus: '0.5'
 
+    # ================================================================================
+    # MongoDB 7.0 — Banco de eventos para o order-service (test)
+    # ================================================================================
     mongodb-test:
         image: mongo:7.0
         container_name: vibranium-mongodb-test
@@ -49,16 +60,21 @@ services:
         networks:
             - vibranium-network-test
         healthcheck:
-            test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test -u admin -p admin123
-            interval: 5s
-            timeout: 3s
-            retries: 3
+            test: ['CMD-SHELL', 'mongosh "mongodb://admin:admin123@localhost:27017/test?authSource=admin" --eval "db.runCommand(''ping'').ok" --quiet | grep -q "^1"']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+            start_period: 20s
         deploy:
             resources:
                 limits:
-                    memory: 256M
-                    cpus: '0.25'
+                    # MongoDB 7.0 requer no mínimo 512M no startup (WiredTiger cache)
+                    memory: 512M
+                    cpus: '0.5'
 
+    # ================================================================================
+    # Redis 7 — Cache para o order book (test)
+    # ================================================================================
     redis-test:
         image: redis:7-alpine
         container_name: vibranium-redis-test
@@ -79,6 +95,9 @@ services:
                     memory: 256M
                     cpus: '0.25'
 
+    # ================================================================================
+    # RabbitMQ 3.13 — Message broker (test)
+    # ================================================================================
     rabbitmq-test:
         image: rabbitmq:3.13-management-alpine
         container_name: vibranium-rabbitmq-test
@@ -94,17 +113,19 @@ services:
             - vibranium-network-test
         healthcheck:
             test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
-            interval: 5s
-            timeout: 3s
-            retries: 3
+            interval: 10s
+            timeout: 5s
+            retries: 5
+            start_period: 20s
         deploy:
             resources:
                 limits:
-                    memory: 256M
-                    cpus: '0.25'
+                    memory: 384M
+                    cpus: '0.5'
 
-    # ================== Kong Test Instance ==================
-
+    # ================================================================================
+    # Kong 3.4 — API Gateway (test, modo database com PostgreSQL)
+    # ================================================================================
     kong-migration-test:
         image: kong:3.4
         container_name: vibranium-kong-migration-test
@@ -148,28 +169,29 @@ services:
         networks:
             - vibranium-network-test
         healthcheck:
-            test: ['CMD-SHELL', 'curl -f http://localhost:8001/status 2>/dev/null | grep -q "\"database\":true" && echo "healthy" || false']
+            test: ['CMD-SHELL', 'kong health 2>/dev/null | grep -q "Kong is healthy" && curl -sf http://localhost:8001/status >/dev/null 2>&1 || kong health 2>/dev/null | grep -q "Kong is healthy"']
             interval: 5s
             timeout: 3s
-            retries: 3
+            retries: 5
+            start_period: 30s
         deploy:
             resources:
                 limits:
                     memory: 512M
                     cpus: '0.5'
 
-    # ================== Keycloak Test Instance ==================
-    # Imagem customizada com plugin keycloak-event-listener-rabbitmq.
-    # Realm orderbook-realm importado automaticamente via --import-realm.
-
+    # ================================================================================
+    # Keycloak 22 — Authentication & Authorization (test)
+    # Realm importado automaticamente via --import-realm.
+    # ================================================================================
     keycloak-test:
         build:
+            # Build context = infra/ (Dockerfile.keycloak e recursos de build)
             context: ../infra
             dockerfile: docker/Dockerfile.keycloak
         image: vibranium-keycloak:22.0.5
         container_name: vibranium-keycloak-test
         restart: 'no'
-        # start-dev + --import-realm: carrega realm-export.json de data/import/ na subida
         command:
             - start-dev
             - --import-realm
@@ -198,7 +220,8 @@ services:
         ports:
             - '8180:8080'
         volumes:
-            - ./realm-export.json:/opt/keycloak/data/import/realm.json:ro
+            # Realm exportado a partir do ambiente dev/staging
+            - ../infra/keycloak/realm-export.json:/opt/keycloak/data/import/realm.json:ro
         depends_on:
             postgresql-test:
                 condition: service_healthy
@@ -207,21 +230,23 @@ services:
         networks:
             - vibranium-network-test
         healthcheck:
-            test: ['CMD-SHELL', 'curl -sf http://localhost:8080/health/live || exit 1']
+            test: ['CMD-SHELL', 'exec 3<>/dev/tcp/localhost/8080 && echo -e "GET /health/live HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && grep -q "200 OK" <&3']
             interval: 15s
             timeout: 10s
-            retries: 10
-            start_period: 60s
+            retries: 12
+            start_period: 90s
         deploy:
             resources:
                 limits:
                     memory: 512M
                     cpus: '0.5'
 
-    # ================== Test Runner ==================
-
+    # ================================================================================
+    # Test Runner — Executa mvn clean test e coleta relatórios Surefire
+    # ================================================================================
     test-runner:
         build:
+            # Build context = project root para acessar pom.xml, apps/ e libs/
             context: ..
             dockerfile: infra/docker/Dockerfile
         container_name: vibranium-test-runner
@@ -233,7 +258,8 @@ services:
             - ../apps:/app/apps
             - ../libs:/app/libs
             - m2_cache_test:/root/.m2
-            - ../test-results:/app/test-results
+            # Relatórios de teste persistidos em tests/test-results/ no host
+            - ./test-results:/app/test-results
         working_dir: /app
         depends_on:
             mongodb-test:
@@ -256,8 +282,7 @@ services:
             echo '=== Generating test reports ===' &&
             mkdir -p /app/test-results &&
             find /app -path '*target/surefire-reports/*.xml' -exec cp {} /app/test-results/ \; &&
-            echo '=== Test execution completed ===' &&
-            echo 'Test reports available in target/surefire-reports/'
+            echo '=== Test execution completed ==='
             "
         deploy:
             resources:
