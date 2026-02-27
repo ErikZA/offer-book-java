@@ -5,6 +5,15 @@
 	"eventsEnabled": true,
 	"adminEventsEnabled": true,
 	"adminEventsDetailsEnabled": true,
+
+	"revokeRefreshToken": true,
+	"refreshTokenMaxReuse": 1,
+	"accessTokenLifespan": 300,
+	"accessTokenLifespanForImplicitFlow": 900,
+	"ssoSessionIdleTimeout": 1800,
+	"ssoSessionMaxLifespan": 36000,
+	"offlineSessionMaxLifespanEnabled": false,
+
 	"roles": {
 		"realm": [
 			{ "name": "USER", "description": "Papel básico de investidor" },
@@ -17,8 +26,17 @@
 			"enabled": true,
 			"protocol": "openid-connect",
 			"publicClient": true,
+			"standardFlowEnabled": true,
+			"implicitFlowEnabled": false,
 			"directAccessGrantsEnabled": true,
-			"webOrigins": ["*"]
+			"serviceAccountsEnabled": false,
+			"webOrigins": ["*"],
+			"redirectUris": ["*"],
+			"defaultClientScopes": ["openid", "profile", "email", "roles"],
+			"attributes": {
+				"access.token.lifespan": "300",
+				"pkce.code.challenge.method": "S256"
+			}
 		}
 	],
 	"users": [

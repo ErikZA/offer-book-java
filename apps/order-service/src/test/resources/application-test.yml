@@ -1,0 +1,77 @@
+# ==============================================================================
+# Configuração de testes de integração (profile=test)
+# As propriedades de conexão (host, port, etc.) são SOBRESCRITAS via
+# @DynamicPropertySource em AbstractIntegrationTest usando os containers
+# Testcontainers. Este arquivo configura apenas o comportamento Spring.
+# ==============================================================================
+
+spring:
+    # JPA: validar o schema (Flyway cria, Hibernate só valida)
+    jpa:
+        hibernate:
+            ddl-auto: validate
+        show-sql: true
+        properties:
+            hibernate:
+                format_sql: true
+
+    # Flyway: aplica as migrations V1 e V2 no container Postgres de teste
+    flyway:
+        enabled: true
+        locations: classpath:db/migration
+
+    # Virtual Threads habilitados em testes também (simula produção)
+    threads:
+        virtual:
+            enabled: true
+
+    # RabbitMQ: configurações sobrescritas por @DynamicPropertySource
+    rabbitmq:
+        listener:
+            simple:
+                acknowledge-mode: auto   # AUTO em testes para simplificar setup
+                prefetch: 1
+
+    # Security: desabilita o resource server JWT em testes (sem Keycloak real)
+    # Controllers são testados com mockJwt() do spring-security-test
+    security:
+        oauth2:
+            resourceserver:
+                jwt:
+                    # URL fake — sobrescrita por WireMock quando necessário
+                    issuer-uri: http://localhost:9999/realms/test
+
+# Configuração de queues/exchanges espelhada do application.yaml
+app:
+    rabbitmq:
+        exchanges:
+            commands: vibranium.commands
+            events: vibranium.events
+            dlq: vibranium.dlq
+        queues:
+            reserve-funds: wallet.commands.reserve-funds
+            funds-reserved: order.events.funds-reserved
+            funds-failed: order.events.funds-failed
+            match-executed: order.events.match-executed
+            book-added: order.events.book-added
+            keycloak-register: order.keycloak.user-register
+            dead-letter: order.dead-letter
+        routing-keys:
+            reserve-funds: wallet.reserve-funds
+            funds-reserved: wallet.funds.reserved
+            funds-failed: wallet.funds.failed
+            match-executed: order.match.executed
+            book-added: order.book.added
+            keycloak-register: "KK.EVENT.CLIENT.orderbook-realm.REGISTER"
+    redis:
+        keys:
+            asks: vibranium:asks
+            bids: vibranium:bids
+
+logging:
+    level:
+        root: WARN
+        com.vibranium: DEBUG
+        org.testcontainers: INFO
+        org.springframework.amqp: DEBUG
+        org.springframework.security: DEBUG

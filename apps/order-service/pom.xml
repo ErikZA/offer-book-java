@@ -17,22 +17,92 @@
     <description>Microsserviço de Order Service</description>
 
     <dependencies>
-        <!-- Shared Libraries -->
+        <!-- =====================================================================
+             SHARED LIBRARY — Contratos de Comandos e Eventos (records imutáveis)
+             Contém: ReserveFundsCommand, FundsReservedEvent, MatchExecutedEvent...
+        ====================================================================== -->
         <dependency>
             <groupId>com.vibranium</groupId>
             <artifactId>common-contracts</artifactId>
             <version>1.0.0-SNAPSHOT</version>
         </dependency>
 
-        <!-- Spring Boot Starters -->
+        <!-- =====================================================================
+             SPRING BOOT STARTERS — Runtime
+        ====================================================================== -->
+
+        <!-- REST API + Tomcat embarcado (Virtual Threads habilitado via config) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
+
+        <!-- Spring AMQP: RabbitTemplate, @RabbitListener, MessageConverter Jackson -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+
+        <!-- Spring Data JPA: entidades UserRegistry + Order (PostgreSQL via Flyway) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!-- Spring Data Redis: StringRedisTemplate + execução de Script Lua atômico -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!-- Bean Validation JSR-380: @Valid, @NotNull, @Positive nos DTOs da API -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- Spring Security: filter chain + contexto de segurança -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- OAuth2 Resource Server: validação de JWT RS256 emitido pelo Keycloak -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
+
+        <!-- Actuator: /health, /info, /metrics (healthcheck Docker) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+
+        <!-- =====================================================================
+             RUNTIME — Drivers e Infraestrutura
+        ====================================================================== -->
+
+        <!-- Driver JDBC PostgreSQL 16 -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Flyway: migrations versionadas (V1__user_registry, V2__orders) -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+
+        <!-- Lettuce: cliente Redis não-bloqueante (padrão do Spring Data Redis) -->
+        <dependency>
+            <groupId>io.lettuce</groupId>
+            <artifactId>lettuce-core</artifactId>
+        </dependency>
+
+        <!-- DevTools: restart automático no modo dev -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-devtools</artifactId>
@@ -40,40 +110,83 @@
             <optional>true</optional>
         </dependency>
 
-        <!-- Testing -->
+        <!-- =====================================================================
+             TESTING — Infra de Testes (scope test)
+        ====================================================================== -->
+
+        <!-- Spring Boot Test: @SpringBootTest, MockMvc, TestRestTemplate -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
 
-        <!-- AssertJ - Fluent assertions -->
+        <!-- Spring Security Test: @WithMockUser, mockJwt() para testes sem Keycloak -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Spring Rabbit Test: RabbitListenerTestHarness, utilitários AMQP de teste -->
+        <dependency>
+            <groupId>org.springframework.amqp</groupId>
+            <artifactId>spring-rabbit-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- AssertJ: asserções fluentes -->
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
             <scope>test</scope>
         </dependency>
 
-        <!-- REST Assured - REST API testing -->
+        <!-- Awaitility: asserções assíncronas (await().until()) para listeners RabbitMQ -->
         <dependency>
-            <groupId>io.rest-assured</groupId>
-            <artifactId>rest-assured</artifactId>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
             <scope>test</scope>
         </dependency>
 
-        <!-- TestContainers - Integration testing with containers -->
+        <!-- Testcontainers — versão gerenciada pelo Spring Boot BOM 3.2.x -->
+
+        <!-- Core Testcontainers: GenericContainer (Redis via docker image) -->
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- JUnit 5 extension: @Testcontainers, @Container -->
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
 
-        <!-- WireMock - Mock HTTP services -->
+        <!-- PostgreSQL container para testes de integração JPA + Flyway -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- RabbitMQ container para testes de listeners e publishers AMQP -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>rabbitmq</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- REST Assured: validação de API REST estilo BDD -->
+        <dependency>
+            <groupId>io.rest-assured</groupId>
+            <artifactId>rest-assured</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- WireMock: mock de serviços HTTP externos (ex: Keycloak JWKS em prod) -->
         <dependency>
             <groupId>com.github.tomakehurst</groupId>
             <artifactId>wiremock-jre8</artifactId>
