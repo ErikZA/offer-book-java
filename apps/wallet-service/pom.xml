@@ -16,6 +16,21 @@
     <name>Wallet Service</name>
     <description>Microsserviço de Wallet Service</description>
 
+    <!-- Override Testcontainers 1.19.5 → 1.20.4:
+         docker-java 3.3.4 envia API version 1.32; Docker Desktop 4.62.0 exige >= 1.44.
+         1.20.4 usa docker-java 3.4.x que negocia corretamente a versão da API. -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>1.20.4</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
         <!-- Shared Libraries -->
         <dependency>
