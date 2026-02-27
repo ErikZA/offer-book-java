@@ -159,37 +159,59 @@ services:
                     cpus: '0.5'
 
     # ================== Keycloak Test Instance ==================
+    # Imagem customizada com plugin keycloak-event-listener-rabbitmq.
+    # Realm orderbook-realm importado automaticamente via --import-realm.
 
     keycloak-test:
-        image: quay.io/keycloak/keycloak:22.0.5
+        build:
+            context: ../infra
+            dockerfile: docker/Dockerfile.keycloak
+        image: vibranium-keycloak:22.0.5
         container_name: vibranium-keycloak-test
         restart: 'no'
+        # start-dev + --import-realm: carrega realm-export.json de data/import/ na subida
+        command:
+            - start-dev
+            - --import-realm
         environment:
             KC_DB: postgres
             KC_DB_URL: jdbc:postgresql://postgresql-test:5432/vibranium_infra_test
             KC_DB_USERNAME: postgres
             KC_DB_PASSWORD: postgres123
-            KC_DB_SCHEMA: keycloak_test
+            KC_DB_SCHEMA: keycloak
             KEYCLOAK_ADMIN: admin
             KEYCLOAK_ADMIN_PASSWORD: admin123
             KC_HTTP_ENABLED: 'true'
             KC_HTTP_PORT: 8080
-            KC_HTTP_RELATIVE_PATH: /auth
             KC_HOSTNAME_STRICT: 'false'
+            KC_HEALTH_ENABLED: 'true'
             KC_LOG_LEVEL: ERROR
+            KC_CACHE: local
+            # Plugin keycloak-event-listener-rabbitmq
+            KK_TO_RMQ_URL: rabbitmq-test
+            KK_TO_RMQ_PORT: 5672
+            KK_TO_RMQ_USERNAME: guest
+            KK_TO_RMQ_PASSWORD: guest
+            KK_TO_RMQ_VHOST: /
+            KK_TO_RMQ_EXCHANGE: amq.topic
+            KK_TO_RMQ_USE_TLS: 'false'
         ports:
-            - '8081:8080'
+            - '8180:8080'
+        volumes:
+            - ./realm-export.json:/opt/keycloak/data/import/realm.json:ro
         depends_on:
             postgresql-test:
+                condition: service_healthy
+            rabbitmq-test:
                 condition: service_healthy
         networks:
             - vibranium-network-test
         healthcheck:
-            test: ['CMD-SHELL', 'curl -s http://localhost:8080/auth/health/live | grep -q "UP" && echo "ready" || false']
-            interval: 10s
-            timeout: 5s
-            retries: 3
-            start_period: 30s
+            test: ['CMD-SHELL', 'curl -sf http://localhost:8080/health/live || exit 1']
+            interval: 15s
+            timeout: 10s
+            retries: 10
+            start_period: 60s
         deploy:
             resources:
                 limits:

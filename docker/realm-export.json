@@ -1,0 +1,41 @@
+{
+	"realm": "orderbook-realm",
+	"enabled": true,
+	"eventsListeners": ["jboss-logging", "keycloak-to-rabbitmq"],
+	"eventsEnabled": true,
+	"adminEventsEnabled": true,
+	"adminEventsDetailsEnabled": true,
+	"roles": {
+		"realm": [
+			{ "name": "USER", "description": "Papel básico de investidor" },
+			{ "name": "ADMIN", "description": "Administrador do sistema" }
+		]
+	},
+	"clients": [
+		{
+			"clientId": "order-client",
+			"enabled": true,
+			"protocol": "openid-connect",
+			"publicClient": true,
+			"directAccessGrantsEnabled": true,
+			"webOrigins": ["*"]
+		}
+	],
+	"users": [
+		{
+			"username": "tester",
+			"enabled": true,
+			"email": "tester@vibranium.com",
+			"firstName": "Tester",
+			"lastName": "Vibranium",
+			"credentials": [
+				{
+					"type": "password",
+					"value": "test-password",
+					"temporary": false
+				}
+			],
+			"realmRoles": ["USER"]
+		}
+	]
+}
