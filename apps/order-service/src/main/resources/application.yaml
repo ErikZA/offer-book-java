@@ -14,11 +14,12 @@ spring:
             enabled: true
 
     # -----------------------------------------------------------------------
-    # PostgreSQL — banco do Command Side
+    # PostgreSQL — banco dedicado do order-service (Command Side)
     # Armazena: tb_user_registry, tb_orders
+    # BD isolado: cada serviço tem seu próprio banco (shared-database anti-pattern evitado)
     # -----------------------------------------------------------------------
     datasource:
-        url: jdbc:postgresql://localhost:5432/vibranium_wallet
+        url: jdbc:postgresql://localhost:5432/vibranium_orders
         username: postgres
         password: postgres
         driver-class-name: org.postgresql.Driver
@@ -83,8 +84,8 @@ spring:
         password: guest
         listener:
             simple:
-                acknowledge-mode: manual   # ACK manual para garantir processamento exato
-                prefetch: 10               # controla throughput por consumer
+                acknowledge-mode: manual # ACK manual para garantir processamento exato
+                prefetch: 10 # controla throughput por consumer
                 retry:
                     enabled: true
                     max-attempts: 3
@@ -125,7 +126,7 @@ app:
             funds-failed: wallet.funds.failed
             match-executed: order.match.executed
             book-added: order.book.added
-            keycloak-register: "KK.EVENT.CLIENT.orderbook-realm.REGISTER"
+            keycloak-register: 'KK.EVENT.CLIENT.orderbook-realm.REGISTER'
     redis:
         keys:
             asks: vibranium:asks

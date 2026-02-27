@@ -30,20 +30,32 @@ services:
         environment:
             POSTGRES_USER: postgres
             POSTGRES_PASSWORD: postgres
+            # Banco padrão criado pelo entrypoint (vibranium_wallet).
+            # vibranium_orders é criado pelo 00-init-orders.sh antes do Flyway do order-service.
             POSTGRES_DB: vibranium_wallet
         volumes:
             - postgres_data:/var/lib/postgresql/data
-            # Script de inicialização: habilita extensões necessárias para o wallet-service
+            # 00 — cria vibranium_orders e habilita extensões (roda antes do 01)
+            - ../apps/order-service/docker/init-orders-db.sh:/docker-entrypoint-initdb.d/00-init-orders.sh:ro
+            # 01 — habilita extensões no vibranium_wallet (wallet-service)
             - ../apps/wallet-service/docker/init-wallet-db.sql:/docker-entrypoint-initdb.d/01-init-wallet.sql:ro
         networks:
             - vibranium-network-dev
         healthcheck:
-            # Valida que o banco vibranium_wallet está acessível (não só o processo)
-            test: ['CMD-SHELL', 'pg_isready -U postgres -d vibranium_wallet && psql -U postgres -d vibranium_wallet -c "SELECT 1" -q --no-align --tuples-only']
+            # Valida AMBOS os bancos de aplicação:
+            #   vibranium_wallet  → wallet-service (Flyway)
+            #   vibranium_orders  → order-service  (Flyway, criado pelo 00-init-orders.sh)
+            # Garante que nenhum serviço sobe antes dos BDs estarem prontos.
+            test:
+                - 'CMD-SHELL'
+                - >-
+                    pg_isready -U postgres -d vibranium_wallet &&
+                    psql -U postgres -d vibranium_wallet -c "SELECT 1" -q --no-align --tuples-only &&
+                    psql -U postgres -d vibranium_orders -c "SELECT 1" -q --no-align --tuples-only
             interval: 5s
-            timeout: 3s
-            retries: 10
-            start_period: 10s
+            timeout: 5s
+            retries: 12
+            start_period: 15s
 
     redis:
         image: redis:7-alpine
@@ -238,6 +250,14 @@ services:
             SPRING_APPLICATION_NAME: order-service
             SPRING_PROFILES_ACTIVE: dev
             JAVA_OPTS: '-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005'
+            # Sobrescreve application.yaml para o ambiente Docker.
+            # BD dedicado ao order-service (evita shared-database anti-pattern).
+            SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/vibranium_orders
+            SPRING_DATASOURCE_USERNAME: postgres
+            SPRING_DATASOURCE_PASSWORD: postgres
+            # RabbitMQ via container dev
+            SPRING_RABBITMQ_HOST: rabbitmq
+            SPRING_RABBITMQ_PORT: '5672'
         volumes:
             - ../apps/order-service:/app/apps/order-service
             - ../libs:/app/libs
@@ -246,10 +266,17 @@ services:
         working_dir: /app
         command: mvn spring-boot:run -pl apps/order-service -Dspring-boot.run.fork=false
         depends_on:
-            - mongodb
-            - redis
-            - rabbitmq
-            - keycloak
+            # Postgres deve estar HEALTHY (vibranium_orders criado) antes do Flyway rodar
+            postgres:
+                condition: service_healthy
+            mongodb:
+                condition: service_healthy
+            redis:
+                condition: service_healthy
+            rabbitmq:
+                condition: service_healthy
+            keycloak:
+                condition: service_healthy
         networks:
             - vibranium-network-dev
         healthcheck:

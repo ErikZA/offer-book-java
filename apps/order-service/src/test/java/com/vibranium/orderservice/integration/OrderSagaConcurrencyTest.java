@@ -1,12 +1,13 @@
 package com.vibranium.orderservice.integration;
 
 import com.vibranium.contracts.enums.AssetType;
+import com.vibranium.contracts.enums.FailureReason;
+import com.vibranium.contracts.enums.OrderStatus;
 import com.vibranium.contracts.enums.OrderType;
-import com.vibranium.contracts.events.FundsLockedEvent;          // [RED] deve existir em common-contracts
-import com.vibranium.contracts.events.FundsReservationFailedEvent; // [RED] deve existir em common-contracts
-import com.vibranium.orderservice.domain.model.Order;            // [RED] entidade não existe ainda
-import com.vibranium.orderservice.domain.model.OrderStatus;      // [RED] enum não existe ainda
-import com.vibranium.orderservice.domain.repository.OrderRepository; // [RED] repositório não existe
+import com.vibranium.contracts.events.wallet.FundsReservationFailedEvent;
+import com.vibranium.contracts.events.wallet.FundsReservedEvent;
+import com.vibranium.orderservice.domain.model.Order;
+import com.vibranium.orderservice.domain.repository.OrderRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -36,7 +37,7 @@ import static org.awaitility.Awaitility.await;
  * <pre>
  *   PlaceOrder (POST) → tb_orders (PENDING)
  *       → ReserveFundsCommand → wallet-service
- *           ┌─ FundsLockedEvent → Order status: OPEN → Match Engine
+ *           ├─ FundsReservedEvent → Order status: OPEN → Match Engine
  *           └─ FundsReservationFailedEvent → Order status: CANCELLED
  * </pre>
  *
@@ -46,17 +47,13 @@ import static org.awaitility.Awaitility.await;
  *   <li>Throughput: 500 eventos simultâneos processados em ≤ 1 segundo</li>
  *   <li>Consistência forte: nenhum {@code PENDING} sobrevive após o batch</li>
  * </ul>
- *
- * <p><strong>Estado RED:</strong> {@code Order}, {@code OrderStatus}, {@code OrderRepository},
- * {@code FundsLockedEvent} e {@code FundsReservationFailedEvent} ainda não existem.
- * Todos os testes falharão em compilação até a Fase GREEN.</p>
  */
 @DisplayName("Order Saga — Consistência e Concorrência")
 class OrderSagaConcurrencyTest extends AbstractIntegrationTest {
 
-    private static final String ORDER_EVENTS_EXCHANGE      = "vibranium.events";
-    private static final String FUNDS_LOCKED_RK            = "wallet.events.funds-locked";
-    private static final String FUNDS_RESERVATION_FAILED_RK = "wallet.events.funds-reservation-failed";
+    private static final String ORDER_EVENTS_EXCHANGE       = "vibranium.events";
+    private static final String FUNDS_RESERVED_RK            = "wallet.events.funds-reserved";
+    private static final String FUNDS_RESERVATION_FAILED_RK  = "wallet.events.funds-reservation-failed";
 
     @Autowired
     private OrderRepository orderRepository; // [RED]
@@ -89,14 +86,14 @@ class OrderSagaConcurrencyTest extends AbstractIntegrationTest {
         orderRepository.save(order);
 
         // Cria evento com o mesmo correlationId (mensagem atrasada/duplicada)
-        // [RED] FundsLockedEvent não existe ainda
-        FundsLockedEvent lateEvent = FundsLockedEvent.of(
+        // idempotência: consumer descarta se Order não está PENDING
+        FundsReservedEvent lateEvent = FundsReservedEvent.of(
                 correlId, orderId, walletId, AssetType.BRL,
                 new BigDecimal("500.00").multiply(new BigDecimal("10.00"))
         );
 
         // --- ACT --- publica o evento duplicado
-        rabbitTemplate.convertAndSend(ORDER_EVENTS_EXCHANGE, FUNDS_LOCKED_RK, lateEvent);
+        rabbitTemplate.convertAndSend(ORDER_EVENTS_EXCHANGE, FUNDS_RESERVED_RK, lateEvent);
 
         // Aguarda um ciclo completo de processamento
         await().atMost(5, TimeUnit.SECONDS)
@@ -137,9 +134,9 @@ class OrderSagaConcurrencyTest extends AbstractIntegrationTest {
         // Ordem está PENDING aguardando resposta da wallet
         orderRepository.save(order);
 
-        // [RED] FundsReservationFailedEvent
         FundsReservationFailedEvent failEvent = FundsReservationFailedEvent.of(
-                correlId, orderId, walletId, "INSUFFICIENT_FUNDS"
+                correlId, orderId, walletId.toString(),
+                FailureReason.INSUFFICIENT_FUNDS, "Test - insufficient funds"
         );
 
         // --- ACT ---
@@ -188,11 +185,11 @@ class OrderSagaConcurrencyTest extends AbstractIntegrationTest {
             orderIds.add(orderId);
         }
 
-        // 500 FundsLockedEvents — 1 por Order
-        List<FundsLockedEvent> events = new ArrayList<>(total);
+        // 500 FundsReservedEvents — 1 por Order
+        List<FundsReservedEvent> events = new ArrayList<>(total);
         for (UUID orderId : orderIds) {
             Order o = orderRepository.findById(orderId).orElseThrow();
-            events.add(FundsLockedEvent.of(
+            events.add(FundsReservedEvent.of(
                     o.getCorrelationId(), orderId, o.getWalletId(),
                     AssetType.BRL, o.getPrice().multiply(o.getAmount())
             ));
@@ -205,11 +202,11 @@ class OrderSagaConcurrencyTest extends AbstractIntegrationTest {
         AtomicInteger sent         = new AtomicInteger(0);
 
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            for (FundsLockedEvent event : events) {
+            for (FundsReservedEvent event : events) {
                 executor.submit((Callable<Void>) () -> {
                     readyLatch.countDown();
                     startLatch.await();
-                    rabbitTemplate.convertAndSend(ORDER_EVENTS_EXCHANGE, FUNDS_LOCKED_RK, event);
+                    rabbitTemplate.convertAndSend(ORDER_EVENTS_EXCHANGE, FUNDS_RESERVED_RK, event);
                     sent.incrementAndGet();
                     return null;
                 });
@@ -257,13 +254,13 @@ class OrderSagaConcurrencyTest extends AbstractIntegrationTest {
         // --- ARRANGE ---
         UUID ghostOrderId = UUID.randomUUID(); // não existe no banco
 
-        FundsLockedEvent event = FundsLockedEvent.of(
+        FundsReservedEvent event = FundsReservedEvent.of(
                 UUID.randomUUID(), ghostOrderId, UUID.randomUUID(),
                 AssetType.BRL, new BigDecimal("5000.00")
         );
 
         // --- ACT ---
-        rabbitTemplate.convertAndSend(ORDER_EVENTS_EXCHANGE, FUNDS_LOCKED_RK, event);
+        rabbitTemplate.convertAndSend(ORDER_EVENTS_EXCHANGE, FUNDS_RESERVED_RK, event);
 
         // --- ASSERT --- aguarda processamento; não deve lançar exceção nem criar Order fantasma
         await().atMost(5, TimeUnit.SECONDS)
@@ -297,14 +294,15 @@ class OrderSagaConcurrencyTest extends AbstractIntegrationTest {
         );
         orderRepository.save(order);
 
-        // Cria 1 FundsLocked + 1 FundsReservationFailed para a mesma Order
+        // Cria 1 FundsReserved + 1 FundsReservationFailed para a mesma Order
         // Em produção, isso nunca deveria acontecer. Mas testamos a resiliência do optimistic lock.
-        FundsLockedEvent lockedEvent = FundsLockedEvent.of(
+        FundsReservedEvent lockedEvent = FundsReservedEvent.of(
                 correlId, orderId, walletId,
                 AssetType.BRL, new BigDecimal("5000.00")
         );
         FundsReservationFailedEvent failEvent = FundsReservationFailedEvent.of(
-                correlId, orderId, walletId, "RACE_CONDITION_TEST"
+                correlId, orderId, walletId.toString(),
+                FailureReason.INSUFFICIENT_FUNDS, "RACE_CONDITION_TEST"
         );
 
         CountDownLatch startLatch = new CountDownLatch(1);
@@ -313,7 +311,7 @@ class OrderSagaConcurrencyTest extends AbstractIntegrationTest {
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
             executor.submit((Callable<Void>) () -> {
                 startLatch.await();
-                rabbitTemplate.convertAndSend(ORDER_EVENTS_EXCHANGE, FUNDS_LOCKED_RK, lockedEvent);
+                rabbitTemplate.convertAndSend(ORDER_EVENTS_EXCHANGE, FUNDS_RESERVED_RK, lockedEvent);
                 return null;
             });
             executor.submit((Callable<Void>) () -> {
