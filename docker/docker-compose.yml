@@ -176,10 +176,60 @@ services:
                 labels: 'service=kong'
 
     # ================================================================================
+    # RabbitMQ 3.13 - Message Broker (necessário para o plugin Keycloak→RabbitMQ)
+    # ================================================================================
+    rabbitmq:
+        image: rabbitmq:3.13-management-alpine
+        container_name: vibranium-rabbitmq
+        restart: unless-stopped
+
+        deploy:
+            resources:
+                limits:
+                    cpus: '0.5'
+                    memory: 512M
+                reservations:
+                    cpus: '0.25'
+                    memory: 256M
+
+        environment:
+            RABBITMQ_DEFAULT_USER: guest
+            RABBITMQ_DEFAULT_PASS: guest
+
+        ports:
+            - '5672:5672'
+            - '15672:15672'
+
+        volumes:
+            - rabbitmq_data:/var/lib/rabbitmq
+
+        networks:
+            - vibranium-infra
+
+        healthcheck:
+            test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+        logging:
+            driver: 'json-file'
+            options:
+                max-size: '50m'
+                max-file: '5'
+                labels: 'service=rabbitmq'
+
+    # ================================================================================
     # Keycloak 22 - Authentication & Authorization
+    # Plugin keycloak-event-listener-rabbitmq publica eventos de auth no RabbitMQ.
+    # Referência: https://github.com/aznamier/keycloak-event-listener-rabbitmq
     # ================================================================================
     keycloak:
-        image: quay.io/keycloak/keycloak:22.0.5
+        # Imagem customizada com o plugin JAR pré-instalado em /opt/keycloak/providers/
+        build:
+            context: ../infra
+            dockerfile: docker/Dockerfile.keycloak
+        image: vibranium-keycloak:22.0.5
         container_name: vibranium-keycloak
         restart: unless-stopped
 
@@ -193,7 +243,11 @@ services:
                     cpus: '0.5'
                     memory: 512M
 
-        command: start
+        # start-dev: modo desenvolvimento (sem exigência de hostname/TLS)
+        # --import-realm: importa automaticamente JSONs de /opt/keycloak/data/import/
+        command:
+            - start-dev
+            - --import-realm
 
         environment:
             # Database configuration
@@ -207,7 +261,7 @@ services:
             KEYCLOAK_ADMIN: admin
             KEYCLOAK_ADMIN_PASSWORD: admin123 # TODO: Change in production
 
-            # HTTP configuration (Keycloak 22+ usa path sem /auth)
+            # HTTP configuration
             KC_HTTP_ENABLED: 'true'
             KC_HTTP_PORT: 8080
             KC_HOSTNAME_STRICT: 'false'
@@ -218,31 +272,54 @@ services:
             KC_HEALTH_ENABLED: 'true'
             KC_METRICS_ENABLED: 'true'
 
-            # Admin credentials (bootstrap na primeira inicialização)
+            # Bootstrap credentials (primeira inicialização)
             KC_BOOTSTRAP_ADMIN_USERNAME: admin
             KC_BOOTSTRAP_ADMIN_PASSWORD: admin123
 
             # Logs
             KC_LOG_LEVEL: INFO
 
-            # Performance - Cache local sem clustering (adequado para Docker)
+            # Cache local sem clustering (adequado para Docker single-node)
             KC_CACHE: local
+
+            # ---------------------------------------------------------------
+            # Plugin keycloak-event-listener-rabbitmq
+            # Variáveis lidas pelo provider para conectar ao broker AMQP
+            # ---------------------------------------------------------------
+            KK_TO_RMQ_URL: rabbitmq
+            KK_TO_RMQ_PORT: 5672
+            KK_TO_RMQ_USERNAME: guest
+            KK_TO_RMQ_PASSWORD: guest # TODO: Change in production
+            KK_TO_RMQ_VHOST: /
+            KK_TO_RMQ_EXCHANGE: amq.topic
+            KK_TO_RMQ_USE_TLS: 'false'
 
         ports:
             # Admin console + OAuth2
             - '8080:8080'
 
         volumes:
-            # Persistência de dados, realms, usuários e configurações do Keycloak
+            # Persistência de dados do Keycloak
             - keycloak_data:/opt/keycloak/data
-            - keycloak_themes:/opt/keycloak/themes
+            # Realm importado automaticamente na subida via --import-realm
+            - ./realm-export.json:/opt/keycloak/data/import/realm.json:ro
 
         depends_on:
             postgresql:
                 condition: service_healthy
+            rabbitmq:
+                condition: service_healthy
 
         networks:
             - vibranium-infra
+
+        # Healthcheck via bash /dev/tcp — curl não está disponível na imagem base do Keycloak 22 (UBI minimal)
+        healthcheck:
+            test: ['CMD-SHELL', 'exec 3<>/dev/tcp/localhost/8080 && echo -e "GET /health/live HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && grep -q "200 OK" <&3']
+            interval: 15s
+            timeout: 10s
+            retries: 10
+            start_period: 60s
 
         logging:
             driver: 'json-file'
@@ -285,7 +362,9 @@ volumes:
         driver: local
         labels:
             description: 'Realms, usuários, roles e configurações do Keycloak'
-    keycloak_themes:
+
+    # RabbitMQ - Message Broker
+    rabbitmq_data:
         driver: local
         labels:
-            description: 'Temas personalizados do Keycloak'
+            description: 'Dados persistidos do RabbitMQ (filas, exchanges, mensagens)'

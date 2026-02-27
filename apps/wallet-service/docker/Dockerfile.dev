@@ -20,10 +20,6 @@ COPY apps/wallet-service/src ./apps/wallet-service/src
 # Build completo (com todos os módulos) para cache Maven
 RUN mvn clean install -DskipTests -q 2>/dev/null || true
 
-# O código-fonte será montado via volume para hotreload
-# O comando será adaptado para usar o código com reload
-CMD ["mvn", "spring-boot:run", "-pl", "apps/wallet-service", "-Dspring-boot.run.fork=false"]
-
-# O código-fonte será montado via volume
-# O comando será executado via docker-compose command override
+# O código-fonte é montado via volume no docker-compose para hotreload.
+# O comando pode ser sobrescrito pelo docker-compose (command override).
 CMD ["mvn", "spring-boot:run", "-pl", "apps/wallet-service", "-Dspring-boot.run.fork=false"]

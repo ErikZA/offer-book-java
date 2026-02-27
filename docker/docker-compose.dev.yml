@@ -76,6 +76,95 @@ services:
             timeout: 5s
             retries: 5
 
+    # ================================================================================
+    # Keycloak PostgreSQL - Banco dedicado para o Keycloak (dev)
+    # ================================================================================
+    keycloak-db:
+        image: postgres:16-alpine
+        container_name: vibranium-keycloak-db-dev
+        environment:
+            POSTGRES_USER: keycloak
+            POSTGRES_PASSWORD: keycloak
+            POSTGRES_DB: keycloak_db
+        volumes:
+            - keycloak_db_data:/var/lib/postgresql/data
+        networks:
+            - vibranium-network-dev
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U keycloak -d keycloak_db']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    # ================================================================================
+    # Keycloak 22 - Authentication & Authorization (dev)
+    # Plugin keycloak-event-listener-rabbitmq publica eventos de auth no RabbitMQ.
+    # Referência: https://github.com/aznamier/keycloak-event-listener-rabbitmq
+    # ================================================================================
+    keycloak:
+        # Imagem customizada com o plugin JAR pré-instalado em /opt/keycloak/providers/
+        build:
+            context: ../infra
+            dockerfile: docker/Dockerfile.keycloak
+        image: vibranium-keycloak:22.0.5
+        container_name: vibranium-keycloak-dev
+        ports:
+            - '8180:8080'
+        # start-dev: modo desenvolvimento | --import-realm: importa JSONs de data/import/
+        command:
+            - start-dev
+            - --import-realm
+        environment:
+            # Database configuration
+            KC_DB: postgres
+            KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak_db
+            KC_DB_USERNAME: keycloak
+            KC_DB_PASSWORD: keycloak
+
+            # Admin credentials
+            KEYCLOAK_ADMIN: admin
+            KEYCLOAK_ADMIN_PASSWORD: admin123
+
+            # HTTP configuration
+            KC_HTTP_ENABLED: 'true'
+            KC_HTTP_PORT: 8080
+            KC_HOSTNAME_STRICT: 'false'
+
+            # Health & Metrics
+            KC_HEALTH_ENABLED: 'true'
+            KC_METRICS_ENABLED: 'true'
+
+            KC_LOG_LEVEL: INFO
+            KC_CACHE: local
+
+            # ---------------------------------------------------------------
+            # Plugin keycloak-event-listener-rabbitmq
+            # ---------------------------------------------------------------
+            KK_TO_RMQ_URL: rabbitmq
+            KK_TO_RMQ_PORT: 5672
+            KK_TO_RMQ_USERNAME: guest
+            KK_TO_RMQ_PASSWORD: guest
+            KK_TO_RMQ_VHOST: /
+            KK_TO_RMQ_EXCHANGE: amq.topic
+            KK_TO_RMQ_USE_TLS: 'false'
+        volumes:
+            - keycloak_dev_data:/opt/keycloak/data
+            # Realm importado automaticamente na subida via --import-realm
+            - ./realm-export.json:/opt/keycloak/data/import/realm.json:ro
+        depends_on:
+            keycloak-db:
+                condition: service_healthy
+            rabbitmq:
+                condition: service_healthy
+        networks:
+            - vibranium-network-dev
+        healthcheck:
+            test: ['CMD-SHELL', 'exec 3<>/dev/tcp/localhost/8080 && echo -e "GET /health/live HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && grep -q "200 OK" <&3']
+            interval: 15s
+            timeout: 10s
+            retries: 10
+            start_period: 60s
+
     # ================== Development Services with Hot Reload ==================
 
     order-service:
@@ -102,6 +191,7 @@ services:
             - mongodb
             - redis
             - rabbitmq
+            - keycloak
         networks:
             - vibranium-network-dev
         healthcheck:
@@ -134,6 +224,7 @@ services:
         depends_on:
             - postgres
             - rabbitmq
+            - keycloak
         networks:
             - vibranium-network-dev
         healthcheck:
@@ -152,4 +243,6 @@ volumes:
     postgres_data:
     redis_data:
     rabbitmq_data:
+    keycloak_db_data:
+    keycloak_dev_data:
     m2_cache:

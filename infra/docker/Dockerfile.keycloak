@@ -1,0 +1,23 @@
+# ================================================================================
+# Imagem customizada do Keycloak 22 com o plugin keycloak-event-listener-rabbitmq
+#
+# O plugin (keycloak-to-rabbit-3.0.5.jar) publica eventos de autenticação do
+# Keycloak (login, logout, registro etc.) diretamente no RabbitMQ via AMQP,
+# permitindo reativos auditáveis nos microsserviços da plataforma Vibranium.
+#
+# Referência: https://github.com/aznamier/keycloak-event-listener-rabbitmq
+#
+# Contexto de build esperado: infra/
+# ================================================================================
+FROM quay.io/keycloak/keycloak:22.0.5
+
+# Copia o plugin para o diretório de providers do Keycloak.
+# O Keycloak carrega automaticamente todos os JARs presentes em /opt/keycloak/providers/
+# durante o build da imagem otimizada (passo RUN abaixo).
+COPY keycloak/keycloak-to-rabbit-3.0.5.jar /opt/keycloak/providers/keycloak-to-rabbit-3.0.5.jar
+
+# Reconstrói o servidor Keycloak incluindo o novo provider.
+# Necessário para que o plugin seja registrado no Service Loader do Quarkus.
+RUN /opt/keycloak/bin/kc.sh build
+
+# Ponto de entrada padrão já definido na imagem base.

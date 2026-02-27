@@ -76,6 +76,66 @@ docker compose -f docker/docker-compose.yml up
 | REST Assured | 5.x | Container |
 | Docker | Compose | Máquina Host |
 
+### Infraestrutura de Segurança e Mensageria
+
+| Componente | Versão | Função |
+|-----------|--------|---------|
+| Keycloak | 22.0.5 | Autenticação e autorização OAuth2/OIDC |
+| PostgreSQL | 16 | Banco compartilhado (Kong + Keycloak) |
+| Kong | 3.4 | API Gateway |
+| RabbitMQ | 3.13 | Message broker AMQP |
+| keycloak-event-listener-rabbitmq | 3.0.5 | Plugin de eventos de auth |
+
+## 🔐 Autenticação e Plugin de Eventos
+
+### O que foi criado
+
+Foi adicionada uma **camada de segurança completa** baseada em Keycloak 22, com importação automática de realm ao subir o ambiente. Todo o estado inicial é declarativo via [`docker/realm-export.json`](docker/realm-export.json):
+
+- **Realm** `orderbook-realm` com roles `USER` e `ADMIN`
+- **Cliente** `order-client` (public, direct access grant habilitado)
+- **Usuário de teste** `tester@vibranium.com` com role `USER` e senha `test-password`
+
+A imagem do Keycloak é **customizada** (`infra/docker/Dockerfile.keycloak`) — ela parte da imagem oficial e instala o plugin **`keycloak-to-rabbit-3.0.5.jar`** em `/opt/keycloak/providers/`, executando `kc.sh build` para registrar o provider via Quarkus Service Loader.
+
+### Como funciona
+
+```
+Usuário faz login/logout
+        ↓
+    Keycloak 22
+        ↓  plugin keycloak-event-listener-rabbitmq
+    RabbitMQ (exchange: amq.topic)
+        ↓  routing key: KK.EVENT.REALM.<realm>.<event_type>
+    Microsserviços (consumers)
+        ↓
+  wallet-service, order-service (a implementar)
+```
+
+O plugin publica no exchange `amq.topic` usando routing keys no formato `KK.EVENT.REALM.orderbook-realm.LOGIN`, `KK.EVENT.REALM.orderbook-realm.REGISTER`, etc. Isso permite que qualquer microsserviço **reaja de forma reativa** a eventos de autenticação sem acoplamento direto ao Keycloak.
+
+### Por que o plugin foi adicion ado
+
+Em plataformas de trading, certos processos de negócio precisam ser disparados imediatamente no momento em que um usuário se autentica:
+
+- **Criação automática de carteira** no `wallet-service` quando um novo usuário registra (`REGISTER` event)
+- **Auditoria de sessões** — rastrear logins/logouts para conformidade regulatória
+- **Invalidação de cache** — limpar caches locais de sessão no `order-service` em logout
+- **Notificações** — alertar sobre logins suspeitos ou de novos dispositivos
+
+Sem o plugin, os serviços teriam que fazer polling na API do Keycloak (ineficiente) ou implementar webhooks customizados (frágil). Com o plugin, o Keycloak publica os eventos no broker que já é a espinha dorsal da plataforma, mantendo consistência arquitetural.
+
+### Arquivos criados/modificados
+
+| Arquivo | Descrição |
+|---|---|
+| [`infra/docker/Dockerfile.keycloak`](infra/docker/Dockerfile.keycloak) | Imagem customizada com plugin JAR e `kc.sh build` |
+| [`docker/realm-export.json`](docker/realm-export.json) | Realm declarativo importado via `--import-realm` |
+| [`infra/keycloak/realm-export.json`](infra/keycloak/realm-export.json) | Cópia do realm para o ambiente staging |
+| [`docker/docker-compose.yml`](docker/docker-compose.yml) | Adicionados `rabbitmq` + Keycloak customizado com `KK_TO_RMQ_*` |
+| [`docker/docker-compose.dev.yml`](docker/docker-compose.dev.yml) | Adicionados `keycloak-db`, `keycloak` e variáveis do plugin |
+| [`infra/docker-compose.staging.yml`](infra/docker-compose.staging.yml) | Adicionados `keycloak-db`, `keycloak` com `start --optimized` |
+
 ## 🧪 Testes
 
 ✅ **Todos os testes executam no Docker**

@@ -80,6 +80,50 @@ GET    /api/wallets/{id}/transactions # Histórico
 - `OrderMatchedEvent` - Para atualizar saldo
 - `OrderCancelledEvent` - Para reembolsar
 
+#### Eventos de Autenticação (Keycloak → RabbitMQ)
+
+O `wallet-service` deve consumir eventos publicados pelo **plugin `keycloak-event-listener-rabbitmq`** no exchange `amq.topic` do RabbitMQ. Esses eventos permitem reagir de forma reativa a mudanças de ciclo de vida do usuário, sem acoplamento direto ao Keycloak.
+
+| Evento Keycloak | Routing Key AMQP | Ação esperada no wallet-service |
+|---|---|---|
+| `REGISTER` | `KK.EVENT.REALM.orderbook-realm.REGISTER` | **Criar carteira automaticamente** para o novo usuário com saldo zero |
+| `LOGIN` | `KK.EVENT.REALM.orderbook-realm.LOGIN` | (Opcional) Registrar último acesso na carteira para auditoria |
+| `LOGOUT` | `KK.EVENT.REALM.orderbook-realm.LOGOUT` | (Opcional) Invalidar cache local de sessão |
+| `DELETE_ACCOUNT` | `KK.EVENT.REALM.orderbook-realm.DELETE_ACCOUNT` | Iniciar processo de encerramento de conta / bloqueio de carteira |
+
+O payload publicado no broker segue o formato:
+
+```json
+{
+  "id": "<uuid-do-evento>",
+  "time": 1709041200000,
+  "realmId": "orderbook-realm",
+  "type": "REGISTER",
+  "userId": "<keycloak-user-id>",
+  "clientId": "order-client",
+  "ipAddress": "192.168.1.1",
+  "details": {
+    "username": "tester",
+    "email": "tester@vibranium.com"
+  }
+}
+```
+
+**Exemplo de listener Spring AMQP** (a implementar):
+
+```java
+// Bind na fila ao routing key de registro do realm
+@RabbitListener(bindings = @QueueBinding(
+    value = @Queue("wallet.keycloak.register"),
+    exchange = @Exchange(value = "amq.topic", type = "topic"),
+    key = "KK.EVENT.REALM.orderbook-realm.REGISTER"
+))
+public void onUserRegistered(KeycloakEvent event) {
+    // Criar carteira para o novo usuário com userId = event.getUserId()
+    walletService.createWallet(event.getUserId());
+}
+```
+
 ### Eventos Publicados
 - `WalletCreditedEvent` - Quando crédito é realizado
 - `WalletDebitedEvent` - Quando débito é realizado
