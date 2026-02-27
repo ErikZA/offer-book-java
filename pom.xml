@@ -67,7 +67,9 @@
                             <include>**/*Tests.java</include>
                         </includes>
                         <testFailureIgnore>false</testFailureIgnore>
-                        <argLine>-XX:+EnableDynamicAgentLoading -Xshare:off</argLine>
+                        <!-- @{argLine}: late-binding para o agente Jacoco ser injetado ANTES
+                             do JVM args estáticos. Sem @{} o agente é ignorado e coverage = 0. -->
+                        <argLine>@{argLine} -XX:+EnableDynamicAgentLoading -Xshare:off</argLine>
                     </configuration>
                 </plugin>
 
@@ -81,8 +83,8 @@
                             <include>**/*IT.java</include>
                             <include>**/*ITCase.java</include>
                         </includes>
-                        <!-- Mesmo argLine do Surefire: silencia warnings ByteBuddy/Mockito no JDK 21 -->
-                        <argLine>-XX:+EnableDynamicAgentLoading -Xshare:off</argLine>
+                        <!-- Mesmo late-binding @{argLine} do Surefire -->
+                        <argLine>@{argLine} -XX:+EnableDynamicAgentLoading -Xshare:off</argLine>
                     </configuration>
                     <executions>
                         <execution>
@@ -94,17 +96,44 @@
                     </executions>
                 </plugin>
 
-                <!-- Jacoco for Code Coverage -->
+                <!-- =============================================================
+                     Jacoco — Code Coverage
+                     Exclusões: apenas código funcional (lógica de negócio) é medido.
+                     Excluído: config, DTOs, entidades JPA, repositórios (interfaces),
+                               exceções simples, contratos compartilhados, main class.
+                ============================================================= -->
                 <plugin>
                     <groupId>org.jacoco</groupId>
                     <artifactId>jacoco-maven-plugin</artifactId>
                     <version>0.8.14</version>
+                    <configuration>
+                        <excludes>
+                            <!-- Spring @Configuration: beans de infraestrutura sem lógica testável -->
+                            <exclude>com/vibranium/**/config/**</exclude>
+                            <!-- Spring Boot main class -->
+                            <exclude>com/vibranium/**/*Application.class</exclude>
+                            <!-- JPA entities: getters/setters gerados pelo Lombok/@Data -->
+                            <exclude>com/vibranium/**/domain/model/**</exclude>
+                            <!-- JPA repository interfaces: implementação gerada pelo Spring Data -->
+                            <exclude>com/vibranium/**/domain/repository/**</exclude>
+                            <!-- DTOs/request/response: classes de transporte sem lógica -->
+                            <exclude>com/vibranium/**/web/dto/**</exclude>
+                            <exclude>com/vibranium/**/application/dto/**</exclude>
+                            <!-- Exceções: apenas construtores de mensagem, sem lógica -->
+                            <exclude>com/vibranium/**/*Exception.class</exclude>
+                            <!-- common-contracts: records imutáveis e enums (sem lógica de negócio) -->
+                            <exclude>com/vibranium/contracts/**</exclude>
+                        </excludes>
+                    </configuration>
                     <executions>
+                        <!-- Injeta o agente Jacoco na JVM dos testes via argLine -->
                         <execution>
+                            <id>prepare-agent</id>
                             <goals>
                                 <goal>prepare-agent</goal>
                             </goals>
                         </execution>
+                        <!-- Gera relatório HTML + XML após a fase test -->
                         <execution>
                             <id>report</id>
                             <phase>test</phase>
@@ -116,6 +145,16 @@
                 </plugin>
             </plugins>
         </pluginManagement>
+
+        <!-- Ativação do Jacoco em todos os módulos-filhos.
+             pluginManagement apenas define a configuração; este bloco é quem
+             executa o plugin em cada módulo do multi-project build. -->
+        <plugins>
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
     </build>
 
 </project>
