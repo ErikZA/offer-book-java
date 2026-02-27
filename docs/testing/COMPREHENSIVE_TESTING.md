@@ -630,6 +630,41 @@ void shouldHandleConcurrentRequests() {
 }
 ```
 
+### Isolamento de Filas AMQP no `@BeforeEach`
+
+Testes de integração que consomem mensagens RabbitMQ precisam de uma limpeza ativa da fila
+no `@BeforeEach`. Apenas limpar o banco de dados não é suficiente: mensagens em trânsito
+(entregues ao consumer antes do `deleteAll()`) continuam sendo processadas assincronamente
+no mesmo thread pool, causando estado inconsistente no próximo teste.
+
+**Padrão recomendado** (extraído de `KeycloakUserRegistryIntegrationTest`):
+
+```java
+@BeforeEach
+void cleanDatabase() throws InterruptedException {
+    // 1. Drena a fila para evitar que mensagens do teste anterior
+    //    sejam processadas depois do deleteAll()
+    while (rabbitTemplate.receive(QUEUE_KEYCLOAK_REG, 200) != null) {
+        // descarta mensagens residuais (timeout 200ms por poll)
+    }
+
+    // 2. Aguarda consumers in-flight finalizarem sua transação atual
+    Thread.sleep(300);
+
+    // 3. Limpa o banco COM limpeza que ignora @Version
+    //    Use deleteAllInBatch() (não deleteAll()) para evitar
+    //    OptimisticLockingFailureException quando a consumer modifica
+    //    a entidade entre o carregamento e o delete
+    userRegistryRepository.deleteAll();
+}
+```
+
+> ⚠️ **Por que não `deleteAll()` direto?**  
+> `deleteAll()` carrega as entidades, checa `@Version` e deleta individualmente pela PK.  
+> Se um consumer assíncrono modificou a entidade desde o carregamento, o Hibernate  
+> lança `ObjectOptimisticLockingFailureException`.  
+> Use `deleteAllInBatch()` que executa um único `DELETE FROM tabela` sem verificação de versão.
+
 ---
 
 ## Executando Testes
@@ -1009,6 +1044,79 @@ docker-compose -f docker-compose.dev.yml restart postgres
 - Usar `@ExtendWith(MockitoExtension.class)` ou `MockitoAnnotations.openMocks(this)`
 - Verificar se a classe é `final` (Mockito não consegue mockar classes finais)
 - Usar `mock(Class.class)` manualmente se anotação não funcionar
+
+### Mensagens não chegam na DLQ
+
+Se mensagens rejeitadas (NACK sem requeue) não aparecem na fila `order.dead-letter`,
+verifique a seguinte cadeia completa:
+
+1. **Fila com `x-dead-letter-exchange`?**  
+   Cada fila consumida precisa declarar:
+   ```java
+   args.put("x-dead-letter-exchange", "vibranium.dlq");
+   args.put("x-dead-letter-routing-key", "order.dead-letter");
+   ```
+
+2. **Binding no DLX declarado explicitamente?**  
+   O exchange `vibranium.dlq` é do tipo `direct` — ele **não** roteia para `order.dead-letter`
+   automaticamente. É obrigatório declarar o binding:
+   ```java
+   // Em RabbitMQConfig.java
+   @Bean
+   public Binding deadLetterBinding() {
+       // Sem este binding, mensagens mortas são descartadas silenciosamente (unroutable)
+       return BindingBuilder
+               .bind(deadLetterQueue())         // order.dead-letter
+               .to(deadLetterExchange())         // vibranium.dlq
+               .with(ROUTING_KEY_DEAD_LETTER); // "order.dead-letter"
+   }
+   ```
+
+3. **Retry esgotado antes de mandar para DLX?**  
+   O Spring AMQP só move para DLX após esgotar as tentativas em `spring.rabbitmq.listener.simple.retry.max-attempts`.
+   Para testar em ambiente local, reduza para `max-attempts: 1`.
+
+4. **Inspeção via Management UI:**  
+   Acesse `http://localhost:15672` → Queues → `order.dead-letter` → Get messages.
+
+### Testes com `@Disabled` (Toxiproxy / resiliência de infraestrutura)
+
+Alguns testes de integração exigem injeção de falhas de rede (latência, timeout, partição)
+que não podem ser simuladas com o container Redis / RabbitMQ compartilhado da suite.
+Esses testes são marcados com `@Disabled` e rastreados como dívida técnica.
+
+**Exemplo atual:**
+
+```
+apps/order-service/src/test/java/.../integration/MatchEngineRedisIntegrationTest.java
+  → whenRedisUnavailable_thenOrderIsCancelled()  @Disabled
+```
+
+**Razão:** Simular indisponibilidade do Redis requer um proxy de rede intermediário
+([Toxiproxy](https://github.com/Shopify/toxiproxy)) para introduzir falhas sem derrubar
+ios outros containers que usam o mesmo Redis.
+
+**Como habilitar no futuro:**
+
+1. Adicionar `ghcr.io/shopify/toxiproxy` ao `docker-compose-test.yml` como proxy na frente do Redis.
+2. Usar `toxiproxy-java` para criar proxies programáticos dentro do teste.
+3. Remover `@Disabled` e implementar o corpo do teste com `ToxiproxyContainer`:
+   ```java
+   // Exemplo (ainda não implementado)
+   @Test
+   void whenRedisUnavailable_thenOrderIsCancelled() {
+       // 1. Introduzir latência de 5s no proxy Redis
+       redisProxy.toxics().latency("redis-down", ToxicDirection.DOWNSTREAM, 5000);
+       // 2. Submeter ordem
+       // 3. Aguardar compensação (CANCELLED)
+       // 4. Remover toxic
+       redisProxy.toxics().get("redis-down").remove();
+   }
+   ```
+
+> **Política:** Testes `@Disabled` não devem permanecer sem issue de rastreamento.
+> Inclua sempre o motivo técnico no parâmetro da anotação e abra uma issue para
+> a sprint de resiliência.
 
 ---
 

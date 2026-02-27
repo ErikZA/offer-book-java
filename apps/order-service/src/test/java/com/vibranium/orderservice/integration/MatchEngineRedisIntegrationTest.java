@@ -270,11 +270,44 @@ class MatchEngineRedisIntegrationTest extends AbstractIntegrationTest {
     // Cenário 5 — Simulação de Redis indisponível (desabilitado — requer Toxiproxy)
     // =========================================================================
 
+    /**
+     * Verifica que uma ordem é movida para o estado {@code CANCELLED} quando o Redis
+     * fica indisponível durante a execução do script Lua de match.
+     *
+     * <h3>Por que este teste está desabilitado?</h3>
+     * Simular indisponibilidade de rede exige um proxy intermediário entre a JVM e o
+     * container Redis. O container Redis compartilhado desta suite não pode ser
+     * derrubado sem impactar todos os outros testes em execução paralela.
+     *
+     * <h3>Solução planejada (sprint de resiliência)</h3>
+     * <ol>
+     *   <li>Adicionar {@code ghcr.io/shopify/toxiproxy} ao {@code docker-compose-test.yml}
+     *       como proxy na frente do Redis (ex: {@code redis-proxy:6399 → redis:6379}).</li>
+     *   <li>Usar {@code ToxiproxyContainer} do Testcontainers para criar o proxy
+     *       programaticamente no {@code @BeforeAll}.</li>
+     *   <li>No corpo do teste, introduzir um toxic de timeout/latência:
+     *       <pre>{@code
+     * redisProxy.toxics()
+     *     .timeout("redis-timeout", ToxicDirection.DOWNSTREAM, 0); // drop connection
+     *       }</pre>
+     *   </li>
+     *   <li>Submeter uma ordem e aguardar o consumo do evento de compensação
+     *       ({@code FundsReservationFailedEvent}) que deve mover a ordem para {@code CANCELLED}.</li>
+     *   <li>Remover o toxic e validar que o sistema se recupera para novos testes.</li>
+     * </ol>
+     *
+     * <h3>Referências</h3>
+     * <ul>
+     *   <li><a href="https://github.com/Shopify/toxiproxy">Toxiproxy (Shopify)</a></li>
+     *   <li><a href="https://java.testcontainers.org/modules/toxiproxy/">Testcontainers Toxiproxy module</a></li>
+     *   <li>Rastrear como issue na milestone "Resiliência e Chaos Engineering"</li>
+     * </ul>
+     */
     @Test
     @Disabled("Requer container Redis dedicado (Toxiproxy) para simular indisponibilidade sem afetar outros testes")
     @DisplayName("Dado Redis indisponível, Order deve ser CANCELLED")
     void whenRedisUnavailable_thenOrderIsCancelled() {
-        // Implementar em sprint de resiliência com Toxiproxy ou container dedicado.
+        // TODO: Implementar em sprint de resiliência — ver Javadoc acima para roadmap completo.
     }
 
     // =========================================================================
