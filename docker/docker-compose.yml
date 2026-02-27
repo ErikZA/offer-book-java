@@ -173,6 +173,14 @@ services:
         networks:
             - vibranium-infra
 
+        # Healthcheck via Admin API /status — confirma que Kong está operacional
+        healthcheck:
+            test: ['CMD-SHELL', 'curl -sf http://localhost:8001/status || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 10
+            start_period: 30s
+
         logging:
             driver: 'json-file'
             options:
@@ -332,6 +340,48 @@ services:
                 max-size: '100m'
                 max-file: '10'
                 labels: 'service=keycloak'
+
+    # ================================================================================
+    # kong-init — Provisiona Service, Route e Plugins no Kong via Admin API
+    # Executa DEPOIS que Kong e Keycloak estão healthy.
+    # Script kong-setup.sh:
+    #   1. Cria service order-service → upstream http://order-service:8080
+    #   2. Cria route POST /api/v1/orders
+    #   3. Adiciona plugins: jwt (validação RS256 Keycloak), rate-limiting (100 req/s), cors
+    #   4. Busca JWKS do Keycloak e registra credencial RSA no consumer
+    # ================================================================================
+    kong-init:
+        build:
+            context: .
+            dockerfile: Dockerfile.kong-init
+        container_name: vibranium-kong-init
+        restart: 'no'
+
+        environment:
+            KONG_ADMIN_URL: http://kong:8001
+            KEYCLOAK_URL: http://keycloak:8080
+            KEYCLOAK_REALM: orderbook-realm
+            KONG_CONSUMER_NAME: keycloak-realm-consumer
+            # Issuer deve ser igual ao campo `iss` nos JWTs do Keycloak.
+            # Como o cliente acessa via localhost:8080, o iss é mapeado para localhost.
+            # Ajuste se KC_HOSTNAME for configurado diferentemente.
+            KEYCLOAK_ISSUER: http://localhost:8080/realms/orderbook-realm
+
+        depends_on:
+            kong:
+                condition: service_healthy
+            keycloak:
+                condition: service_healthy
+
+        networks:
+            - vibranium-infra
+
+        logging:
+            driver: 'json-file'
+            options:
+                max-size: '10m'
+                max-file: '3'
+                labels: 'service=kong-init'
 
 networks:
     vibranium-infra:
