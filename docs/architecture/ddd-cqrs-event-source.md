@@ -32,6 +32,9 @@ No nosso MVP, usaremos o DDD para separar claramente as responsabilidades:
 
 
 2. **Contexto do Livro de Ofertas (Order Book):** Teremos um conceito de `Order` que lida com as regras de preço e quantidade.
+* O agregado `Order` possui a máquina de estados `PENDING → OPEN → PARTIAL → FILLED` e o invariante `remainingAmount >= 0`.
+  * Cada chamada ao método `applyMatch(executedQty)` decrementa `remainingAmount` e transita para `PARTIAL` (se há residual) ou `FILLED` (se zerou).
+  * **O Redis Sorted Set (livro) e o PostgreSQL (estado da ordem) ficam sincronizados pelo Script Lua atômico**: o Lua faz o `ZADD` do residual e retorna a quantidade executada; o Java usa a quantidade retornada para chamar `applyMatch` e persistir.
 * A comunicação entre a `Wallet` e o `Order Book` não é feita chamando métodos um do outro diretamente, mas sim conversando através de **Eventos** (nosso Event Storming!).
 
 
@@ -164,6 +167,24 @@ O CQRS está implementado nos dois eixos que a arquitetura define:
 1. `OrderEventProjectionConsumer` ouve 4 tipos de evento via RabbitMQ
 2. Projeta os eventos em `OrderDocument` no MongoDB (consistência eventual)
 3. `OrderQueryController` lê direto do MongoDB — sem JOIN, sem lock no PostgreSQL
+
+### Partial Fill no contexto CQRS
+
+Um cenário importante para o Command Side é o **partial fill**: a ordem entra com `qty=100` mas apenas `qty=40` estão disponíveis no livro.
+
+```
+Command Side (write):                     Redis (livro):
+  Order.status = PARTIAL                    vibranium:bids
+  Order.remainingAmount = 60                  score=500  member="orderId|...|60|..."
+```
+
+O ponto crítico: **o Redis e o PostgreSQL precisam ficar consistentes**. O Script Lua trata isso atomicamente:
+1. Dentro do `EVAL`: remove a contraparte ASK, calcula o residual, reinsere ASK com `qty=residual`, retorna `matchedQty` e `remainingCounterpartQty`.
+2. O Java usa `matchedQty` para chamar `order.applyMatch(matchedQty)` e persiste no PostgreSQL.
+
+Não há two-phase commit — se o PostgreSQL falhar após o Lua, a ordem fica `PENDING` no banco mas o residual já está no Redis. A guarda de idempotência por `eventId` e o reprocessamento da mensagem pelo broker (at-least-once) garantem convergência.
+
+### Resumo Visual do CQRS no MVP:
 
 **Topologia do Read Model:**
 ```

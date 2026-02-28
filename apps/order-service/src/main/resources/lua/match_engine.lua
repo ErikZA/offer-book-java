@@ -17,8 +17,10 @@
 
   Retorno (lista de strings):
     {"NO_MATCH"}                          → sem contraparte, ordem inserida no livro
-    {"MATCH", counterpartValue, matchedQty, fillType}
+    {"MATCH", counterpartValue, matchedQty, fillType, remainingCounterpartQty}
       fillType: "FULL" | "PARTIAL_ASK" | "PARTIAL_BID"
+      remainingCounterpartQty: qty residual da contraparte (ZERO quando contraparte
+        foi totalmente consumida; positivo quando contraparte tem saldo remanescente).
 ]]
 
 local orderType  = ARGV[1]
@@ -58,12 +60,14 @@ if orderType == 'BUY' then
         local newAskValue = table.concat(parts, '|')
         redis.call('ZREM', KEYS[1], askValue)
         redis.call('ZADD', KEYS[1], askScore, newAskValue)
-        return {'MATCH', askValue, string.format('%.8f', orderQty), 'PARTIAL_ASK'}
+        -- remainingCounterpartQty = qty remanescente do ASK (contraparte parcialmente executada)
+        return {'MATCH', askValue, string.format('%.8f', orderQty), 'PARTIAL_ASK', string.format('%.8f', remaining)}
 
     elseif askQty == orderQty then
         -- Fill completo: remove o ASK inteiramente
         redis.call('ZREM', KEYS[1], askValue)
-        return {'MATCH', askValue, string.format('%.8f', orderQty), 'FULL'}
+        -- remainingCounterpartQty = 0 (ASK totalmente consumido)
+        return {'MATCH', askValue, string.format('%.8f', orderQty), 'FULL', '0.00000000'}
 
     else
         -- ASK qty < BID qty: ASK é consumido; BID residual entra no livro
@@ -73,7 +77,8 @@ if orderType == 'BUY' then
         bidParts[4]           = string.format('%.8f', remainingBidQty)
         local newBidValue     = table.concat(bidParts, '|')
         redis.call('ZADD', KEYS[2], priceScore, newBidValue)
-        return {'MATCH', askValue, string.format('%.8f', askQty), 'PARTIAL_BID'}
+        -- remainingCounterpartQty = 0 (ASK totalmente consumido; BID residual é a ordem INGRESSANTE)
+        return {'MATCH', askValue, string.format('%.8f', askQty), 'PARTIAL_BID', '0.00000000'}
     end
 
 elseif orderType == 'SELL' then
@@ -100,12 +105,14 @@ elseif orderType == 'SELL' then
         local newBidValue = table.concat(parts, '|')
         redis.call('ZREM', KEYS[2], bidValue)
         redis.call('ZADD', KEYS[2], bidScore, newBidValue)
-        return {'MATCH', bidValue, string.format('%.8f', orderQty), 'PARTIAL_BID'}
+        -- remainingCounterpartQty = qty remanescente do BID (contraparte parcialmente executada)
+        return {'MATCH', bidValue, string.format('%.8f', orderQty), 'PARTIAL_BID', string.format('%.8f', remaining)}
 
     elseif bidQty == orderQty then
         -- Fill completo
         redis.call('ZREM', KEYS[2], bidValue)
-        return {'MATCH', bidValue, string.format('%.8f', orderQty), 'FULL'}
+        -- remainingCounterpartQty = 0 (BID totalmente consumido)
+        return {'MATCH', bidValue, string.format('%.8f', orderQty), 'FULL', '0.00000000'}
 
     else
         -- BID qty < ASK qty: BID consumido; ASK residual entra no livro
@@ -115,7 +122,8 @@ elseif orderType == 'SELL' then
         askParts[4]           = string.format('%.8f', remainingAskQty)
         local newAskValue     = table.concat(askParts, '|')
         redis.call('ZADD', KEYS[1], priceScore, newAskValue)
-        return {'MATCH', bidValue, string.format('%.8f', bidQty), 'PARTIAL_ASK'}
+        -- remainingCounterpartQty = 0 (BID totalmente consumido; ASK residual é a ordem INGRESSANTE)
+        return {'MATCH', bidValue, string.format('%.8f', bidQty), 'PARTIAL_ASK', '0.00000000'}
     end
 end
 

@@ -78,12 +78,21 @@ public class RedisMatchEngineAdapter {
     /**
      * Resultado de uma tentativa de match.
      *
-     * @param matched       {@code true} se houve cruzamento com contraparte.
-     * @param counterpartId UUID da ordem contraparte (ou {@code null} se sem match).
-     * @param counterpartUserId   userId da contraparte.
-     * @param counterpartWalletId walletId da contraparte.
-     * @param matchedQty    Quantidade executada no match.
-     * @param fillType      "FULL", "PARTIAL_ASK" ou "PARTIAL_BID".
+     * @param matched                  {@code true} se houve cruzamento com contraparte.
+     * @param counterpartId            UUID da ordem contraparte (ou {@code null} se sem match).
+     * @param counterpartUserId        userId da contraparte.
+     * @param counterpartWalletId      walletId da contraparte.
+     * @param matchedQty               Quantidade executada no match.
+     * @param remainingCounterpartQty  Quantidade residual da contraparte após o match.
+     *                                 {@code ZERO} quando a contraparte foi totalmente consumida
+     *                                 (casos FULL e PARTIAL_BID da ordem ingressante BUY;
+     *                                  casos FULL e PARTIAL_ASK da ordem ingressante SELL).
+     *                                 Positivo quando a contraparte tem saldo remanescente
+     *                                 (PARTIAL_ASK para BUY ingressante;
+     *                                  PARTIAL_BID para SELL ingressante).
+     *                                 O Lua já reinseriu atomicamente a contraparte residual
+     *                                 no Sorted Set; este campo é informativo para o camada Java.
+     * @param fillType                 "FULL", "PARTIAL_ASK" ou "PARTIAL_BID".
      */
     public record MatchResult(
             boolean matched,
@@ -91,10 +100,12 @@ public class RedisMatchEngineAdapter {
             String counterpartUserId,
             UUID counterpartWalletId,
             BigDecimal matchedQty,
+            BigDecimal remainingCounterpartQty,
             String fillType
     ) {
         public static MatchResult noMatch() {
-            return new MatchResult(false, null, null, null, BigDecimal.ZERO, "NO_MATCH");
+            return new MatchResult(false, null, null, null,
+                    BigDecimal.ZERO, BigDecimal.ZERO, "NO_MATCH");
         }
     }
 
@@ -183,6 +194,18 @@ public class RedisMatchEngineAdapter {
         String matchedQtyStr    = asString(result.get(2));
         String fillType         = asString(result.get(3));
 
+        // 5º elemento: remainingCounterpartQty — adicionado no Subtask 2.1 (US-002)
+        // Fallback para BigDecimal.ZERO por compatibilidade com versões antigas do script Lua
+        BigDecimal remainingCounterpartQty = BigDecimal.ZERO;
+        if (result.size() >= 5) {
+            try {
+                remainingCounterpartQty = new BigDecimal(asString(result.get(4)));
+            } catch (NumberFormatException nfe) {
+                logger.warn("5º elemento do Lua não pôde ser parseado como BigDecimal: {}",
+                        asString(result.get(4)));
+            }
+        }
+
         String[] parts = counterpartValue.split("\\|");
         if (parts.length < 5) {
             logger.error("Valor da contraparte malformado: {}", counterpartValue);
@@ -196,6 +219,7 @@ public class RedisMatchEngineAdapter {
                     parts[1],                    // userId da contraparte
                     UUID.fromString(parts[2]),   // walletId da contraparte
                     new BigDecimal(matchedQtyStr),
+                    remainingCounterpartQty,
                     fillType
             );
         } catch (Exception e) {
@@ -203,6 +227,65 @@ public class RedisMatchEngineAdapter {
                     counterpartValue, e.getMessage());
             return MatchResult.noMatch();
         }
+    }
+
+    /**
+     * Reinsere o residual de uma ordem parcialmente executada no Sorted Set correto.
+     *
+     * <p><strong>USO NORMAL:</strong> Este método NÃO precisa ser chamado no fluxo padrão.
+     * O script Lua {@code match_engine.lua} já executa o requeue atomicamente como parte
+     * da transação (ZREM → ZADD) dentro do mesmo {@code EVAL} — garantindo que nenhum
+     * consumidor concorrente leia uma janela inconsistente.</p>
+     *
+     * <p><strong>QUANDO USAR:</strong> Exclusivamente em cenários de disaster recovery,
+     * replay de eventos ou reprocessamento forçado fora do caminho feliz da Saga.
+     * Chamar este método após {@code tryMatch()} resultará em double-entry no Sorted Set
+     * pois o Lua já inseriu o residual.</p>
+     *
+     * <p>Implementação: constrói o valor pipe-delimited a partir dos campos do
+     * {@link MatchResult} e executa {@code ZADD} na chave do lado correto:</p>
+     * <ul>
+     *   <li>{@code PARTIAL_ASK} (contraparte ASK sobrou) → chave {@code vibranium:asks}</li>
+     *   <li>{@code PARTIAL_BID} (contraparte BID sobrou) → chave {@code vibranium:bids}</li>
+     * </ul>
+     *
+     * @param result    MatchResult de um match parcial com {@code remainingCounterpartQty > 0}.
+     * @param price     Preço da ordem contraparte, necessário para recalcular o score.
+     * @param correlId  CorrelationId original da ordem contraparte.
+     * @param epochMs   Timestamp original (épocaMilissegundos) da ordem contraparte.
+     * @throws IllegalArgumentException se {@code result} não for parcial ou {@code remainingCounterpartQty <= 0}.
+     */
+    public void requeueResidual(MatchResult result, BigDecimal price,
+                                UUID correlId, long epochMs) {
+        if (!result.matched()) {
+            throw new IllegalArgumentException("requeueResidual requer MatchResult com matched=true");
+        }
+        if (result.remainingCounterpartQty().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException(
+                    "requeueResidual requer remainingCounterpartQty > 0; recebido: "
+                    + result.remainingCounterpartQty());
+        }
+
+        // Reconstrói o valor do membro: orderId|userId|walletId|qty|correlId|epochMs
+        String residualValue = String.join("|",
+                result.counterpartId().toString(),
+                result.counterpartUserId(),
+                result.counterpartWalletId().toString(),
+                result.remainingCounterpartQty().toPlainString(),
+                correlId.toString(),
+                String.valueOf(epochMs)
+        );
+
+        long priceScore = price.multiply(BigDecimal.valueOf(PRICE_PRECISION)).longValue();
+
+        // PARTIAL_ASK → contraparte é um ASK com residual; PARTIAL_BID → contraparte é um BID
+        String targetKey = "PARTIAL_ASK".equals(result.fillType()) ? asksKey : bidsKey;
+
+        redisTemplate.opsForZSet().add(targetKey, residualValue, priceScore);
+
+        logger.info("requeueResidual (fallback manual): fillType={} counterpartId={} remainingQty={} key={}",
+                result.fillType(), result.counterpartId(),
+                result.remainingCounterpartQty(), targetKey);
     }
 
     /** Converte elemento retornado pelo Redis em String (byte[] ou String). */
