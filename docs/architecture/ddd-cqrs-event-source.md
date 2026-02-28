@@ -32,6 +32,9 @@ No nosso MVP, usaremos o DDD para separar claramente as responsabilidades:
 
 
 2. **Contexto do Livro de Ofertas (Order Book):** Teremos um conceito de `Order` que lida com as regras de preço e quantidade.
+* O agregado `Order` possui a máquina de estados `PENDING → OPEN → PARTIAL → FILLED` e o invariante `remainingAmount >= 0`.
+  * Cada chamada ao método `applyMatch(executedQty)` decrementa `remainingAmount` e transita para `PARTIAL` (se há residual) ou `FILLED` (se zerou).
+  * **O Redis Sorted Set (livro) e o PostgreSQL (estado da ordem) ficam sincronizados pelo Script Lua atômico**: o Lua faz o `ZADD` do residual e retorna a quantidade executada; o Java usa a quantidade retornada para chamar `applyMatch` e persistir.
 * A comunicação entre a `Wallet` e o `Order Book` não é feita chamando métodos um do outro diretamente, mas sim conversando através de **Eventos** (nosso Event Storming!).
 
 
@@ -135,6 +138,22 @@ Como a performance e a concorrência devem ser muito bem pensadas (milhares de u
 * **O Lado Command (A Escrita via API POST):** Quando o usuário envia uma ordem de compra, essa requisição passa por validações complexas, atualiza o saldo (ACID) no **PostgreSQL** para evitar fraudes, e vai para o **Redis** processar o match. Essa via é otimizada para segurança e cálculos.
 * **O Lado Query (A Leitura via API GET):**
 Quando o usuário quer ver o histórico de transações dele ou o estado atual do Livro de Ofertas, ele **não** vai bater no banco de dados principal (PostgreSQL) que está ocupado processando compras e vendas. A API de leitura vai buscar os dados consolidados no **MongoDB** ou consultar a lista já pronta e ordenada diretamente no **Redis** (onde não há locks pesados).
+
+### Partial Fill no contexto CQRS
+
+Um cenário importante para o Command Side é o **partial fill**: a ordem entra com `qty=100` mas apenas `qty=40` estão disponíveis no livro.
+
+```
+Command Side (write):                     Redis (livro):
+  Order.status = PARTIAL                    vibranium:bids
+  Order.remainingAmount = 60                  score=500  member="orderId|...|60|..."
+```
+
+O ponto crítico: **o Redis e o PostgreSQL precisam ficar consistentes**. O Script Lua trata isso atomicamente:
+1. Dentro do `EVAL`: remove a contraparte ASK, calcula o residual, reinsere ASK com `qty=residual`, retorna `matchedQty` e `remainingCounterpartQty`.
+2. O Java usa `matchedQty` para chamar `order.applyMatch(matchedQty)` e persiste no PostgreSQL.
+
+Não há two-phase commit — se o PostgreSQL falhar após o Lua, a ordem fica `PENDING` no banco mas o residual já está no Redis. A guarda de idempotência por `eventId` e o reprocessamento da mensagem pelo broker (at-least-once) garantem convergência.
 
 ### Resumo Visual do CQRS no MVP:
 

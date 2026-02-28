@@ -85,7 +85,7 @@ O desafio pede para compreender o que acontece quando diferentes componentes fal
 
 ---
 
-## 5. Isolamento de Contexto Spring em Testes de Integração
+## 5. Isolamento de Contexto Spring em Testes de Integração (wallet-service CDC)
 
 ### O problema: `@DataJpaTest` carregando beans de produção
 
@@ -136,5 +136,54 @@ class OutboxPublisherIntegrationTest {
 ```
 
 **Regra geral:** testes de carga (volume ≥ 100 registros) sempre devem ter o `@Order` mais alto dentro da classe ou ser extraídos para uma classe própria com `@Tag("load")`.
+
+---
+
+## 6. Idempotência por `eventId` — Dois Mecanismos, Uma Dependência (US-002)
+
+### O problema: dois níveis de idempotência diferentes
+
+O `FundsReservedEventConsumer` já tinha a guarda:
+
+```java
+if (order.getStatus() != OrderStatus.PENDING) { return; }  // descarta duplicata
+```
+
+Essa guarda protege contra o cenário onde a ordem já foi processada (status avançou). **Não protege**, porém, contra a janela entre a chegada da mensagem e o commit da transação JPA: se o broker re-entregar o mesmo `FundsReservedEvent` (mesmo `eventId`) antes do primeiro processamento fazer commit, ambas as threads passarão pela guarda de status (ambas vêem `PENDING`) e tentariam executar o match duas vezes.
+
+### Solução: tabela `tb_processed_events` + INSERT-first
+
+```java
+// FundsReservedEventConsumer.java
+try {
+    // saveAndFlush garante que a violação de PK seja imediata,
+    // antes de qualquer operação de negócio
+    processedEventRepository.saveAndFlush(new ProcessedEvent(event.eventId()));
+} catch (DataIntegrityViolationException duplicate) {
+    logger.info("Re-entrega detectada: eventId={}", event.eventId());
+    return;  // descarta silenciosamente
+}
+```
+
+O banco garante unicidade pela PK `event_id` — mesma estratégia da tabela `idempotency_key` no `wallet-service`. O `saveAndFlush` força o flush antes de continuar, transformando a corrida em uma serialização determinísta pelo banco.
+
+### Por que `saveAndFlush` e não `save`?
+
+| `save` | `saveAndFlush` |
+|---|---|
+| Atrasa o INSERT até o flush automático do Hibernate | FORÇA o INSERT imediatamente |
+| A PK dupóda pode não ser detectada na linha `save` | Violação é lançada na linha `saveAndFlush` |
+| Risco de ambas as threads avançarem antes do commit | Somente a primeira thread avança |
+
+### Relação com a guarda de status
+
+As duas guardas são **complementares**, não redundantes:
+
+| Guarda | Protege contra |
+|---|---|
+| `eventId` (tb_processed_events) | Re-entrega de mensagem pelo broker (at-least-once delivery) |
+| `order.status != PENDING` | Processamento duplicado por race condition interna (Optimistic Lock) |
+
+Manter ambas garante cobertura contra mensagens duplicadas **e** corridas de atualização de estado.
 
 ---

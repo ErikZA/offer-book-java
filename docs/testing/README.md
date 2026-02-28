@@ -95,6 +95,9 @@ Os seguintes arquivos foram consolidados no documento principal, mas estão disp
 | **Mocks** | Mockito, WireMock | COMPREHENSIVE_TESTING.md #padrões-de-teste |
 | **Validação** | JSR-380 | COMPREHENSIVE_TESTING.md #padrões-de-teste |
 | **Performance** | Tempo, Concorrência | COMPREHENSIVE_TESTING.md #padrões-de-teste |
+| **CDC Debezium** | 6 padrões (US-001) | COMPREHENSIVE_TESTING.md #testes-de-cdc |
+| **Partial Fill / Redis** | 4 padrões (US-002) | COMPREHENSIVE_TESTING.md #partial-fill |
+| **Idempotência eventId** | 1 padrão (US-002) | COMPREHENSIVE_TESTING.md #partial-fill |
 
 ---
 
@@ -146,5 +149,5 @@ Veja COMPREHENSIVE_TESTING.md para exemplos de cada ferramenta.
 
 ---
 
-**Última atualização**: 28 de fevereiro de 2026  
-**Status**: ✅ Consolidado em COMPREHENSIVE_TESTING.md
+**Última atualização**: 28 de fevereiro de 2026 — US-002 (Partial Fill + Idempotência eventId)  
+**Status**: ✅ 85 testes GREEN (order-service 28 + wallet-service 57)

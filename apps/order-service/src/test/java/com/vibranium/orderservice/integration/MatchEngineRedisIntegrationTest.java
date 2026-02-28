@@ -4,6 +4,8 @@ import com.vibranium.contracts.enums.AssetType;
 import com.vibranium.contracts.enums.OrderStatus;
 import com.vibranium.contracts.enums.OrderType;
 import com.vibranium.contracts.events.wallet.FundsReservedEvent;
+import com.vibranium.orderservice.adapter.redis.RedisMatchEngineAdapter;
+import com.vibranium.orderservice.adapter.redis.RedisMatchEngineAdapter.MatchResult;
 import com.vibranium.orderservice.domain.model.Order;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
 import org.junit.jupiter.api.AfterEach;
@@ -311,6 +313,298 @@ class MatchEngineRedisIntegrationTest extends AbstractIntegrationTest {
     }
 
     // =========================================================================
+    // US-002 — Subtask 2.4: Cenários de Partial Fill (FASE RED → GREEN)
+    // =========================================================================
+
+    /**
+     * Cenário 6 — PARTIAL_BID: BID qty=100 vs ASK qty=40.
+     *
+     * <p>A ordem BID (buyer) envia 100 VIB mas apenas 40 estão disponíveis.
+     * Resultado esperado:
+     * <ul>
+     *   <li>ASK de 40 é consumido completamente (removed do vibranium:asks)</li>
+     *   <li>BID residual de 60 permanece no {@code vibranium:bids}</li>
+     *   <li>Order BUY → {@code PARTIAL}, {@code remainingAmount = 60}</li>
+     *   <li>{@code MatchResult.remainingCounterpartQty() == 0} (ASK foi totalmente consumido)</li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("PARTIAL_BID: BID 100 vs ASK 40 → BID residual 60 em bids, Order→PARTIAL")
+    void whenBidPartiallyMatchesAsk_thenBidResidualRemainsInBook() {
+        BigDecimal price  = new BigDecimal("500.00");
+        BigDecimal askQty = new BigDecimal("40.00000000");
+        BigDecimal bidQty = new BigDecimal("100.00000000");
+
+        UUID askOrderId  = UUID.randomUUID();
+        UUID askUserId   = UUID.randomUUID();
+        UUID askWalletId = UUID.randomUUID();
+        UUID askCorrelId = UUID.randomUUID();
+        redisTemplate.opsForZSet().add(asksKey,
+                buildRedisValue(askOrderId, askUserId, askWalletId, askQty, askCorrelId),
+                priceToScore(price));
+
+        UUID bidOrderId  = UUID.randomUUID();
+        UUID bidCorrelId = UUID.randomUUID();
+        UUID bidWalletId = UUID.randomUUID();
+        Order order = Order.create(bidOrderId, bidCorrelId, UUID.randomUUID().toString(),
+                bidWalletId, OrderType.BUY, price, bidQty);
+        orderRepository.save(order);
+
+        FundsReservedEvent event = FundsReservedEvent.of(
+                bidCorrelId, bidOrderId, bidWalletId, AssetType.BRL, price.multiply(bidQty));
+
+        rabbitTemplate.convertAndSend("vibranium.events", FUNDS_RESERVED_RK, event);
+
+        // Order deve estar com status PARTIAL e quantidade residual = 60
+        await().atMost(8, TimeUnit.SECONDS)
+                .untilAsserted(() -> {
+                    Order updated = orderRepository.findById(bidOrderId).orElseThrow();
+                    assertThat(updated.getStatus())
+                            .as("BID parcialmente executado deve ser PARTIAL")
+                            .isEqualTo(OrderStatus.PARTIAL);
+                    assertThat(updated.getRemainingAmount())
+                            .as("Remaining deve ser 60 — os 40 executados foram deduzidos")
+                            .isEqualByComparingTo(new BigDecimal("60.00000000"));
+                });
+
+        // Redis: ASK consumido; BID residual de 60 deve estar em vibranium:bids
+        await().atMost(3, TimeUnit.SECONDS)
+                .untilAsserted(() -> {
+                    assertThat(redisTemplate.opsForZSet().zCard(asksKey))
+                            .as("ASK deve ter sido completamente consumido")
+                            .isZero();
+
+                    assertThat(redisTemplate.opsForZSet().zCard(bidsKey))
+                            .as("BID residual (60 VIB) deve permanecer no livro")
+                            .isEqualTo(1L);
+
+                    String bidValue = (String) redisTemplate.opsForZSet()
+                            .rangeByScore(bidsKey, priceToScore(price), priceToScore(price))
+                            .stream().findFirst().orElse(null);
+                    assertThat(bidValue).isNotNull();
+                    assertThat(extractQty(bidValue))
+                            .as("BID residual deve reflectir exatamente 60 VIB")
+                            .isEqualByComparingTo(new BigDecimal("60.00000000"));
+                    assertThat(extractOrderId(bidValue))
+                            .as("BID residual deve usar o mesmo orderId original")
+                            .isEqualTo(bidOrderId);
+                });
+
+        // Validação direta do MatchResult via tryMatch — confirma remainingCounterpartQty
+        // FASE RED: esta linha não compilará até MatchResult ter o campo remainingCounterpartQty
+        MatchResult partialResult = matchEngine.tryMatch(
+                UUID.randomUUID(), UUID.randomUUID().toString(), UUID.randomUUID(),
+                OrderType.BUY, price, new BigDecimal("5.00000000"), UUID.randomUUID());
+        // Após o BID de 100 já ter consumido o ASK, novo tryMatch retorna NO_MATCH
+        assertThat(partialResult.remainingCounterpartQty())
+                .as("remainingCounterpartQty deve existir no MatchResult")
+                .isNotNull();
+    }
+
+    /**
+     * Cenário 7 — PARTIAL_ASK via SELL: SELL qty=100 vs BID qty=40.
+     *
+     * <p>A ordem SELL (seller) envia 100 VIB mas apenas 40 BIDs estão disponíveis.
+     * Resultado esperado:
+     * <ul>
+     *   <li>BID de 40 é consumido completamente (removed do vibranium:bids)</li>
+     *   <li>ASK residual de 60 permanece no {@code vibranium:asks}</li>
+     *   <li>Order SELL → {@code PARTIAL}, {@code remainingAmount = 60}</li>
+     *   <li>{@code MatchResult.remainingCounterpartQty() == 0} (BID foi totalmente consumido)</li>
+     * </ul>
+     */
+    @Test
+    @DisplayName("PARTIAL_ASK via SELL: SELL 100 vs BID 40 → ASK residual 60 em asks, Order→PARTIAL")
+    void whenAskPartiallyMatchesBid_thenAskResidualRemainsInBook() {
+        BigDecimal price  = new BigDecimal("500.00");
+        BigDecimal bidQty = new BigDecimal("40.00000000");
+        BigDecimal askQty = new BigDecimal("100.00000000");
+
+        // BID pré-existente no Redis
+        UUID bidOrderId  = UUID.randomUUID();
+        UUID bidUserId   = UUID.randomUUID();
+        UUID bidWalletId = UUID.randomUUID();
+        UUID bidCorrelId = UUID.randomUUID();
+        redisTemplate.opsForZSet().add(bidsKey,
+                buildRedisValue(bidOrderId, bidUserId, bidWalletId, bidQty, bidCorrelId),
+                priceToScore(price));
+
+        // SELL Order no banco → PENDING
+        UUID askOrderId  = UUID.randomUUID();
+        UUID askCorrelId = UUID.randomUUID();
+        UUID askWalletId = UUID.randomUUID();
+        Order order = Order.create(askOrderId, askCorrelId, UUID.randomUUID().toString(),
+                askWalletId, OrderType.SELL, price, askQty);
+        orderRepository.save(order);
+
+        FundsReservedEvent event = FundsReservedEvent.of(
+                askCorrelId, askOrderId, askWalletId, AssetType.VIBRANIUM, askQty);
+
+        rabbitTemplate.convertAndSend("vibranium.events", FUNDS_RESERVED_RK, event);
+
+        // Order SELL deve estar com status PARTIAL e remaining = 60
+        await().atMost(8, TimeUnit.SECONDS)
+                .untilAsserted(() -> {
+                    Order updated = orderRepository.findById(askOrderId).orElseThrow();
+                    assertThat(updated.getStatus())
+                            .as("SELL parcialmente executado deve ser PARTIAL")
+                            .isEqualTo(OrderStatus.PARTIAL);
+                    assertThat(updated.getRemainingAmount())
+                            .as("Remaining deve ser 60 após executar 40 VIB")
+                            .isEqualByComparingTo(new BigDecimal("60.00000000"));
+                });
+
+        // Redis: BID consumido; ASK residual de 60 deve estar em vibranium:asks
+        await().atMost(3, TimeUnit.SECONDS)
+                .untilAsserted(() -> {
+                    assertThat(redisTemplate.opsForZSet().zCard(bidsKey))
+                            .as("BID deve ter sido completamente consumido")
+                            .isZero();
+
+                    assertThat(redisTemplate.opsForZSet().zCard(asksKey))
+                            .as("ASK residual (60 VIB) deve permanecer no livro")
+                            .isEqualTo(1L);
+
+                    String askValue = (String) redisTemplate.opsForZSet()
+                            .rangeByScore(asksKey, priceToScore(price), priceToScore(price))
+                            .stream().findFirst().orElse(null);
+                    assertThat(askValue).isNotNull();
+                    assertThat(extractQty(askValue))
+                            .as("ASK residual deve reflectir 60 VIB")
+                            .isEqualByComparingTo(new BigDecimal("60.00000000"));
+                    assertThat(extractOrderId(askValue))
+                            .as("ASK residual usa o mesmo orderId original")
+                            .isEqualTo(askOrderId);
+                });
+
+        // Validação direta do MatchResult — FASE RED: remainingCounterpartQty deve existir
+        MatchResult directResult = matchEngine.tryMatch(
+                UUID.randomUUID(), UUID.randomUUID().toString(), UUID.randomUUID(),
+                OrderType.SELL, price, new BigDecimal("5.00000000"), UUID.randomUUID());
+        assertThat(directResult.remainingCounterpartQty())
+                .as("remainingCounterpartQty deve existir no MatchResult")
+                .isNotNull();
+    }
+
+    /**
+     * Cenário 8 — Múltiplos partial fills convergem o livro para zero.
+     *
+     * <p>1 ASK de 30 VIB é consumido por 3 BIDs sequenciais de 10 VIB cada.
+     * Invariante: {@code asks} e {@code bids} devem estar vazios ao final;
+     * todas as ordens FILLED.</p>
+     */
+    @Test
+    @DisplayName("Múltiplos partial fills: 3×BID-10 vs ASK-30 → livro zerado, todas FILLED")
+    void whenMultiplePartialFills_thenBookConvergesCorrectly() {
+        BigDecimal price    = new BigDecimal("500.00");
+        BigDecimal askQty   = new BigDecimal("30.00000000");
+        BigDecimal eachBid  = new BigDecimal("10.00000000");
+
+        // ASK de 30 VIB pré-existente
+        redisTemplate.opsForZSet().add(asksKey,
+                buildRedisValue(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), askQty, UUID.randomUUID()),
+                priceToScore(price));
+
+        List<UUID> bidOrderIds = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            UUID oid = UUID.randomUUID();
+            UUID cid = UUID.randomUUID();
+            UUID wid = UUID.randomUUID();
+            Order o  = Order.create(oid, cid, UUID.randomUUID().toString(), wid,
+                    OrderType.BUY, price, eachBid);
+            orderRepository.save(o);
+            bidOrderIds.add(oid);
+            // Envia eventos sequencialmente para não depender de atomicidade concorrente
+            rabbitTemplate.convertAndSend("vibranium.events", FUNDS_RESERVED_RK,
+                    FundsReservedEvent.of(cid, oid, wid, AssetType.BRL, price.multiply(eachBid)));
+        }
+
+        // Todas as 3 ordens devem estar FILLED após os 3 matches parciais
+        await().atMost(15, TimeUnit.SECONDS)
+                .untilAsserted(() -> {
+                    for (UUID oid : bidOrderIds) {
+                        assertThat(orderRepository.findById(oid).orElseThrow().getStatus())
+                                .as("Cada BUY de 10 deve ser FILLED após cruzar com ASK de 30")
+                                .isEqualTo(OrderStatus.FILLED);
+                    }
+                });
+
+        // Livro deve estar completamente vazio
+        assertThat(redisTemplate.opsForZSet().zCard(asksKey))
+                .as("asks deve estar vazio — ASK de 30 foi consumido por 3 BIDs de 10")
+                .isZero();
+        assertThat(redisTemplate.opsForZSet().zCard(bidsKey))
+                .as("bids deve estar vazio — nenhum BID sem contraparte")
+                .isZero();
+    }
+
+    /**
+     * Cenário 9 — Idempotência por {@code eventId}: mesmo evento entregue 2×.
+     *
+     * <p>O RabbitMQ garante at-least-once delivery. Se a mesma mensagem for
+     * entregue duas vezes (rede flaky, ack perdido), a segunda entrega deve
+     * ser descartada com base no {@code FundsReservedEvent.eventId()}, sem
+     * duplicar o match.</p>
+     *
+     * <p><strong>FASE RED:</strong> Falhará até {@code ProcessedEventRepository}
+     * ser criado e o consumer verificar {@code eventId} antes de processar.</p>
+     */
+    @Test
+    @DisplayName("Idempotência: mesmo eventId entregue 2× → processado somente uma vez")
+    void whenDuplicateFundsReservedEvent_thenProcessedOnlyOnce() {
+        BigDecimal price = new BigDecimal("500.00");
+        BigDecimal qty   = new BigDecimal("10.00000000");
+
+        // ASK pré-existente
+        redisTemplate.opsForZSet().add(asksKey,
+                buildRedisValue(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), qty, UUID.randomUUID()),
+                priceToScore(price));
+
+        UUID bidOrderId  = UUID.randomUUID();
+        UUID bidCorrelId = UUID.randomUUID();
+        UUID bidWalletId = UUID.randomUUID();
+        Order order = Order.create(bidOrderId, bidCorrelId, UUID.randomUUID().toString(),
+                bidWalletId, OrderType.BUY, price, qty);
+        orderRepository.save(order);
+
+        // Constrói o evento com eventId fixo (simula re-entrega exata pelo broker)
+        FundsReservedEvent event = FundsReservedEvent.of(
+                bidCorrelId, bidOrderId, bidWalletId, AssetType.BRL, price.multiply(qty));
+
+        // 1ª entrega — deve ser processada
+        rabbitTemplate.convertAndSend("vibranium.events", FUNDS_RESERVED_RK, event);
+
+        await().atMost(8, TimeUnit.SECONDS)
+                .untilAsserted(() -> assertThat(
+                        orderRepository.findById(bidOrderId).orElseThrow().getStatus())
+                        .isEqualTo(OrderStatus.FILLED));
+
+        // 2ª entrega com MESMO eventId — deve ser descartada (idempotência)
+        rabbitTemplate.convertAndSend("vibranium.events", FUNDS_RESERVED_RK, event);
+
+        // Aguarda processamento potencial e verifica que nenhum estado extra foi criado
+        await().during(2, TimeUnit.SECONDS)
+                .atMost(4, TimeUnit.SECONDS)
+                .untilAsserted(() -> {
+                    Order updated = orderRepository.findById(bidOrderId).orElseThrow();
+                    assertThat(updated.getStatus())
+                            .as("Status não deve mudar após re-entrega duplicada")
+                            .isEqualTo(OrderStatus.FILLED);
+                    // ASK não deve reaparecer de uma segunda tentativa de match
+                    assertThat(redisTemplate.opsForZSet().zCard(asksKey))
+                            .as("Não deve haver double-match — ASK já foi consumido")
+                            .isZero();
+                });
+    }
+
+    // =========================================================================
+    // Helpers — importados pelo RedisMatchEngineAdapter via @Autowired
+    // =========================================================================
+
+    @Autowired
+    private RedisMatchEngineAdapter matchEngine;
+
+    // =========================================================================
     // Helpers
     // =========================================================================
 
@@ -328,5 +622,10 @@ class MatchEngineRedisIntegrationTest extends AbstractIntegrationTest {
 
     private static BigDecimal extractQty(String value) {
         return new BigDecimal(value.split("\\|")[3]);
+    }
+
+    /** Extrai o orderId (índice 0) do valor pipe-delimited do Sorted Set. */
+    private static UUID extractOrderId(String value) {
+        return UUID.fromString(value.split("\\|")[0]);
     }
 }

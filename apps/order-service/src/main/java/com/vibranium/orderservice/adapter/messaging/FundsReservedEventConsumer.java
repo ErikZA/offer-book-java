@@ -10,11 +10,14 @@ import com.vibranium.orderservice.adapter.redis.RedisMatchEngineAdapter;
 import com.vibranium.orderservice.adapter.redis.RedisMatchEngineAdapter.MatchResult;
 import com.vibranium.orderservice.config.RabbitMQConfig;
 import com.vibranium.orderservice.domain.model.Order;
+import com.vibranium.orderservice.domain.model.ProcessedEvent;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
+import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,6 +31,7 @@ import java.util.UUID;
  * {@link FundsReservedEvent}. Este consumidor recebe esse evento e
  * executa o Motor de Match no Redis:</p>
  * <ol>
+ *   <li>Guarda de idempotência por {@code eventId} — descarta re-entregas do broker.</li>
  *   <li>Localiza a ordem pelo {@code correlationId}.</li>
  *   <li>Executa o Script Lua atomicamente no Redis Sorted Set.</li>
  *   <li>Se houver match → publica {@link MatchExecutedEvent} e atualiza a ordem.</li>
@@ -46,13 +50,16 @@ public class FundsReservedEventConsumer {
     private final OrderRepository         orderRepository;
     private final RedisMatchEngineAdapter matchEngine;
     private final RabbitTemplate          rabbitTemplate;
+    private final ProcessedEventRepository processedEventRepository;
 
     public FundsReservedEventConsumer(OrderRepository orderRepository,
                                       RedisMatchEngineAdapter matchEngine,
-                                      RabbitTemplate rabbitTemplate) {
-        this.orderRepository = orderRepository;
-        this.matchEngine     = matchEngine;
-        this.rabbitTemplate  = rabbitTemplate;
+                                      RabbitTemplate rabbitTemplate,
+                                      ProcessedEventRepository processedEventRepository) {
+        this.orderRepository          = orderRepository;
+        this.matchEngine              = matchEngine;
+        this.rabbitTemplate           = rabbitTemplate;
+        this.processedEventRepository = processedEventRepository;
     }
 
     /**
@@ -69,6 +76,17 @@ public class FundsReservedEventConsumer {
     public void onFundsReserved(FundsReservedEvent event) {
         logger.info("Fundos reservados — iniciando match: correlationId={} orderId={}",
                 event.correlationId(), event.orderId());
+
+        // 0. Idempotência por eventId: at-least-once delivery do RabbitMQ pode re-entregar.
+        //    Tentamos inserir o eventId na tabela de processed_events; se a PK já existir,
+        //    o banco lança DataIntegrityViolationException e descartamos a mensagem.
+        try {
+            processedEventRepository.saveAndFlush(new ProcessedEvent(event.eventId()));
+        } catch (DataIntegrityViolationException duplicate) {
+            logger.info("FundsReservedEvent já processado — descartando re-entrega: eventId={} correlationId={}",
+                    event.eventId(), event.correlationId());
+            return;
+        }
 
         // 1. Localiza a ordem pelo correlationId da Saga
         Optional<Order> orderOpt = orderRepository.findByCorrelationId(event.correlationId());
@@ -159,6 +177,14 @@ public class FundsReservedEventConsumer {
 
         logger.info("Match executado: correlationId={} orderId={} qty={} fillType={}",
                 order.getCorrelationId(), order.getId(), result.matchedQty(), result.fillType());
+
+        // Log informativo para partial fills — o Lua já reinseriu o residual atomicamente.
+        // Para disaster recovery via requeueResidual() consulte RedisMatchEngineAdapter.
+        if ("PARTIAL_ASK".equals(result.fillType()) || "PARTIAL_BID".equals(result.fillType())) {
+            logger.info("Partial fill detectado: fillType={} counterpartId={} remainingCounterpartQty={} "
+                    + "— residual gerenciado atomicamente pelo Lua script.",
+                    result.fillType(), result.counterpartId(), result.remainingCounterpartQty());
+        }
     }
 
     /**

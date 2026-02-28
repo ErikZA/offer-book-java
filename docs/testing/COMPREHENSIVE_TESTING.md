@@ -15,7 +15,8 @@
 11. [Checklist de Qualidade](#checklist-de-qualidade)
 12. [Troubleshooting](#troubleshooting)
 13. [Testes de CDC — Debezium Outbox](#testes-de-cdc--debezium-outbox)
-14. [Referências](#referências)
+14. [Partial Fill — Requeue Atômico e Idempotência por eventId (US-002)](#partial-fill--requeue-atômico-e-idempotência-por-eventid-us-002)
+15. [Referências](#referências)
 
 ---
 
@@ -1311,6 +1312,154 @@ static void debeziumProperties(DynamicPropertyRegistry registry) {
 
 ---
 
+## Partial Fill — Requeue Atômico e Idempotência por eventId (US-002)
+
+Esta seção documenta os padrões de teste para a US-002: **requeue da ordem residual no livro de ofertas após match parcial** e **idempotência por `eventId`**.
+
+### Cenários cobertos
+
+| Cenário | fillType | O que verifica |
+|---|---|---|
+| BID 100 vs ASK 40 | `PARTIAL_BID` | BID residual 60 em `vibranium:bids`; Order→`PARTIAL` |
+| SELL 100 vs BID 40 | `PARTIAL_ASK` | ASK residual 60 em `vibranium:asks`; Order→`PARTIAL` |
+| 3×BID-10 vs ASK-30 | `FULL` ×3 | Livro zerado; todas as 3 ordens `FILLED` |
+| Mesmo `eventId` entregue 2× | — | 2ª entrega descartada; estado não muda |
+
+### Padrão: verificar residual no Sorted Set
+
+Apsaós enviar o evento pelo RabbitMQ, use `StringRedisTemplate` para inspecionar diretamente o Sorted Set Redis e validar a quantidade residual:
+
+```java
+@Test
+@DisplayName("PARTIAL_BID: BID 100 vs ASK 40 → BID residual 60 em bids, Order→PARTIAL")
+void whenBidPartiallyMatchesAsk_thenBidResidualRemainsInBook() {
+    // Arrange — ASK de 40 VIB pré-existente
+    redisTemplate.opsForZSet().add(asksKey,
+            buildRedisValue(askId, userId, walletId, new BigDecimal("40"), correlId),
+            priceToScore(new BigDecimal("500.00")));
+
+    // Act — BID de 100 VIB
+    rabbitTemplate.convertAndSend("vibranium.events", FUNDS_RESERVED_RK, event);
+
+    // Assert: Order no PostgreSQL
+    await().atMost(8, TimeUnit.SECONDS).untilAsserted(() -> {
+        Order updated = orderRepository.findById(bidOrderId).orElseThrow();
+        assertThat(updated.getStatus()).isEqualTo(OrderStatus.PARTIAL);
+        assertThat(updated.getRemainingAmount())
+                .isEqualByComparingTo(new BigDecimal("60.00000000"));
+    });
+
+    // Assert: Redis — ASK consumido; BID residual no livro
+    await().atMost(3, TimeUnit.SECONDS).untilAsserted(() -> {
+        assertThat(redisTemplate.opsForZSet().zCard(asksKey)).isZero();
+        assertThat(redisTemplate.opsForZSet().zCard(bidsKey)).isEqualTo(1L);
+
+        String bidValue = redisTemplate.opsForZSet()
+                .rangeByScore(bidsKey, priceToScore(price), priceToScore(price))
+                .stream().findFirst().orElse(null);
+
+        assertThat(bidValue).isNotNull();
+        // Extrai campo qty (posicao 3 no pipe-delimited)
+        assertThat(new BigDecimal(bidValue.split("\\|")[3]))
+                .isEqualByComparingTo(new BigDecimal("60.00000000"));
+        // orderId deve ser preservado
+        assertThat(UUID.fromString(bidValue.split("\\|")[0])).isEqualTo(bidOrderId);
+    });
+}
+```
+
+**Por que `await()` separado para Redis?**  
+O consumidor async persiste o `Order` no PostgreSQL **e depois** retorna do listener.  
+O requeue Redis já aconteceu dentro do Lua (antes do commit JPA), mas due ao scheduling  
+de threads virtuais pode chegar ao Assert antes do Awaitility do Postgres terminar.  
+Usar dois `await()` sequenciais é mais legível e evita assertions compostas frutáveis.
+
+### Por que `MatchResult.remainingCounterpartQty()` != qty residual no Redis
+
+Os valores são intencionalmente diferentes para os casos `PARTIAL_BID` e `PARTIAL_ASK`:
+
+| fillType | Quem tem residual | `remainingCounterpartQty` | qty no Sorted Set |
+|---|---|---|---|
+| `PARTIAL_ASK` | contraparte (ASK) | positivo (ex: 7) | idem — ASK reinserido com nova qty |
+| `PARTIAL_BID` | ingressante (BID) | ZERO | positivo (ex: 60) — **BID é a ordem ingressante** |
+
+Para `PARTIAL_BID`, a contraparte (ASK) foi totalmente consumida — `remainingCounterpartQty = 0`.
+O residual do **BID ingressante** nunca está em `remainingCounterpartQty`; ele está em
+`Order.remainingAmount` (banco) e no Sorted Set `vibranium:bids` (Redis).
+
+### Padrão: idempotência por `eventId`
+
+Re-entrega controlada: constroi o evento **com `eventId` fixo** e envia duas vezes.
+O segundo envio deve ser descartado sem alterar o estado observável.
+
+```java
+@Test
+@DisplayName("Idempotência: mesmo eventId entregue 2× → processado somente uma vez")
+void whenDuplicateFundsReservedEvent_thenProcessedOnlyOnce() {
+    // ASK + Order pré-existente ...
+
+    // Mesmo objeto event (mesmo eventId UUID)
+    FundsReservedEvent event = FundsReservedEvent.of(correlId, orderId, walletId, ...);
+
+    // 1ª entrega
+    rabbitTemplate.convertAndSend("vibranium.events", FUNDS_RESERVED_RK, event);
+    await().atMost(8, TimeUnit.SECONDS)
+           .untilAsserted(() -> assertThat(
+               orderRepository.findById(orderId).orElseThrow().getStatus())
+               .isEqualTo(OrderStatus.FILLED));
+
+    // 2ª entrega — deve ser descartada
+    rabbitTemplate.convertAndSend("vibranium.events", FUNDS_RESERVED_RK, event);
+
+    // Esperar 2s e confirmar que não houve segunda execução
+    await().during(2, TimeUnit.SECONDS)
+           .atMost(4, TimeUnit.SECONDS)
+           .untilAsserted(() -> {
+               assertThat(orderRepository.findById(orderId).orElseThrow().getStatus())
+                   .isEqualTo(OrderStatus.FILLED); // não mudou
+               assertThat(redisTemplate.opsForZSet().zCard(asksKey)).isZero();
+           });
+}
+```
+
+**Armadilha:** `await().during(X).atMost(Y)` falha se a condição não for verdadeira  
+durante TODO o período `X`. Use-o apenas para afirmar **ausência de mudança de estado**  
+(invariante temporal), não para aguardar algo acontecer.
+
+### Padrão: múltiplos partial fills convergindo o livro
+
+3 ordens BUY de 10 VIB cada contra 1 ASK de 30 VIB. Cada BID resultam em `PARTIAL_ASK`
+(o ASK perde 10 por ciclo) até o ASK ser totalmente consumido na 3ª execução (`FULL`).
+
+```java
+// Envio SEQUENCIAL (não concorrente), para que cada match veja o residual
+// corretamente atualizado no Redis antes do próximo evento ser processado
+for (int i = 0; i < 3; i++) {
+    rabbitTemplate.convertAndSend("vibranium.events", FUNDS_RESERVED_RK, events.get(i));
+}
+
+// Aguarda TODAS as ordens ficarem FILLED
+await().atMost(15, TimeUnit.SECONDS)
+       .untilAsserted(() -> {
+           for (UUID oid : orderIds) {
+               assertThat(orderRepository.findById(oid).orElseThrow().getStatus())
+                   .isEqualTo(OrderStatus.FILLED);
+           }
+       });
+
+// Verifica invariante final do livro
+assertThat(redisTemplate.opsForZSet().zCard(asksKey)).isZero();
+assertThat(redisTemplate.opsForZSet().zCard(bidsKey)).isZero();
+```
+
+**Por que usar `concurrency = "5"` com envio sequencial pode causar interleaving?**  
+O listener tem 5 threads. Se você enviar 3 eventos muito rapidamente, threads diferentes  
+podem tentar ler o mesmo ASK residual. O Lua é atômico, mas a assertão de qty residual  
+pode ser lida entre dois matches parciais. Para o teste de livro convergindo, envie  
+sequencialmente e use o `await()` do `FILLED` como barreira implícita.
+
+---
+
 ## Referências
 
 - [JUnit 5 Documentation](https://junit.org/junit5/docs/current/user-guide/)
@@ -1324,4 +1473,4 @@ static void debeziumProperties(DynamicPropertyRegistry registry) {
 
 **Status**: ✅ Consolidado e Completo  
 **Última atualização**: 28 de fevereiro de 2026  
-*Adicionado: padrões de testes de CDC Debezium (seção Testes de CDC — Debezium Outbox)*
+*Adicionado: padrões de testes de CDC Debezium (seção 13) e Partial Fill / Idempotência por eventId (seção 14 — US-002)*
