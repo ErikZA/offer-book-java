@@ -55,6 +55,14 @@
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
+        <!-- Spring Data MongoDB: Read Model / Event Projection (US-003 Query Side)
+             Armazena OrderDocument com histórico de eventos para consultas de auditoria.
+             Separado do Command Side (PostgreSQL) para manter CQRS puro. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-mongodb</artifactId>
+        </dependency>
+
         <!-- Bean Validation JSR-380: @Valid, @NotNull, @Positive nos DTOs da API -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -182,6 +190,14 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>rabbitmq</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- MongoDB container — suporte ao Read Model (OrderDocument/OrderHistoryRepository)
+             usado em AbstractIntegrationTest para injetar URI dinâmica via @DynamicPropertySource -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>mongodb</artifactId>
             <scope>test</scope>
         </dependency>
 

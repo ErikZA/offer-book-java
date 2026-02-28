@@ -61,6 +61,33 @@ public class RabbitMQConfig {
     public static final String RK_KEYCLOAK_REGISTER  = "KK.EVENT.CLIENT.orderbook-realm.REGISTER";
 
     // -------------------------------------------------------------------------
+    // Filas do Read Model (projeção MongoDB — Query Side US-003)
+    // Fanout pattern: cada fila abaixo recebe uma cópia do evento via topic exchange.
+    // Garante que o Read Model seja atualizado de forma assíncrona e independente
+    // do fluxo de Command Side, sem acoplamento entre os consumers.
+    // -------------------------------------------------------------------------
+
+    /** Fila de projeção para {@code OrderReceivedEvent} → cria documento PENDING no Mongo. */
+    public static final String QUEUE_ORDER_PROJECTION_RECEIVED  = "order.projection.received";
+
+    /** Fila de projeção para {@code FundsReservedEvent} → appenda FUNDS_RESERVED; status → OPEN. */
+    public static final String QUEUE_ORDER_PROJECTION_FUNDS     = "order.projection.funds-reserved";
+
+    /** Fila de projeção para {@code MatchExecutedEvent} → appenda MATCH_EXECUTED; status → FILLED/PARTIAL. */
+    public static final String QUEUE_ORDER_PROJECTION_MATCH     = "order.projection.match-executed";
+
+    /** Fila de projeção para {@code OrderCancelledEvent} → appenda ORDER_CANCELLED; status → CANCELLED. */
+    public static final String QUEUE_ORDER_PROJECTION_CANCELLED = "order.projection.cancelled";
+
+    // Routing keys dos eventos publicados pelo order-service (usadas nas projection bindings)
+    /** Routing key do {@code OrderReceivedEvent} — publicado em {@code OrderCommandService.placeOrder()}. */
+    public static final String RK_ORDER_RECEIVED    = "order.events.order-received";
+    /** Routing key do {@code MatchExecutedEvent} — publicado em {@code FundsReservedEventConsumer}. */
+    public static final String RK_MATCH_EXECUTED    = "order.events.match-executed";
+    /** Routing key do {@code OrderCancelledEvent} — publicado em {@code FundsReservedEventConsumer}. */
+    public static final String RK_ORDER_CANCELLED   = "order.events.order-cancelled";
+
+    // -------------------------------------------------------------------------
     // Exchanges
     // -------------------------------------------------------------------------
 
@@ -196,6 +223,79 @@ public class RabbitMQConfig {
                 .bind(reserveFundsQueue)
                 .to(commandsExchange)
                 .with(QUEUE_RESERVE_FUNDS);
+    }
+
+    // -------------------------------------------------------------------------
+    // Filas de Projeção do Read Model (MongoDB — Query Side US-003)
+    //
+    // Cada fila abaixo recebe uma cópia independente do evento via topic exchange
+    // (fanout pattern). O consumer de projeção constrói e mantém o OrderDocument.
+    // Filas sem DLX: se a projeção falhar o evento deve ser re-tentado via
+    // listener retry (configurado em application.yaml), não descartado.
+    // -------------------------------------------------------------------------
+
+    @Bean
+    Queue orderProjectionReceivedQueue() {
+        // Sem DLX: falhas de projeção são re-tentadas; a perda de evento aqui significa
+        // documento incompleto no Mongo, mas não afeta o Command Side.
+        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_RECEIVED).build();
+    }
+
+    @Bean
+    Binding orderProjectionReceivedBinding(
+            @Qualifier("orderProjectionReceivedQueue") Queue orderProjectionReceivedQueue,
+            @Qualifier("eventsExchange")               TopicExchange eventsExchange) {
+        return BindingBuilder
+                .bind(orderProjectionReceivedQueue)
+                .to(eventsExchange)
+                .with(RK_ORDER_RECEIVED);
+    }
+
+    @Bean
+    Queue orderProjectionFundsQueue() {
+        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_FUNDS).build();
+    }
+
+    @Bean
+    Binding orderProjectionFundsBinding(
+            @Qualifier("orderProjectionFundsQueue") Queue orderProjectionFundsQueue,
+            @Qualifier("eventsExchange")            TopicExchange eventsExchange) {
+        // Fanout: FundsReservedEvent já vai para order.events.funds-reserved (Command Side)
+        // E agora também para order.projection.funds-reserved (Read Model).
+        return BindingBuilder
+                .bind(orderProjectionFundsQueue)
+                .to(eventsExchange)
+                .with(RK_FUNDS_RESERVED);
+    }
+
+    @Bean
+    Queue orderProjectionMatchQueue() {
+        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_MATCH).build();
+    }
+
+    @Bean
+    Binding orderProjectionMatchBinding(
+            @Qualifier("orderProjectionMatchQueue") Queue orderProjectionMatchQueue,
+            @Qualifier("eventsExchange")            TopicExchange eventsExchange) {
+        return BindingBuilder
+                .bind(orderProjectionMatchQueue)
+                .to(eventsExchange)
+                .with(RK_MATCH_EXECUTED);
+    }
+
+    @Bean
+    Queue orderProjectionCancelledQueue() {
+        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_CANCELLED).build();
+    }
+
+    @Bean
+    Binding orderProjectionCancelledBinding(
+            @Qualifier("orderProjectionCancelledQueue") Queue orderProjectionCancelledQueue,
+            @Qualifier("eventsExchange")                TopicExchange eventsExchange) {
+        return BindingBuilder
+                .bind(orderProjectionCancelledQueue)
+                .to(eventsExchange)
+                .with(RK_ORDER_CANCELLED);
     }
 
     // -------------------------------------------------------------------------

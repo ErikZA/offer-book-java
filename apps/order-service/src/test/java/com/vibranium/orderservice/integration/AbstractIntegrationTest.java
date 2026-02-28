@@ -16,24 +16,47 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 /**
- * Base class para todos os testes de integração do order-service.
+ * Base class para testes de integração do Command Side (PostgreSQL + RabbitMQ + Redis).
  *
  * <p>Utiliza o padrão <strong>Singleton Containers</strong> do Testcontainers:
  * os containers são iniciados UMA VEZ (campo {@code static}) e compartilhados
  * por todas as subclasses. Isso evita o overhead de reinício para cada classe
- * de teste, reduzindo o tempo total da suite de ~90s para ~15s.</p>
+ * de teste.</p>
  *
  * <p>Containers disponibilizados:</p>
  * <ul>
- *   <li>{@code postgres} — PostgreSQL 16 com Flyway (tb_user_registry, tb_orders)</li>
- *   <li>{@code rabbitmq} — RabbitMQ 3.13 com management UI (exchanges + queues)</li>
- *   <li>{@code redis}   — Redis 7 via GenericContainer (Motor de Match Lua)</li>
+ *   <li>{@code POSTGRES} — PostgreSQL 16 com Flyway (tb_user_registry, tb_orders)</li>
+ *   <li>{@code RABBITMQ} — RabbitMQ 3.13 com management UI (exchanges + queues)</li>
+ *   <li>{@code REDIS}    — Redis 7 via GenericContainer (Motor de Match Lua)</li>
  * </ul>
  *
- * <p>As propriedades de conexão são injetadas dinamicamente via
- * {@link DynamicPropertySource}, sobrescrevendo o {@code application-test.yml}.</p>
+ * <p><strong>MongoDB excluído intencionalmente:</strong> testes do Command Side não precisam
+ * de MongoDB. Excluir o 4º container elimina a contenção de recursos Docker que causava
+ * p99 > 200ms no SLA test de concorrência. Testes que precisam do Read Model devem
+ * estender {@link AbstractMongoIntegrationTest} em vez desta classe.</p>
+ *
+ * <p>O auto-configure do Spring MongoDB é desabilitado via {@code @SpringBootTest(properties)}
+ * para evitar que o MongoClient tente se conectar a um MongoDB inexistente. Os beans
+ * {@link com.vibranium.orderservice.query.consumer.OrderEventProjectionConsumer} e
+ * {@link com.vibranium.orderservice.web.controller.OrderQueryController} só são criados
+ * quando {@code MongoTemplate} está disponível no contexto ({@code @ConditionalOnBean}).</p>
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        // Exclui auto-configuração MongoDB para evitar tentativa de conexão quando não há
+        // container de MongoDB rodando. Os beans query-side estão anotados com
+        // @ConditionalOnProperty(app.mongodb.enabled) e não são criados quando esta flag
+        // está em false (definida aqui via properties do @SpringBootTest).
+        properties = {
+            "spring.autoconfigure.exclude=" +
+            "org.springframework.boot.autoconfigure.mongo.MongoAutoConfiguration," +
+            "org.springframework.boot.autoconfigure.data.mongo.MongoDataAutoConfiguration," +
+            "org.springframework.boot.autoconfigure.data.mongo.MongoRepositoriesAutoConfiguration",
+            // Desabilita beans do Query Side (OrderEventProjectionConsumer, OrderQueryController,
+            // MongoIndexConfig.mongoOrdersIndexInitializer) para evitar falha de injecão.
+            "app.mongodb.enabled=false"
+        }
+)
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Testcontainers

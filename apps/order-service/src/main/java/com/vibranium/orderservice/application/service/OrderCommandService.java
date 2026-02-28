@@ -3,6 +3,7 @@ package com.vibranium.orderservice.application.service;
 import com.vibranium.contracts.commands.wallet.ReserveFundsCommand;
 import com.vibranium.contracts.enums.AssetType;
 import com.vibranium.contracts.enums.OrderType;
+import com.vibranium.contracts.events.order.OrderReceivedEvent;
 import com.vibranium.orderservice.config.RabbitMQConfig;
 import com.vibranium.orderservice.domain.model.Order;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
@@ -103,6 +104,33 @@ public class OrderCommandService {
                 RabbitMQConfig.QUEUE_RESERVE_FUNDS,  // routing key = queue name (direct exchange)
                 cmd
         );
+
+        // 5. Publica OrderReceivedEvent para o Read Model (Query Side — US-003).
+        //    Executado em Virtual Thread dedicada para NÃO bloquear a transação JPA nem
+        //    adicionar latência ao path crítico do placeOrder (SLA ≤ 200ms p99).
+        //    Falha tolerada: a projeção é eventual — se a publicação falhar, o Read Model
+        //    ficará desatualizado até o próximo evento (FundsReserved ou MatchExecuted)
+        //    que disparar a criação do documento via retry da fila.
+        final OrderReceivedEvent receivedEvent = OrderReceivedEvent.of(
+                correlationId, orderId, UUID.fromString(keycloakId),
+                request.walletId(), request.orderType(), request.price(), request.amount()
+        );
+        Thread.ofVirtual()
+                .name("projection-recv-" + orderId)
+                .start(() -> {
+                    try {
+                        rabbitTemplate.convertAndSend(
+                                RabbitMQConfig.EVENTS_EXCHANGE,
+                                RabbitMQConfig.RK_ORDER_RECEIVED,
+                                receivedEvent
+                        );
+                    } catch (Exception ex) {
+                        // Falha não-crítica: loga e continua. O Command Side já persistiu a ordem.
+                        // A projeção MongoDB será atualizada no próximo evento da Saga.
+                        logger.error("Falha ao publicar OrderReceivedEvent para projeção: orderId={} error={}",
+                                orderId, ex.getMessage());
+                    }
+                });
 
         logger.info("Ordem aceita: orderId={} correlationId={} userId={} type={} price={} amount={}",
                 orderId, correlationId, keycloakId,

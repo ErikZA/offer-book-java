@@ -31,6 +31,12 @@ spring:
             simple:
                 acknowledge-mode: auto # AUTO em testes para simplificar setup
                 prefetch: 10 # mesmo valor da produção; prefetch=1 limitaria throughput
+        # O channel cache padrão é 25. Com testes de concorrência de 50 threads +
+        # 50 virtual threads (projeção OrderReceivedEvent), o cache de 25 causa bloqueio.
+        # Aumentamos para 100 para garantir que todos os requests SLA ≤ 200ms sejam atendidos.
+        cache:
+            channel:
+                size: 100
 
     # Security: usa jwk-set-uri (lazy) em vez de issuer-uri (eager) para evitar
     # chamada HTTP ao Keycloak no startup. Os testes usam mockJwt() do

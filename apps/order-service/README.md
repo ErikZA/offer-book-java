@@ -1,10 +1,11 @@
 # Order Service
 
-Microsserviço do **Command Side** responsável por aceitar ordens de compra/venda,
-executar o Motor de Match via Redis e coordenar a Saga de fundos com o wallet-service.
+Microsserviço responsável pelo **Command Side e Query Side** do Livro de Ofertas.
+Implementa CQRS com PostgreSQL no Command Side (escrita) e MongoDB no Query Side (leitura/Read Model).
 
 ## 📋 Responsabilidades
 
+### Command Side
 - ✅ Aceitar ordens (`POST /api/v1/orders`) com autenticação JWT (Keycloak)
 - ✅ Verificar registro local do usuário (`tb_user_registry`) antes de aceitar a ordem
 - ✅ Persistir a ordem em estado `PENDING` e publicar `ReserveFundsCommand` no RabbitMQ
@@ -12,6 +13,12 @@ executar o Motor de Match via Redis e coordenar a Saga de fundos com o wallet-se
 - ✅ Executar o Motor de Match atômico via Script Lua no Redis Sorted Set
 - ✅ Consumir eventos `REGISTER` do Keycloak (plugin aznamier) via `amq.topic` e popular `tb_user_registry`
 - ✅ Rotear mensagens falhas para Dead Letter Queue (`order.dead-letter`) após retry esgotado
+
+### Query Side — Read Model (US-003)
+- ✅ Projetar eventos da Saga em `OrderDocument` no MongoDB (consistência eventual)
+- ✅ Expor histórico paginado de ordens por usuário (`GET /api/v1/orders`)
+- ✅ Expor detalhe de ordem com array `history[]` completo (`GET /api/v1/orders/{orderId}`)
+- ✅ Idempotência: `eventId` como chave de deduplicação no history — reentregas seguras
 
 ## 🏗️ Estrutura de Pacotes
 
@@ -29,6 +36,7 @@ src/main/java/com/vibranium/orderservice/
 │   └── OrderCommandService.java                      # Orquestração do fluxo de ordem
 ├── config/
 │   ├── JacksonConfig.java                            # ObjectMapper com JavaTimeModule
+│   ├── MongoIndexConfig.java                         # Index pre-creation + connection pool MongoDB
 │   ├── RabbitMQConfig.java                           # Topologia: exchanges, filas, bindings, DLQ
 │   └── SecurityConfig.java                           # JWT Resource Server (Keycloak)
 ├── domain/
@@ -38,9 +46,17 @@ src/main/java/com/vibranium/orderservice/
 │   └── repository/
 │       ├── OrderRepository.java
 │       └── UserRegistryRepository.java
+├── query/                                            # ← Query Side (Read Model — US-003)
+│   ├── consumer/
+│   │   └── OrderEventProjectionConsumer.java         # 4 listeners → projeta eventos no MongoDB
+│   ├── model/
+│   │   └── OrderDocument.java                       # @Document MongoDB com history[] desnorm.
+│   └── repository/
+│       └── OrderHistoryRepository.java               # MongoRepository com paginação por userId
 └── web/
     ├── controller/
-    │   └── OrderCommandController.java               # POST /api/v1/orders
+    │   ├── OrderCommandController.java               # POST /api/v1/orders
+    │   └── OrderQueryController.java                 # GET /api/v1/orders, GET /{orderId}
     ├── dto/
     │   ├── PlaceOrderRequest.java                    # @Valid + Bean Validation
     │   └── PlaceOrderResponse.java
@@ -71,9 +87,25 @@ src/main/java/com/vibranium/orderservice/
 
 ### Filas publicadas pelo order-service
 
-| Fila                        | Exchange             | Routing Key              |
-|-----------------------------|----------------------|--------------------------|
-| `wallet.commands.reserve-funds` | `vibranium.commands` | `wallet.commands.reserve-funds` |
+| Fila / Exchange               | Exchange              | Routing Key                        | Propósito                 |
+|-------------------------------|-----------------------|------------------------------------|---------------------------|
+| `wallet.commands.reserve-funds` | `vibranium.commands`  | `wallet.commands.reserve-funds`  | Saga: reserva de fundos   |
+| — (event)                     | `vibranium.events`    | `order.events.order-received`      | Projeção Read Model       |
+
+### Filas de projeção (Query Side — US-003)
+
+O Read Model MongoDB é populado por 4 filas dedicadas, cada uma consumindo um tipo de evento:
+
+| Fila de Projeção                       | Binding (Routing Key)                         | Consumer                              |
+|----------------------------------------|-----------------------------------------------|---------------------------------------|
+| `order.projection.received`             | `order.events.order-received`                 | `onOrderReceived` → cria doc PENDING  |
+| `order.projection.funds-reserved`       | `wallet.events.funds-reserved`                | `onFundsReserved` → status → OPEN     |
+| `order.projection.match-executed`       | `order.events.match-executed`                 | `onMatchExecuted` → FILLED/PARTIAL    |
+| `order.projection.cancelled`            | `order.events.order-cancelled`                | `onOrderCancelled` → status CANCELLED |
+
+> **Fanout Pattern:** As filas de projeção compartilham a mesma fila `vibranium.events`
+> TopicExchange com as filas do Command Side. Isso garante que o Read Model receba os mesmos
+> eventos sem acoplamento direto com o fluxo da Saga.
 
 ### Dead Letter Queue (DLQ)
 
@@ -94,22 +126,28 @@ spring.rabbitmq.listener.simple:
     max-interval: 10000
 ```
 
-## 🔄 Fluxo da Saga de Ordens
+## 🔄 Fluxo Completo (Command Side + Query Side)
 
 ```
 POST /api/v1/orders
    → verifica tb_user_registry (403 se ausente)
-   → persiste Order{PENDING} em tb_orders
+   → persiste Order{PENDING} em tb_orders (PostgreSQL)
    → publica ReserveFundsCommand em wallet.commands.reserve-funds
-      ↓
-   wallet-service processa ReserveFundsCommand
-      ├── Fundos OK → publica FundsReservedEvent
-      │      → FundsReservedEventConsumer
-      │            → RedisMatchEngineAdapter (Lua atômico)
-      │                ├── match encontrado → Order{FILLED}, publica MatchExecutedEvent
-      │                └── sem match       → Order{OPEN}, publica OrderAddedToBookEvent
-      └── Fundos insuficientes → publica FundsReservationFailedEvent
+   → publica OrderReceivedEvent em vibranium.events (Virtual Thread — não bloqueia a tx)
+      │                                                        │
+      │    (Command Side)                                      │ (Query Side — MongoDB)
+      ↓                                               ┌────────┘
+   wallet-service                             OrderEventProjectionConsumer
+      ├── Fundos OK → FundsReservedEvent      │  onOrderReceived   → OrderDocument{PENDING}
+      │      → FundsReservedEventConsumer     │  onFundsReserved   → status → OPEN
+      │            → Lua no Redis             │  onMatchExecuted   → FILLED ou PARTIAL
+      │                ├── match → FILLED     │  onOrderCancelled  → status → CANCELLED
+      │                └── no match → OPEN   │
+      └── Insuficiente → FundsReservationFailed
              → FundsReservationFailedEventConsumer → Order{CANCELLED}
+
+GET /api/v1/orders          → OrderQueryController → MongoDB (Read Model — consistência eventual)
+GET /api/v1/orders/{id}     → OrderQueryController → MongoDB (history[] completo)
 ```
 
 ## 🔐 Segurança
@@ -141,9 +179,21 @@ mvn clean test
 
 ## 🔗 Endpoints
 
-| Método | Path               | Auth      | Descrição                            |
-|--------|--------------------|-----------|--------------------------------------|
-| POST   | `/api/v1/orders`   | JWT (USER) | Aceitar ordem de compra ou venda    |
+| Método | Path                     | Auth       | Descrição                                      |
+|--------|--------------------------|------------|------------------------------------------------|
+| POST   | `/api/v1/orders`         | JWT (USER) | Aceitar ordem de compra ou venda (202 Accepted)|
+| GET    | `/api/v1/orders`         | JWT (USER) | Listar ordens paginadas do usuário (Read Model)|
+| GET    | `/api/v1/orders/{id}`    | JWT (USER) | Detalhe de ordem com history[] completo        |
+
+### Paginação (GET /api/v1/orders)
+
+| Parâmetro | Padrão | Máximo | Descrição              |
+|-----------|--------|--------|------------------------|
+| `page`    | `0`    | —      | Página zero-indexed     |
+| `size`    | `20`   | `100`  | Docs por página         |
+
+> **Segurança:** o `userId` é extraído exclusivamente do claim `sub` do JWT.
+> Usuários não podem consultar ordens uns dos outros, mesmo passando outro ID na URL.
 
 ### Respostas de erro padronizadas
 
@@ -157,15 +207,49 @@ O `GlobalExceptionHandler` retorna `ResponseEntity<Map<String, Object>>` com cam
 
 ## 📦 Dependências principais
 
-| Biblioteca               | Uso                                        |
-|--------------------------|--------------------------------------------|
-| Spring Boot Web          | REST API                                   |
-| Spring Data JPA          | PostgreSQL / Hibernate                     |
-| Spring AMQP              | RabbitMQ (producers + consumers)           |
-| Spring Data Redis        | StringRedisTemplate para script Lua        |
-| Spring Security OAuth2   | JWT Resource Server                        |
-| Flyway                   | Migrations (`V1__user_registry`, `V2__orders`) |
-| common-contracts         | DTOs/Events compartilhados entre serviços  |
+| Biblioteca                        | Uso                                             |
+|-----------------------------------|-------------------------------------------------|
+| Spring Boot Web                   | REST API                                        |
+| Spring Data JPA                   | PostgreSQL / Hibernate (Command Side)           |
+| Spring Data MongoDB               | Read Model — `OrderDocument` + `MongoRepository`|
+| Spring AMQP                       | RabbitMQ (producers + consumers + projection)   |
+| Spring Data Redis                 | StringRedisTemplate para script Lua             |
+| Spring Security OAuth2            | JWT Resource Server                             |
+| Flyway                            | Migrations (`V1__user_registry`, `V2__orders`)  |
+| common-contracts                  | DTOs/Events compartilhados entre serviços       |
+| testcontainers:mongodb (test)     | `MongoDBContainer` para testes de integração    |
+
+## 🍃 Read Model — MongoDB
+
+### OrderDocument (coleção `orders`)
+
+```
+OrderDocument {
+  orderId:       String   // @Id — UUID como string
+  userId:        String   // claim sub do JWT
+  orderType:     String   // BUY | SELL
+  price:         BigDecimal
+  amount:        BigDecimal
+  remainingQty:  BigDecimal  // decrementado a cada MatchExecutedEvent
+  status:        String   // PENDING → OPEN → FILLED | PARTIAL | CANCELLED
+  createdAt:     Instant
+  updatedAt:     Instant
+  history[]:     OrderHistoryEntry[]  // log imutável de cada evento
+    ├── eventId:    UUID     // chave de idempotência (deduplicação)
+    ├── eventType:  String   // ORDER_RECEIVED | FUNDS_RESERVED | MATCH_EXECUTED | CANCELLED
+    ├── timestamp:  Instant
+    └── metadata:  Map<String, Object>
+}
+```
+
+**Índice composto** `idx_userId_createdAt` → `{userId: 1, createdAt: -1}`:  
+Suporta `findByUserIdOrderByCreatedAtDesc(userId, Pageable)` em O(log n).
+
+### Consistência
+
+O Read Model é **eventualmente consistente** com o Command Side (PostgreSQL).
+Após o `POST /api/v1/orders` retornar `202 Accepted`, o documento MongoDB pode
+levar alguns milissegundos para ser criado (tempo de propagação pelo RabbitMQ).
 
 ---
 

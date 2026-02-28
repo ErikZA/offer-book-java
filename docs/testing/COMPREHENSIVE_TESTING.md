@@ -5,16 +5,17 @@
 1. [Visão Geral](#visão-geral)
 2. [Quick Start](#quick-start)
 3. [Estrutura de Testes](#estrutura-de-testes)
-4. [Tipos de Testes](#tipos-de-testes)
-5. [Padrões de Teste](#padrões-de-teste)
-6. [Executando Testes](#executando-testes)
-7. [Ferramentas e Bibliotecas](#ferramentas-e-bibliotecas)
-8. [Ambientes Docker](#ambientes-docker)
-9. [Cobertura de Código](#cobertura-de-código)
-10. [Debug Remoto](#debug-remoto)
-11. [Checklist de Qualidade](#checklist-de-qualidade)
-12. [Troubleshooting](#troubleshooting)
-13. [Referências](#referências)
+4. [Hierarquia de Classes Base](#hierarquia-de-classes-base)
+5. [Tipos de Testes](#tipos-de-testes)
+6. [Padrões de Teste](#padrões-de-teste)
+7. [Executando Testes](#executando-testes)
+8. [Ferramentas e Bibliotecas](#ferramentas-e-bibliotecas)
+9. [Ambientes Docker](#ambientes-docker)
+10. [Cobertura de Código](#cobertura-de-código)
+11. [Debug Remoto](#debug-remoto)
+12. [Checklist de Qualidade](#checklist-de-qualidade)
+13. [Troubleshooting](#troubleshooting)
+14. [Referências](#referências)
 
 ---
 
@@ -105,6 +106,116 @@ src/test/java/
 **Convenção de Nomenclatura**:
 - **`*Test.java`** - Testes unitários (sem Spring Context)
 - **`*IT.java`** - Testes de integração (com Spring Context)
+
+## Hierarquia de Classes Base
+
+### Problema: SLA vs. Containers Docker
+
+Ao adicionar o MongoDB como 4º container Testcontainers ao ambiente de teste, testes de
+concorrência que validam SLA de latência (`p99 ≤ 200ms`) começaram a falhar
+consistentemente com `p99` na faixa de **350–900ms**.
+
+**Causa raiz:** 4 containers Docker (PostgreSQL + RabbitMQ + Redis + MongoDB) rodando
+simultaneamente no mesmo host causam contenção de CPU, TCP stack e memória durante
+o teste de 50 requests concorrentes. A latência adicional era de Docker overhead,
+not do código da aplicação.
+
+**Diagnóstico confirmado:** p99 > 200ms mesmo com o código de publicação de eventos
+completamente removido — provando que a causa era infra, não código.
+
+### Solução: Hierarquia de Classes Base com Isolamento de Containers
+
+A suite foi dividida em **duas hierarquias**, cada uma com um conjunto mínimo de containers:
+
+```
+AbstractIntegrationTest          ← Command Side (3 containers: PG + MQ + Redis)
+       │
+       ├── OrderCommandControllerTest      # SLA test: p99 ≤ 200ms ✔
+       ├── OrderSagaConcurrencyTest
+       ├── MatchEngineRedisIntegrationTest
+       ├── KeycloakUserRegistryIntegrationTest
+       └── OrderServiceApplicationTest
+       │
+       └── AbstractMongoIntegrationTest    ← Query Side (4 containers: PG + MQ + Redis + Mongo)
+              └── OrderQueryControllerTest
+```
+
+**`AbstractIntegrationTest`** — exclui auto-configuration MongoDB:
+```java
+@SpringBootTest(
+    webEnvironment = RANDOM_PORT,
+    properties = {
+        "spring.autoconfigure.exclude=" +
+            "...MongoAutoConfiguration," +
+            "...MongoDataAutoConfiguration," +
+            "...MongoRepositoriesAutoConfiguration",
+        // Desabilita beans do Query Side (@ConditionalOnProperty)
+        "app.mongodb.enabled=false"
+    }
+)
+```
+
+**`AbstractMongoIntegrationTest`** — adiciona MongoDB ao contexto:
+```java
+@SpringBootTest(webEnvironment = RANDOM_PORT)  // sem exclusões
+public abstract class AbstractMongoIntegrationTest extends AbstractIntegrationTest {
+
+    static final MongoDBContainer MONGODB =
+        new MongoDBContainer(DockerImageName.parse("mongo:7.0")).withReuse(true);
+
+    static { MONGODB.start(); }
+
+    @DynamicPropertySource
+    static void registerMongoProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.data.mongodb.uri", MONGODB::getReplicaSetUrl);
+    }
+
+    @Autowired
+    protected MongoTemplate mongoTemplate;
+}
+```
+
+### @ConditionalOnProperty para Beans do Query Side
+
+Beans que dependem de MongoDB são anotados com `@ConditionalOnProperty` para que
+não sejam criados quando `app.mongodb.enabled=false`:
+
+```java
+// OrderEventProjectionConsumer.java
+@Component
+@ConditionalOnProperty(name = "app.mongodb.enabled", matchIfMissing = true)
+public class OrderEventProjectionConsumer { ... }
+
+// OrderQueryController.java
+@RestController
+@ConditionalOnProperty(name = "app.mongodb.enabled", matchIfMissing = true)
+public class OrderQueryController { ... }
+
+// MongoIndexConfig.java
+@Bean
+@ConditionalOnProperty(name = "app.mongodb.enabled", matchIfMissing = true)
+SmartInitializingSingleton mongoOrdersIndexInitializer(MongoTemplate mongoTemplate) { ... }
+```
+
+> **Por que `matchIfMissing = true`?**  
+> Em produção, a propriedade não existe no `application.yaml` — o comportamento deve ser
+> criar os beans (MongoDB é nécessário em prod). Apenas nos testes do Command Side
+> `app.mongodb.enabled=false` é explicitamente definido.
+
+> **Por que não usar `@ConditionalOnBean(MongoTemplate.class)`?**  
+> `@ConditionalOnBean` em `@Component` é avaliado pelo `BeanFactory` antes dos
+> auto-configures criarem o `MongoTemplate` — a avaliação é não-determinista e pode
+> falhar com resultados inconsistentes. `@ConditionalOnProperty` é resolvido contra
+> o `Environment`, que já tem os valores dos `@DynamicPropertySource` antes do
+> contexto ser criado.
+
+### Resultado da Segregação
+
+| Suite anterior (4 containers everywhere) | Suite atual (hierarquia isolada)     |
+|------------------------------------------|--------------------------------------|
+| SLA p99: 350–900ms (🚨 FAIL)              | SLA p99: < 200ms (✅ PASS)            |
+| 31 testes, 1 falha                       | 31 testes, 0 falhas                  |
+| MongoDB no SLA test class                | MongoDB só em `AbstractMongo*`       |
 
 ---
 
@@ -630,6 +741,55 @@ void shouldHandleConcurrentRequests() {
 }
 ```
 
+### SLA de Latência com Virtual Threads
+
+O teste `whenFiftyConcurrentOrdersFromSameUser_thenAllAcceptedWithinSLA` valida que
+50 requests concorrentes completam com `p99 ≤ 200ms` — SLA derivado do requisito de
+5000 trades/segundo.
+
+**Implementação:**
+```java
+@Test
+@DisplayName("Dado 50 ordens concorrentes do mesmo usuário, todas devem receber 202 em < 200ms p99")
+@Timeout(value = 30, unit = TimeUnit.SECONDS)
+void whenFiftyConcurrentOrdersFromSameUser_thenAllAcceptedWithinSLA() throws Exception {
+    int concurrency = 50;
+    CountDownLatch startLatch = new CountDownLatch(1);
+    CountDownLatch doneLatch  = new CountDownLatch(concurrency);
+    List<Long> latenciesMs    = new ArrayList<>();
+
+    try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+        List<Future<Long>> futures = new ArrayList<>();
+        for (int i = 0; i < concurrency; i++) {
+            futures.add(executor.submit(() -> {
+                startLatch.await(); // todos iniciam simultaneamente
+                long start = System.currentTimeMillis();
+                mockMvc.perform(post("/api/v1/orders")
+                    .with(jwt().jwt(b -> b.subject(userId.toString())))
+                    .contentType(APPLICATION_JSON)
+                    .content(requestJson))
+                    .andExpect(status().isAccepted());
+                doneLatch.countDown();
+                return System.currentTimeMillis() - start;
+            }));
+        }
+        startLatch.countDown(); // larga todos ao mesmo tempo
+        doneLatch.await(25, TimeUnit.SECONDS);
+        for (Future<Long> f : futures) latenciesMs.add(f.get());
+    }
+
+    List<Long> sorted = latenciesMs.stream().sorted().toList();
+    long p99 = sorted.get((int) Math.ceil(concurrency * 0.99) - 1);
+    assertThat(p99).as("p99 deve ser ≤ 200ms").isLessThanOrEqualTo(200L);
+}
+```
+
+**Cuidados ao criar testes de SLA:**
+- Não inclua containers desnecessários na classe de teste (ver seção [Hierarquia de Classes Base](#hierarquia-de-classes-base))
+- Use `Executors.newVirtualThreadPerTaskExecutor()` para simular o comportamento real do servidor
+- Use `CountDownLatch` de arranque para garantir concorrência real (não escalonada)
+- O SLA de 200ms é válido apenas com 3 containers (Command Side). Com 4+ containers, o overhead Docker aumenta a latência.
+
 ### Isolamento de Filas AMQP no `@BeforeEach`
 
 Testes de integração que consomem mensagens RabbitMQ precisam de uma limpeza ativa da fila
@@ -1045,6 +1205,58 @@ docker-compose -f docker-compose.dev.yml restart postgres
 - Verificar se a classe é `final` (Mockito não consegue mockar classes finais)
 - Usar `mock(Class.class)` manualmente se anotação não funcionar
 
+### MongoDB: Pre-criação de índices e Connection Pool
+
+O driver Java do MongoDB cresce o connection pool **lazily** (minSize=0 por padrão).
+Isso causa spikes de latência na primeira carga concorrente enquanto novas conexões
+são criadas (overhead: 300–900ms em Testcontainers).
+
+A classe `MongoIndexConfig` resolve ambos os probelmas no startup:
+
+```java
+// 1. Pre-cria conexões no pool (evita crescimento lazy)
+@Bean
+@ConditionalOnProperty(name = "app.mongodb.enabled", matchIfMissing = true)
+MongoClientSettingsBuilderCustomizer mongoConnectionPoolCustomizer() {
+    return builder -> builder.applyToConnectionPoolSettings(
+        pool -> pool.minSize(10).maxSize(100)
+    );
+}
+
+// 2. Pre-cria coleção + índice no startup (evita criação lazy no primeiro write)
+@Bean
+@ConditionalOnProperty(name = "app.mongodb.enabled", matchIfMissing = true)
+SmartInitializingSingleton mongoOrdersIndexInitializer(MongoTemplate mongoTemplate) {
+    return () -> {
+        if (!mongoTemplate.collectionExists("orders")) {
+            mongoTemplate.createCollection("orders");
+        }
+        mongoTemplate.indexOps("orders").ensureIndex(
+            new CompoundIndexDefinition(new Document("userId", 1).append("createdAt", -1))
+                .named("idx_userId_createdAt")
+        );
+    };
+}
+```
+
+> `SmartInitializingSingleton` é invocado após todos os singletons do contexto estarem
+> prontos — garantindo que `MongoTemplate` está completamente configurado antes de
+> `ensureIndex()` ser chamado.
+
+### Troubleshooting: SLA test falhando após adicionar novo container
+
+Se um teste de concorrência (SLA) começar a falhar após adicionar um novo container
+Testcontainers ao ambiente:
+
+1. **Verifique a hierarquia:** o novo container deve estar em `AbstractMongoIntegrationTest`
+   (ou classe equivalente dedicada), não em `AbstractIntegrationTest`.
+2. **Diagnóstico:** remova temporariamente toda a lógica de aplicação do método testado
+   e veja se o p99 ainda extrapola. Se sim, a causa é Docker overhead, não código.
+3. **Não ajuste o threshold de SLA** como primeira opção — isso mascara o problema.
+   A correção correta é isolar containers por hierarquia de teste.
+4. **Atenção ao `@ConditionalOnProperty`:** se os beans do conteúdo novo não estiverem
+   condicionados, eles tentarão se conectar a infra inexistente e falharão no startup.
+
 ### Mensagens não chegam na DLQ
 
 Se mensagens rejeitadas (NACK sem requeue) não aparecem na fila `order.dead-letter`,
@@ -1172,4 +1384,10 @@ jobs:
 ---
 
 **Status**: ✅ Consolidado e Completo  
-**Última atualização**: 27 de fevereiro de 2026
+**Última atualização**: 28 de fevereiro de 2026
+
+> **Mudanças recentes (US-003):**
+> - Adicionada hierarquia `AbstractMongoIntegrationTest` (Query Side) separada de `AbstractIntegrationTest` (Command Side)
+> - Documentado problema de SLA com 4 containers e solução via isolamento de hierarquia
+> - Adicionada seção sobre `@ConditionalOnProperty` para beans MongoDB condicionais
+> - Adicionado padrão de pre-criação de índices e connection pool MongoDB

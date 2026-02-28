@@ -48,17 +48,38 @@ Em um sistema tradicional de CRUD (Create, Read, Update, Delete), quando você a
 
 * *Exemplo do dia a dia:* O extrato do seu banco. O banco não salva apenas o seu saldo final; ele salva cada depósito, saque e taxa (os eventos). O seu saldo final é apenas a soma matemática de todos esses eventos.
 
-### Como será aplicado no nosso projeto?
+### Como está aplicado no projeto (implementação atual)
 
-O desafio exige que as transações tenham **rastreabilidade**, ou seja, um histórico claro.
+O Event Sourcing está implementado como **Read Model via Projeção de Eventos** (Projection-Based Event Sourcing),
+que é uma forma pragmática do padrão adequada ao MVP:
 
-* 
-**O Problema:** Em um Livro de Ofertas com robôs operando freneticamente, não podemos perder o rastro de *quando* uma ordem foi criada, *quando* o saldo foi bloqueado, e *quando* o match aconteceu.
+1. **Cada ação executada gera um Evento Imutável** enfileirado no RabbitMQ:
+   - `OrderReceivedEvent` — ordem aceita pelo Command Side
+   - `FundsReservedEvent` — fundos bloqueados pelo wallet-service
+   - `MatchExecutedEvent` — cruzamento realizado pelo Motor de Match
+   - `OrderCancelledEvent` — ordem cancelada (fundos insuficientes)
 
+2. **O MongoDB funciona como Diário de Bordo** (`OrderDocument.history[]`):
+   - Cada evento é projetado como uma entrada imutável no array `history[]`
+   - O `eventId` garante deduplicação: a mesma mensagem re-entregue é ignorada
+   - O status (`PENDING → OPEN → FILLED/PARTIAL/CANCELLED`) reflete o estado atual
 
-* **A Solução no Projeto:** 1. Cada ação executada vai gerar um Evento Imutável (ex: `OrdemVendaRecebida`, `FundosEmTradeBloqueados`, `MatchRealizado`).
-2. Todos esses eventos serão enfileirados no **RabbitMQ**.
-3. Nós vamos usar o **MongoDB** como nosso grande "Diário de Bordo" (Event Store). Ele vai salvar cada evento como um documento. Assim, se a plataforma precisar auditar porque o saldo de um usuário está errado, podemos olhar o histórico do MongoDB e reconstruir a linha do tempo exata segundo a segundo!
+3. **Rastreabilidade completa**: `GET /api/v1/orders/{orderId}` retorna o histórico
+   completo da ordem — quando foi aceita, quando fundos foram reservados, quando o
+   match ocorreu — tudo em um único documento MongoDB, sem JOIN.
+
+**Exemplo de `OrderDocument` após ciclo completo:**
+```json
+{
+  "orderId": "abc-123",
+  "status": "FILLED",
+  "history": [
+    {"eventType": "ORDER_RECEIVED",  "timestamp": "..."},
+    {"eventType": "FUNDS_RESERVED",  "timestamp": "..."},
+    {"eventType": "MATCH_EXECUTED",  "matchAmount": 0.5, "timestamp": "..."}
+  ]
+}
+```
 
 ---
 
@@ -73,27 +94,75 @@ CQRS significa "Segregação de Responsabilidade de Comando e Consulta". O nome 
 
 Em sistemas comuns, usamos o mesmo banco e as mesmas classes para ler e gravar. Mas quando temos 5000 trades por segundo, se quem está lendo concorrer com quem está gravando, o banco trava (Deadlock).
 
-### Como será aplicado no nosso projeto?
+### Como está aplicado no projeto (implementação atual)
 
-Como a performance e a concorrência devem ser muito bem pensadas (milhares de usuários colocando ordens no mesmo milésimo de segundo), aplicaremos CQRS da seguinte forma:
+O CQRS está implementado nos dois eixos que a arquitetura define:
 
-* **O Lado Command (A Escrita via API POST):** Quando o usuário envia uma ordem de compra, essa requisição passa por validações complexas, atualiza o saldo (ACID) no **PostgreSQL** para evitar fraudes, e vai para o **Redis** processar o match. Essa via é otimizada para segurança e cálculos.
-* **O Lado Query (A Leitura via API GET):**
-Quando o usuário quer ver o histórico de transações dele ou o estado atual do Livro de Ofertas, ele **não** vai bater no banco de dados principal (PostgreSQL) que está ocupado processando compras e vendas. A API de leitura vai buscar os dados consolidados no **MongoDB** ou consultar a lista já pronta e ordenada diretamente no **Redis** (onde não há locks pesados).
+**Command Side (escrita)** \u2014 `POST /api/v1/orders`:
+1. Valida o usuário contra `tb_user_registry` (PostgreSQL)
+2. Persiste `Order{PENDING}` em `tb_orders` (PostgreSQL, ACID)
+3. Publica `ReserveFundsCommand` para o wallet-service (RabbitMQ)
+4. Publica `OrderReceivedEvent` em Virtual Thread (não bloqueia a transação JPA)
+5. O wallet-service reserva fundos → Motor de Match Redis (Script Lua atômico)
 
-### Resumo Visual do CQRS no MVP:
+**Query Side (leitura)** \u2014 `GET /api/v1/orders` / `GET /api/v1/orders/{id}`:
+1. `OrderEventProjectionConsumer` ouve 4 tipos de evento via RabbitMQ
+2. Projeta os eventos em `OrderDocument` no MongoDB (consistência eventual)
+3. `OrderQueryController` lê direto do MongoDB — sem JOIN, sem lock no PostgreSQL
 
-1. Usuário envia ordem de compra ➡️ **API de Commands** ➡️ Valida no Postgres ➡️ Joga pro Redis.
-2. Robô quer ver as 10 melhores ofertas ➡️ **API de Queries** ➡️ Pega direto do Redis quase instantaneamente.
+**Topologia do Read Model:**
+```
+vibranium.events (TopicExchange)
+  │
+  ├── order.projection.received   → onOrderReceived   → OrderDocument{PENDING}
+  ├── order.projection.funds-reserved → onFundsReserved → status → OPEN
+  ├── order.projection.match-executed → onMatchExecuted → FILLED/PARTIAL
+  └── order.projection.cancelled  → onOrderCancelled  → status CANCELLED
+```
+
+**Por que MongoDB para o Read Model?**
+- Documentos desnormalizados com `history[]` embutido → um único `findById()` retorna o rastreio completo
+- Sem locks de leitura: PostgreSQL permanece dedicado às escritas da Saga
+- `@CompoundIndex({userId: 1, createdAt: -1})` suporta a query paginada por usuário em O(log n)
+
+**Idempotência no Read Model:**
+
+Cada entrada no `history[]` usa o `eventId` do evento como chave de deduplicação.
+Re-entregas do RabbitMQ (broker restart, NACK etc.) são descartadas silenciosamente
+se o `eventId` já existir no array — garantindo `exactly-once` na projeção.
+
+### Resumo Visual do CQRS no MVP (implementado):
+
+```
+POST /api/v1/orders ──► Command Side ──► PostgreSQL (ACID)
+                                    └──► Redis (Match)
+                                    └──► RabbitMQ ──► MongoDB (Read Model)
+                                         (Virtual Thread)
+
+GET  /api/v1/orders ──► Query Side  ──► MongoDB (OrderDocument)
+```
+
+1. Usuário envia ordem ➡️ **Command Side** ➡️ Valida no Postgres ➡️ Joga pro Redis.
+2. Usuário quer ver histórico ➡️ **Query Side** ➡️ Lê do MongoDB com resposta < 50ms.
+3. Robô quer ver as 10 melhores ofertas ➡️ **Query Side** ➡️ Pega direto do Redis quase instantaneamente.
 
 ---
 
-### 🚀 Conclusão para o Desafio
+### 🚀 Conclusão — Estado Atual do MVP
 
-Ao juntar esses três padrões, nós criamos um sistema **inquebrável** para o MVP:
+Ao juntar esses três padrões, criamos um sistema **robusto e escalável** para o MVP:
 
 * O **DDD** garante que o código faz sentido para o negócio financeiro, blindando as regras na Carteira e no Livro de Ofertas.
-* O **Event Sourcing** (via RabbitMQ e Mongo) garante que nenhum dado se perde e temos o extrato histórico de tudo o que os robôs fizeram.
+* O **Event Sourcing** (via RabbitMQ + MongoDB `history[]`) garante que nenhum evento se perde e temos o extrato histórico auditável de tudo que aconteceu com cada ordem.
+* O **CQRS** garante que os milhares de robôs pesquisando histórico de ordens (Query Side) não concorrem com o Motor de Match Redis nem com as escritas ACID no PostgreSQL (Command Side).
 
+**Status de implementação (28/02/2026):**
 
-* O **CQRS** garante que os milhares de robôs pesquisando preços não vão derrubar ou atrasar o motor (Redis) que está fazendo as transações de compra e venda ocorrerem em tempo real.
+| Padrão         | Status | Detalhe                                                              |
+|----------------|--------|----------------------------------------------------------------------|
+| DDD            | ✅     | `Order`, `UserRegistry` como agregados; Bounded Contexts separados    |
+| Event Sourcing | ✅     | `OrderDocument.history[]` no MongoDB; idempotência por `eventId`     |
+| CQRS Command   | ✅     | `POST /api/v1/orders` → PostgreSQL + Redis + RabbitMQ                |
+| CQRS Query     | ✅     | `GET /api/v1/orders` → MongoDB (eventual consistency)                |
+| Saga           | ✅     | Reserve Funds → Match Engine → FILLED/OPEN/CANCELLED                 |
+| SLA 200ms p99  | ✅     | Virtual Threads + isolamento de containers em testes                  |
