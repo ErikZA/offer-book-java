@@ -146,5 +146,5 @@ Veja COMPREHENSIVE_TESTING.md para exemplos de cada ferramenta.
 
 ---
 
-**Última atualização**: 27 de fevereiro de 2026  
+**Última atualização**: 28 de fevereiro de 2026  
 **Status**: ✅ Consolidado em COMPREHENSIVE_TESTING.md

@@ -50,6 +50,21 @@ public class RabbitMQConfig {
         return new TopicExchange("wallet.commands", true, false);
     }
 
+    /**
+     * Exchange topic principal de eventos de domínio do wallet-service.
+     *
+     * <p>O {@link com.vibranium.walletservice.infrastructure.outbox.OutboxPublisherService}
+     * publica todos os eventos aqui com routing-keys definidas em
+     * {@link com.vibranium.walletservice.infrastructure.outbox.EventRoute}.</p>
+     *
+     * <p>Consumers (order-service, etc.) se ligam a esta exchange com suas
+     * próprias filas e routing-key patterns.</p>
+     */
+    @Bean
+    public TopicExchange vibraniumEventsExchange() {
+        return new TopicExchange("vibranium.events", true, false);
+    }
+
     // -------------------------------------------------------------------------
     // Queues
     // -------------------------------------------------------------------------

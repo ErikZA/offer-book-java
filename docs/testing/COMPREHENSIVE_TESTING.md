@@ -14,7 +14,8 @@
 10. [Debug Remoto](#debug-remoto)
 11. [Checklist de Qualidade](#checklist-de-qualidade)
 12. [Troubleshooting](#troubleshooting)
-13. [Referências](#referências)
+13. [Testes de CDC — Debezium Outbox](#testes-de-cdc--debezium-outbox)
+14. [Referências](#referências)
 
 ---
 
@@ -1160,6 +1161,156 @@ jobs:
 
 ---
 
+## Testes de CDC — Debezium Outbox
+
+O `OutboxPublisherIntegrationTest` valida o caminho completo do evento desde a inserção na tabela `outbox_message` até a chegada na fila RabbitMQ via Debezium CDC. Esta seção documenta os padrões e armadilhas encontrados.
+
+### Por que um contexto Spring separado
+
+O `DebeziumOutboxEngine` e o `OutboxPublisherService` são protegidos por `@ConditionalOnProperty(name = "app.outbox.debezium.enabled", havingValue = "true", matchIfMissing = false)`. Isso garante que os beans **não são carregados** em testes `@DataJpaTest` ou `@SpringBootTest` convencionais que não precisam do broker RabbitMQ.
+
+Para os testes que precisam do relay completo, um contexto isolado é ativado via:
+
+```java
+@SpringBootTest
+@TestPropertySource(properties = "app.outbox.debezium.enabled=true")
+class OutboxPublisherIntegrationTest extends AbstractIntegrationTest { ... }
+```
+
+### Padrão: aguardar mensagem na fila (Awaitility)
+
+O Debezium é assíncrono por natureza. Nunca use `Thread.sleep()` diretamente — use Awaitility para fazer polling do RabbitMQ:
+
+```java
+import static org.awaitility.Awaitility.await;
+import java.util.concurrent.TimeUnit;
+
+@Test
+@DisplayName("Deve publicar FundsReservedEvent na exchange vibranium.events")
+void shouldPublishFundsReservedEvent() {
+    // Arrange — inserção direta simula WalletService
+    UUID eventId  = UUID.randomUUID();
+    UUID walletId = UUID.randomUUID();
+    jdbcTemplate.update("""
+            INSERT INTO outbox_message (id, event_type, aggregate_id, payload,
+                                        created_at, processed)
+            VALUES (?, ?, ?, ?, ?, false)
+            """,
+            eventId, "FundsReservedEvent", walletId.toString(),
+            "{\"amount\":\"100.00\"}", Timestamp.from(Instant.now()));
+
+    // Act + Assert — Debezium entrega em até 10 s
+    await().atMost(10, TimeUnit.SECONDS)
+           .pollInterval(200, TimeUnit.MILLISECONDS)
+           .untilAsserted(() -> {
+               Message msg = rabbitTemplate.receive("test.outbox.funds-reserved", 100);
+               assertThat(msg).isNotNull();
+               assertThat(msg.getMessageProperties().getMessageId())
+                   .isEqualTo(eventId.toString());
+           });
+
+    // Idempotência: processed=true no banco
+    assertThat(outboxRepository.findById(eventId).orElseThrow().isProcessed()).isTrue();
+}
+```
+
+**Por que 10 s e não 5 s?** Quando o suite completo roda, outros testes antes deste criam registros em `outbox_message`. O `processExistingPendingMessages()` processa esse backlog na inicialização do contexto Debezium. O overhead de processar dezenas de eventos pendentes pode levar 3–5 s a mais — daí a margem de 10 s para evitar falsos negativos.
+
+### Padrão: declarar filas de teste duráveis
+
+`rabbitTemplate.receive()` usa `basic.get` (pull síncrono). Filas `autoDelete=true` são deletadas assim que não há consumers ativos — ou seja, antes de o `receive()` chegar. Use filas **duráveis e não-auto-delete** nos testes:
+
+```java
+private void declareAndBindQueue(String queueName, String routingKey) {
+    // autoDelete=false, durable=true — obrigatório para rabbitTemplate.receive()
+    Queue queue = new Queue(queueName, /*durable=*/true, /*exclusive=*/false, /*autoDelete=*/false);
+    rabbitAdmin.declareQueue(queue);
+
+    // Declara explicitamente o exchange (pode não existir ainda se o contexto for novo)
+    rabbitAdmin.declareExchange(new TopicExchange("vibranium.events", true, false));
+
+    Binding binding = BindingBuilder.bind(queue)
+            .to(new TopicExchange("vibranium.events"))
+            .with(routingKey);
+    rabbitAdmin.declareBinding(binding);
+}
+```
+
+### Padrão: slot de replicação deve estar ativo antes dos testes
+
+O `DebeziumOutboxEngine` aguarda o slot ficar ativo **antes** de devolver o controle ao Spring (`SmartLifecycle.start()`). Sem essa barreira, INSERTs feitos imediatamente após o contexto subir caem numa janela cega onde o Debezium ainda não escuta o WAL.
+
+Se você implementar outro serviço com Debezium Embedded, copie o padrão `awaitSlotActive()` para o seu `start()`:
+
+```java
+@Override
+public void start() {
+    // ... cria e submete o DebeziumEngine ...
+    executor.execute(engine);
+
+    // BARREIRA OBRIGATÓRIA — garante que o WAL está sendo monitorado
+    awaitSlotActive(properties.debezium().slotName());
+
+    // Só então processa backlog e devolve o controle
+    processExistingPendingMessages();
+    running = true;
+}
+```
+
+### Padrão: isolamento de testes de carga
+
+Testes de carga (500+ registros) **devem ser os últimos** da classe. Se rodarem antes dos testes de verificação unitários, o Debezium estará processando um backlog volumoso exatamente quando o teste de funcionalidade espera uma entrega rápida:
+
+```java
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)   // ← obrigatório na classe
+class OutboxPublisherIntegrationTest {
+
+    @Test @Order(1) void shouldPublishFundsReservedEvent()     { ... }
+    @Test @Order(2) void shouldPublishFundsFailedEvent()       { ... }
+    @Test @Order(3) void shouldPublishFundsSettledEvent()      { ... }
+    @Test @Order(4) void shouldNotPublishSameMessageTwice()    { ... }
+    @Test @Order(5) void shouldHandle500ConcurrentMessages()   { ... }  // ← SEMPRE ÚLTIMO
+}
+```
+
+**Alternativa para suites muito grandes:** mover testes de carga para uma classe separada anotada com `@Tag("load")` e excluí-los do ciclo `mvn test` padrão:
+
+```xml
+<!-- pom.xml / maven-surefire-plugin -->
+<configuration>
+    <excludedGroups>load</excludedGroups>   <!-- roda apenas na pipeline de perf -->
+</configuration>
+```
+
+### PostgreSQL: configuração mínima para Debezium em testes
+
+```java
+// AbstractIntegrationTest.java
+static final PostgreSQLContainer<?> POSTGRES =
+    new PostgreSQLContainer<>("postgres:15-alpine")
+        .withCommand(
+            "postgres",
+            "-c", "wal_level=logical",          // obrigatório para CDC
+            "-c", "max_replication_slots=10",    // 1 por instância do engine
+            "-c", "max_wal_senders=10"
+        );
+```
+
+As propriedades de conexão do Debezium são injetadas no contexto de teste via `@DynamicPropertySource`:
+
+```java
+@DynamicPropertySource
+static void debeziumProperties(DynamicPropertyRegistry registry) {
+    registry.add("app.outbox.debezium.db-host",     POSTGRES::getHost);
+    registry.add("app.outbox.debezium.db-port",     () -> String.valueOf(POSTGRES.getMappedPort(5432)));
+    registry.add("app.outbox.debezium.db-name",     POSTGRES::getDatabaseName);
+    registry.add("app.outbox.debezium.db-user",     POSTGRES::getUsername);
+    registry.add("app.outbox.debezium.db-password", POSTGRES::getPassword);
+}
+```
+
+---
+
 ## Referências
 
 - [JUnit 5 Documentation](https://junit.org/junit5/docs/current/user-guide/)
@@ -1172,4 +1323,5 @@ jobs:
 ---
 
 **Status**: ✅ Consolidado e Completo  
-**Última atualização**: 27 de fevereiro de 2026
+**Última atualização**: 28 de fevereiro de 2026  
+*Adicionado: padrões de testes de CDC Debezium (seção Testes de CDC — Debezium Outbox)*

@@ -62,6 +62,61 @@ O desafio exige que as transações tenham **rastreabilidade**, ou seja, um hist
 
 ---
 
+## 2.1 Transactional Outbox Pattern + CDC (como os eventos chegam ao RabbitMQ) 📬
+
+### O problema da dupla escrita
+
+Em sistemas distribuídos existe um problema clássico: o serviço precisa, na mesma operação de negócio, **gravar no banco** (ex.: debitar saldo) e **publicar um evento** (ex.: `FundsReservedEvent`). Se o banco confirmar mas a mensageria cair antes do publish — ou o inverso — o sistema fica inconsistente.
+
+Soluções como 2-phase commit (XA) introduzem latência e lock global incompatíveis com 5 000 trades/s.
+
+### A solução: Transactional Outbox
+
+```
+┌──────────────────────────────────────────┐
+│  @Transactional (commit atômico no PG)   │
+│  1. wallet.update(saldo)                 │
+│  2. outbox_message.insert(event_payload) │
+└──────────────────────────────────────────┘
+          ↓ WAL (Write-Ahead Log)
+    ┌─────────────┐
+    │   Debezium  │  ← lê CDC do WAL, sem polling
+    │  Embedded   │
+    └──────┬──────┘
+           ↓ claimAndPublish() com UPDATE atômico
+    ┌──────────────┐
+    │   RabbitMQ   │  exchange: vibranium.events (topic)
+    └──────────────┘
+```
+
+1. O `WalletService` persiste o saldo **e** insere um registro em `outbox_message` na **mesma transação ACID** do PostgreSQL.
+2. O **Debezium Embedded** (`DebeziumOutboxEngine`) monitora o WAL e captura cada INSERT em `outbox_message` em tempo real (< 100 ms).
+3. O `OutboxPublisherService` faz um `UPDATE outbox_message SET processed=true WHERE id=? AND processed=false` **atômico** antes de publicar — garantindo que múltiplas instâncias do serviço não dupliquem a entrega.
+4. A publicação no RabbitMQ usa `@Retryable` (Spring Retry) com *backoff* exponencial: 5 tentativas, de 500 ms a 10 s — garantia  **at-least-once** mesmo se o broker estiver temporariamente indisponível.
+
+### Roteamento de eventos (`EventRoute`)
+
+Cada `eventType` no `outbox_message` é mapeado para uma *routing key* na exchange `vibranium.events` (topic):
+
+| eventType | routing key |
+|-----------|-------------|
+| `FundsReservedEvent` | `wallet.events.funds-reserved` |
+| `FundsReservationFailedEvent` | `wallet.events.funds-reservation-failed` |
+| `FundsSettledEvent` | `wallet.events.funds-settled` |
+| `WalletCreatedEvent` | `wallet.events.wallet-created` |
+
+### Por que Debezium CDC e não polling?
+
+| Critério | `@Scheduled` polling | Debezium CDC |
+|----------|---------------------|--------------|
+| Latência | Depende do intervalo (>100ms) | < 100 ms (reativo ao WAL) |
+| I/O no banco | Leitura periódica mesmo sem eventos | Zero overhead sem eventos |
+| Consistência do offset | Precisa de coluna `processed_at` + index | WAL position é o offset (atômico) |
+| Multi-instância | Precisa de lock de aplicação | Claim atômico via UPDATE |
+| Depende do clock | Sim (race condition com `created_at`) | Não (LSN do WAL é monotônico) |
+
+---
+
 ## 3. CQRS (Command Query Responsibility Segregation) 🔀
 
 ### O que é e para que serve?

@@ -16,6 +16,34 @@ spring:
                 prefetch: 1
                 default-requeue-rejected: false
 
+# ---------------------------------------------------------------------------
+# Outbox Publisher — configuração de teste (Debezium desligado por padrão)
+# Ativado individualmente em OutboxPublisherIntegrationTest via @TestPropertySource
+# ---------------------------------------------------------------------------
+app:
+    outbox:
+        batch-size: 100
+        debezium:
+            enabled: false
+
+            # Host/port sobrescritos pelo @DynamicPropertySource do AbstractIntegrationTest
+            db-host: localhost
+            db-port: 5432
+            db-name: vibranium_wallet_test
+            db-user: test
+            db-password: test
+
+            # Slot exclusivo para testes — dropado ao parar o engine
+            slot-name: wallet_outbox_test
+
+            # MemoryOffsetBackingStore: sem persistência de offset entre testes
+            # Cada reinício do engine começa do WAL atual (combinado com snapshot.mode=never)
+            offset-storage: org.apache.kafka.connect.storage.MemoryOffsetBackingStore
+            offset-storage-file: /tmp/wallet-outbox-test-offset.dat
+
+            # Dropa o slot ao parar o engine de teste para não acumular slots inativos
+            drop-slot-on-stop: true
+
 logging:
     level:
         root: WARN

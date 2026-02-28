@@ -154,6 +154,41 @@
             <artifactId>spring-rabbit-test</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- Spring Retry: suporte a @Retryable/@Recover no OutboxPublisher.
+             AOP proxy necessario para interceptacao dos metodos anotados. -->
+        <dependency>
+            <groupId>org.springframework.retry</groupId>
+            <artifactId>spring-retry</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
+
+        <!-- Debezium Embedded: CDC via WAL do PostgreSQL.
+             debezium-api:                interfaces do engine (DebeziumEngine, etc.)
+             debezium-embedded:           engine principal + Connect serializers
+             debezium-connector-postgresql: PostgresConnector + decoders
+             Versao 2.7.1.Final: LTS estavel, suporte a pgoutput (PG 10+).
+             Usa Kafka Connect API internamente (transitivo via embedded). -->
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-api</artifactId>
+            <version>2.7.4.Final</version>
+        </dependency>
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-embedded</artifactId>
+            <version>2.7.4.Final</version>
+        </dependency>
+        <!-- Conector PostgreSQL: artifact correto e disponivel no Maven Central.
+             Classe: io.debezium.connector.postgresql.PostgresConnector -->
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-connector-postgres</artifactId>
+            <version>2.7.4.Final</version>
+        </dependency>
     </dependencies>
 
     <build>
