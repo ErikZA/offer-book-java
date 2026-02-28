@@ -39,8 +39,9 @@ Entenda a visão geral, fluxos e padrões do sistema.
 - **[order-book-mvp.md](./architecture/order-book-mvp.md)** - Visão geral da arquitetura
 - **[order-book-mvp-flow.md](./architecture/order-book-mvp-flow.md)** - Fluxos de caso de uso
 - **[order-book-mvp-sequence.md](./architecture/order-book-mvp-sequence.md)** - Diagramas de sequência
-- **[ddd-cqrs-event-source.md](./architecture/ddd-cqrs-event-source.md)** - Padrões (DDD/CQRS/Event Sourcing)
-- **[tools-stack.md](./architecture/tools-stack.md)** - Stack de ferramentas
+- **[ddd-cqrs-event-source.md](./architecture/ddd-cqrs-event-source.md)** - Padrões (DDD/CQRS/Event Sourcing) + Transactional Outbox com Debezium CDC
+- **[tools-stack.md](./architecture/tools-stack.md)** - Stack de ferramentas (inclui Debezium 2.7.4 e Spring Retry)
+- **[quality-and-tracing.md](./architecture/quality-and-tracing.md)** - Qualidade e observabilidade (inclui race condition de slot CDC e isolamento de testes de carga)
 
 ### 📋 Referência
 - **[SETUP_COMPLETE.md](./SETUP_COMPLETE.md)** - Resumo do que foi implementado

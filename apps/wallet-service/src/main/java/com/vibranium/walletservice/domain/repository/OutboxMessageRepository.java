@@ -1,7 +1,12 @@
 package com.vibranium.walletservice.domain.repository;
 
 import com.vibranium.walletservice.domain.model.OutboxMessage;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 import java.util.UUID;
@@ -9,18 +14,48 @@ import java.util.UUID;
 /**
  * Repositório Spring Data JPA para o Transactional Outbox.
  *
- * <p>O scheduler de relay consulta {@link #findByProcessedFalseOrderByCreatedAtAsc()}
- * periodicamente para publicar eventos pendentes no RabbitMQ (entrega at-least-once).
- * O índice parcial {@code WHERE processed = FALSE} garante performance constante
- * independentemente do volume histórico de mensagens.</p>
+ * <p>O relay do Outbox (via Debezium CDC) captura inserções na tabela via WAL e
+ * usa {@link #claimAndMarkProcessed(UUID)} para garantir processamento
+ * exatamente-uma-vez em cenários de múltiplas instâncias. O índice parcial
+ * {@code WHERE processed = FALSE} garante performance O(pendentes).</p>
  */
 public interface OutboxMessageRepository extends JpaRepository<OutboxMessage, UUID> {
 
     /**
      * Retorna todas as mensagens não processadas ordenadas por data de criação.
-     * Utilizado pelo relay do outbox para publicar em ordem FIFO.
+     * Mantido para compatibilidade com testes existentes e fallback de consulta.
      */
     List<OutboxMessage> findByProcessedFalseOrderByCreatedAtAsc();
+
+    /**
+     * Retorna mensagens não processadas em página, limitando o volume carregado
+     * por ciclo de processamento. Configurável via {@code app.outbox.batch-size}.
+     *
+     * <p>Previne OOM em cenários de acúmulo de mensagens pendentes — substitui
+     * o overload sem {@link Pageable} quando se deseja controle de lote.</p>
+     *
+     * @param pageable Configuração de página e tamanho do lote.
+     * @return Página de mensagens pendentes ordenadas por {@code created_at} ASC.
+     */
+    Page<OutboxMessage> findByProcessedFalseOrderByCreatedAtAsc(Pageable pageable);
+
+    /**
+     * Tenta marcar atomicamente uma mensagem como processada usando
+     * {@code WHERE processed = false} como condição de guarda (optimistic claim).
+     *
+     * <p><b>Garantia de concorrência:</b> em ambientes multi-instância onde cada
+     * instância recebe o mesmo evento via WAL (slots de replicação distintos),
+     * apenas a primeira instância que executar este UPDATE com sucesso
+     * (retorna {@code 1}) irá publicar no RabbitMQ. As demais recebem {@code 0}
+     * e descartam silenciosamente o evento — sem publicação duplicada.</p>
+     *
+     * @param id UUID da mensagem a ser reclamada.
+     * @return {@code 1} se a mensagem foi reclamada com sucesso, {@code 0} se
+     *         já estava processada por outra instância.
+     */
+    @Modifying
+    @Query("UPDATE OutboxMessage m SET m.processed = true WHERE m.id = :id AND m.processed = false")
+    int claimAndMarkProcessed(@Param("id") UUID id);
 
     /**
      * Conta mensagens por tipo de evento. Utilizado em testes de integração
@@ -30,4 +65,15 @@ public interface OutboxMessageRepository extends JpaRepository<OutboxMessage, UU
      * @return Quantidade de mensagens com o tipo informado.
      */
     long countByEventType(String eventType);
+
+    /**
+     * Conta mensagens não processadas por tipo de evento.
+     * Utilizado no teste de carga para verificar que todas as mensagens
+     * foram publicadas após o ciclo do publisher.
+     *
+     * @param eventType Nome do tipo do evento.
+     * @return Quantidade de mensagens com {@code processed = false}.
+     */
+    long countByProcessedFalseAndEventType(String eventType);
 }
+

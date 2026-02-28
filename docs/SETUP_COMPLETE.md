@@ -1,8 +1,29 @@
 # 📋 Setup Concluído - Resumo Executivo
 
-**Data**: 27 de fevereiro de 2026  
+**Data**: 28 de fevereiro de 2026  
 **Status**: ✅ 100% Completo - **Docker-Only**  
 **❗ IMPORTANTE**: Todos os trabalhos executam via **Docker** - Não instale Java/Maven na máquina!
+
+---
+
+## 📊 Status Atual (28/02/2026)
+
+```
+✅ wallet-service — 57/57 testes GREEN  (BUILD SUCCESS)
+✅ US-001 — Outbox Publisher (Debezium CDC) implementado e testado
+✅ Slot de replicação PostgreSQL gerenciado automaticamente nos testes
+```
+
+### Implementações recentes
+
+| Componente | Status | Descrição |
+|------------ |--------|------------|
+| `EventRoute` | ✅ 8/8 GREEN | Enum de roteamento eventType → exchange + routing-key |
+| `OutboxPublisherService` | ✅ | Claim atômico + `@Retryable` (5 tentativas, backoff exp.) |
+| `DebeziumOutboxEngine` | ✅ | `SmartLifecycle` + CDC WAL + `awaitSlotActive()` |
+| `OutboxProperties` | ✅ | `@ConfigurationProperties` type-safe para `app.outbox.*` |
+| `OutboxMessageRepository` | ✅ | `claimAndMarkProcessed()` + overload com `Pageable` |
+| `OutboxPublisherIntegrationTest` | ✅ 5/5 GREEN | Testes de integração CDC end-to-end |
 
 ---
 
@@ -25,10 +46,13 @@
 ### 3️⃣ **Testes em Container via Docker**
 ```
 ✅ Testes no Docker - SUCESSO
-   - Order Service Test:    ✅ 1 passed
-   - Wallet Service Test:   ✅ 1 passed
-   - Total:                 ✅ 2 tests passed
-   - Cobertura de código:   ✅ Gerada automaticamente
+   - Common Contracts:                    ✅ Built
+   - Order Service Test:                  ✅ Passed
+   - Wallet Service Test (57 testes):     ✅ 57/57 GREEN
+     └─ Unit (EventRoute, WalletService):  ✅ 9 testes
+     └─ Integration (Keycloak, Wallet):    ✅ 43 testes
+     └─ Integration (OutboxPublisher CDC): ✅ 5 testes
+   - Cobertura de código:               ✅ Gerada automaticamente
 ```
 
 ### 4️⃣ **Documentação Criada**
@@ -103,7 +127,9 @@ docker compose -f infra/docker-compose.dev.yml up
 |-----------|--------|-------|
 | **Java (JDK)** | 21.0.9 | ✅ Container |
 | **Maven** | 3.9.12 | ✅ Container |
-| **Spring Boot** | 3.2.3 | ✅ Container |
+| **Spring Boot** | 3.4.13 | ✅ Container |
+| **Debezium** | 2.7.4.Final | ✅ Container |
+| **Spring Retry** | Via Spring Boot | ✅ Container |
 | **JUnit 5** | Via Spring Boot | ✅ Container |
 | **AssertJ** | 3.x | ✅ Container |
 | **REST Assured** | 5.x | ✅ Container |
@@ -206,9 +232,9 @@ docker compose -f infra/docker-compose.dev.yml up
 ```
 📁 Projeto:           Vibranium Order Book Platform
 🏢 Serviços:          2 (Order + Wallet)
-📦 Stack:             3 (Java 21, Spring Boot 3.2, Maven 3.9) - em Docker
-🧪 Testes:            2+ (base para adicionar mais)
-📖 Documentação:      6+ arquivos (800+ linhas)
+📦 Stack:             Java 21, Spring Boot 3.4.13, Maven 3.9 + Debezium 2.7.4
+🧪 Testes:            57 (wallet-service) — 57/57 GREEN
+📖 Documentação:      8+ arquivos (1000+ linhas)
 ⏱️ Tempo Setup:        ~10 min (Docker + validação)
 ```
 
@@ -223,7 +249,7 @@ docker compose -f infra/docker-compose.dev.yml up
 
 # Esperado:
 # ✅ BUILD SUCCESS
-# ✅ Tests run: 2, Failures: 0, Errors: 0
+# ✅ Tests run: 57, Failures: 0, Errors: 0
 # ✅ Cobertura gerada: target/site/jacoco/
 ```
 

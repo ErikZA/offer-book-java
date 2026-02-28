@@ -52,6 +52,39 @@ spring:
 server:
     port: 8081
 
+# ---------------------------------------------------------------------------
+# Outbox Publisher — configuração do relay via Debezium CDC
+# ---------------------------------------------------------------------------
+app:
+    outbox:
+        # Tamanho máximo do lote para o overload com Pageable (fallback)
+        batch-size: 100
+
+        debezium:
+            # Desligado por padrão; ativar explicitamente em cada ambiente
+            enabled: ${APP_OUTBOX_DEBEZIUM_ENABLED:false}
+
+            # Conexão com o PostgreSQL para o slot de replicação lógica.
+            # Deve apontar para o mesmo banco da datasource principal.
+            # Usuário deve ter a role REPLICATION (ou ser SUPERUSER).
+            db-host: ${SPRING_DATASOURCE_HOST:localhost}
+            db-port: ${SPRING_DATASOURCE_PORT:5432}
+            db-name: ${SPRING_DATASOURCE_DBNAME:vibranium_wallet}
+            db-user: ${SPRING_DATASOURCE_USERNAME:postgres}
+            db-password: ${SPRING_DATASOURCE_PASSWORD:postgres123}
+
+            # Nome do slot de replicação. Deve ser ÚNICO por instância do serviço
+            # quando múltiplas instâncias precisam receber todos os eventos (fan-out).
+            # Use um sufixo com o hostname/pod-name em ambientes Kubernetes.
+            slot-name: ${APP_OUTBOX_SLOT_NAME:wallet_outbox_slot}
+
+            # Produção: FileOffsetBackingStore — persiste posição do WAL em disco
+            offset-storage: org.apache.kafka.connect.storage.FileOffsetBackingStore
+            offset-storage-file: ${APP_OUTBOX_OFFSET_FILE:/tmp/wallet-outbox-offset.dat}
+
+            # Não dropa o slot ao parar em produção — preserva posição do WAL
+            drop-slot-on-stop: false
+
 logging:
     level:
         root: INFO
