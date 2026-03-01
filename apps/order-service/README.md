@@ -190,7 +190,34 @@ mvn test -pl apps/order-service
 
 # Suite completa
 mvn clean test
+
+# Apenas o teste de resiliência do Outbox (AT-01.2)
+mvn test -pl apps/order-service -Dtest=OrderOutboxResilienceIntegrationTest
 ```
+
+## 🧪 Cobertura de Testes de Integração
+
+| Classe de Teste | Tipo | Cenário Principal | Acceptance Tag |
+|---|---|---|---|
+| `OrderCommandControllerTest` | Integração REST | Fluxo HTTP completo: 202, 400, 403 | — |
+| `OrderIdempotencyIntegrationTest` | Integração | Reentrega idempotente de eventos via `eventId` | — |
+| `OrderOutboxIntegrationTest` | Integração | Persistência atômica do Outbox (Fase RED → GREEN) | AT-01.1 |
+| **`OrderOutboxResilienceIntegrationTest`** | **Integração (Resiliência)** | **Broker pausado → atomicidade → sem processamento indevido → recovery → não duplicidade** | **AT-01.2** |
+| `OrderSagaConcurrencyTest` | Integração (Concorrência) | Optimistic lock + retry em ordens concorrentes | — |
+| `KeycloakUserRegistryIntegrationTest` | Integração | Registro de usuário via evento Keycloak | — |
+| `MatchEngineRedisIntegrationTest` | Integração | Script Lua atômico no Sorted Set Redis | — |
+| `OrderQueryControllerTest` | Integração REST | Read Model MongoDB — paginação e detalhe | — |
+
+### AT-01.2 — Estratégia de Resiliência
+
+O teste `OrderOutboxResilienceIntegrationTest` valida o Outbox Pattern em condição de falha real do broker:
+
+- **Falha determinística**: combina `docker pause` (cgroups freezer) + `CachingConnectionFactory.resetConnection()` para forçar `AmqpConnectException` em ≤ 1 s por ciclo.
+- **Sem sleeps fixos**: usa `Awaitility.during()` (invariant poll) e `Awaitility.until(isBrokerAmqpReachable)` para todas as esperas.
+- **Containers isolados**: `@Container` sem `withReuse()`, `waitingFor(Wait.forListeningPort())`. Não herda `AbstractIntegrationTest` para garantir que `pause/unpause` não afete demais testes.
+- **Override de properties**:
+  - `app.outbox.delay-ms=1000` — reduz o poll de 5 s para 1 s (3 ciclos confirmados em 4 s).
+  - `spring.rabbitmq.connection-timeout=1000` — AMQP handshake expira em 1 s (não 120 s TCP).
 
 ## 🔗 Endpoints
 
@@ -230,9 +257,11 @@ O `GlobalExceptionHandler` retorna `ResponseEntity<Map<String, Object>>` com cam
 | Spring AMQP                       | RabbitMQ (producers + consumers + projection)   |
 | Spring Data Redis                 | StringRedisTemplate para script Lua             |
 | Spring Security OAuth2            | JWT Resource Server                             |
-| Flyway                            | Migrations (`V1__user_registry`, `V2__orders`)  |
+| Flyway                            | Migrations (`V1__user_registry`, `V2__orders`, `V5__order_outbox`) |
 | common-contracts                  | DTOs/Events compartilhados entre serviços       |
 | testcontainers:mongodb (test)     | `MongoDBContainer` para testes de integração    |
+| testcontainers:rabbitmq (test)    | `RabbitMQContainer` — AT-01.2 resiliência com `docker pause/unpause` |
+| awaitility (test)                 | Esperas determinísticas sem `Thread.sleep()` nos testes de resiliência |
 
 ## 🍃 Read Model — MongoDB
 
