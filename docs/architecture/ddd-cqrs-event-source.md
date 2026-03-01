@@ -27,6 +27,13 @@ No nosso MVP, usaremos o DDD para separar claramente as responsabilidades:
 
 
 * *A Regra (Invariante):* Nunca podemos deixar o saldo ficar negativo. É a classe `Wallet` que vai receber a ordem de bloquear fundos e garantir que o usuário realmente tem o dinheiro antes da ordem ir para o mercado.
+* **US-005 — Encapsulamento de Invariantes:** Os setters públicos de saldo (`setBrlLocked`, `setBrlAvailable`, etc.) foram removidos do agregado. Toda mutação de estado passa obrigatoriamente pelos métodos de comportamento:
+  * `reserveFunds(AssetType, amount)` — bloqueia saldo antes de uma ordem entrar no livro
+  * `applyBuySettlement(brl, vib)` — liquida o trade do lado comprador (libera BRL locked, credita VIB)
+  * `applySellSettlement(vib, brl)` — liquida o trade do lado vendedor (libera VIB locked, credita BRL)
+  * `adjustBalance(brlDelta, vibDelta)` — ajuste administrativo via delta
+  
+  Cada método valida suas pré-condições antes de qualquer mutação, lançando `InsufficientFundsException` se a invariante for violada. `Wallet` utiliza **optimistic locking via `@Version`** para detecção de conflitos concorrentes na camada JPA.
 
 
 
@@ -247,8 +254,9 @@ Ao juntar esses três padrões, criamos um sistema **robusto e escalável** para
 
 | Padrão         | Status | Detalhe                                                              |
 |----------------|--------|----------------------------------------------------------------------|
-| DDD            | ✅     | `Order`, `UserRegistry` como agregados; Bounded Contexts separados    |
+| DDD            | ✅     | `Order`, `UserRegistry`, `Wallet` como agregados; Bounded Contexts separados |
 | DDD — State Machine | ✅ | `Order` impõe máquina de estados internamente (US-008); `transitionTo` package-private; guards em `markAsOpen`, `applyMatch`, `cancel` |
+| DDD Wallet Invariants | ✅ | US-005: setters removidos; `applyBuySettlement`, `applySellSettlement`, `@Version` |
 | Event Sourcing | ✅     | `OrderDocument.history[]` no MongoDB; idempotência por `eventId`     |
 | CQRS Command   | ✅     | `POST /api/v1/orders` → PostgreSQL + Redis + RabbitMQ                |
 | CQRS Query     | ✅     | `GET /api/v1/orders` → MongoDB (eventual consistency)                |

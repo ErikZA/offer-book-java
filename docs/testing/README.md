@@ -98,6 +98,7 @@ Os seguintes arquivos foram consolidados no documento principal, mas estão disp
 | **CDC Debezium** | 6 padrões (US-001) | COMPREHENSIVE_TESTING.md #testes-de-cdc |
 | **Partial Fill / Redis** | 4 padrões (US-002) | COMPREHENSIVE_TESTING.md #partial-fill |
 | **Idempotência eventId** | 1 padrão (US-002) | COMPREHENSIVE_TESTING.md #partial-fill |
+| **Domínio Wallet — Invariantes** | 4 padrões (US-005) | COMPREHENSIVE_TESTING.md #invariantes-de-domínio-wallet |
 
 ---
 
