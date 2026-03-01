@@ -199,18 +199,10 @@ public class WalletService {
 
             BigDecimal totalBrl = cmd.matchPrice().multiply(cmd.matchAmount());
 
-            if (buyer.getBrlLocked().compareTo(totalBrl) < 0) {
-                throw new InsufficientFundsException(
-                        "saldo BRL bloqueado insuficiente: locked=" + buyer.getBrlLocked() +
-                                ", necessário=" + totalBrl);
-            }
-
-            // Aplica a liquidação em ambas as carteiras
-            buyer.setBrlLocked(buyer.getBrlLocked().subtract(totalBrl));
-            buyer.setVibAvailable(buyer.getVibAvailable().add(cmd.matchAmount()));
-
-            seller.setVibLocked(seller.getVibLocked().subtract(cmd.matchAmount()));
-            seller.setBrlAvailable(seller.getBrlAvailable().add(totalBrl));
+            // Liquidação encapsulada nos métodos de domínio — invariantes validadas internamente.
+            // applyBuySettlement lança InsufficientFundsException se brlLocked < totalBrl.
+            buyer.applyBuySettlement(totalBrl, cmd.matchAmount());
+            seller.applySellSettlement(cmd.matchAmount(), totalBrl);
 
             walletRepository.save(buyer);
             walletRepository.save(seller);

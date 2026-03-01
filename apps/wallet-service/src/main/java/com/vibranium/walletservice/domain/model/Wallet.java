@@ -23,6 +23,17 @@ import java.util.UUID;
  * <p>O lock pessimista ({@code SELECT FOR UPDATE}) é aplicado pelo
  * {@code WalletRepository} antes de qualquer escrita, garantindo que
  * atualizações concorrentes sejam serializadas sem race conditions.</p>
+ *
+ * <h3>Invariantes do agregado Wallet:</h3>
+ * <ul>
+ *   <li>Nenhum saldo pode ser negativo.</li>
+ *   <li>Locked nunca pode exceder o available anterior à reserva.</li>
+ *   <li>Toda operação deve preservar consistência interna.</li>
+ *   <li>Wallet é aggregate root e controla seu próprio estado.</li>
+ * </ul>
+ *
+ * <p>Wallet utiliza optimistic locking via {@code @Version} para detectar
+ * conflitos em atualizações concorrentes na camada JPA.</p>
  */
 @Entity
 @Table(name = "tb_wallet")
@@ -56,6 +67,13 @@ public class Wallet {
 
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+
+    /**
+     * Versão para optimistic locking — incrementada automaticamente pelo JPA
+     * a cada {@code UPDATE}. Garante detecção de conflitos sem bloquear leituras.
+     */
+    @Version
+    private Long version;
 
     /** Construtor protegido exigido pelo JPA. Não usar diretamente. */
     protected Wallet() {}
@@ -125,6 +143,44 @@ public class Wallet {
     }
 
     /**
+     * Liquida um trade do lado comprador: libera o BRL bloqueado e credita o VIB recebido.
+     *
+     * <p>Encapsula a invariante: {@code brlToRelease} não pode exceder o {@code brlLocked}
+     * atual. Se violada, lança exceção sem modificar nenhum campo.</p>
+     *
+     * @param brlToRelease Valor em BRL a ser removido de {@code brlLocked}.
+     * @param vibToCredit  Quantidade de VIB a ser adicionada a {@code vibAvailable}.
+     * @throws InsufficientFundsException se {@code brlLocked} for menor que {@code brlToRelease}.
+     */
+    public void applyBuySettlement(BigDecimal brlToRelease, BigDecimal vibToCredit) {
+        if (this.brlLocked.compareTo(brlToRelease) < 0) {
+            throw new InsufficientFundsException(
+                    "BRL locked insuficiente: locked=" + brlLocked + ", necessário=" + brlToRelease);
+        }
+        this.brlLocked = this.brlLocked.subtract(brlToRelease);
+        this.vibAvailable = this.vibAvailable.add(vibToCredit);
+    }
+
+    /**
+     * Liquida um trade do lado vendedor: libera o VIB bloqueado e credita o BRL recebido.
+     *
+     * <p>Encapsula a invariante: {@code vibToRelease} não pode exceder o {@code vibLocked}
+     * atual. Se violada, lança exceção sem modificar nenhum campo.</p>
+     *
+     * @param vibToRelease Quantidade de VIB a ser removida de {@code vibLocked}.
+     * @param brlToCredit  Valor em BRL a ser adicionado a {@code brlAvailable}.
+     * @throws InsufficientFundsException se {@code vibLocked} for menor que {@code vibToRelease}.
+     */
+    public void applySellSettlement(BigDecimal vibToRelease, BigDecimal brlToCredit) {
+        if (this.vibLocked.compareTo(vibToRelease) < 0) {
+            throw new InsufficientFundsException(
+                    "VIB locked insuficiente: locked=" + vibLocked + ", necessário=" + vibToRelease);
+        }
+        this.vibLocked = this.vibLocked.subtract(vibToRelease);
+        this.brlAvailable = this.brlAvailable.add(brlToCredit);
+    }
+
+    /**
      * Ajusta o saldo disponível via delta (positivo = crédito, negativo = débito).
      * Valida AMBOS os deltas antes de aplicar qualquer modificação — garantindo
      * atomicidade: se um falhar, nenhum é aplicado.
@@ -172,15 +228,15 @@ public class Wallet {
 
     public Instant getUpdatedAt() { return updatedAt; }
 
-    // -------------------------------------------------------------------------
-    // Setters diretos (usados pelo serviço de liquidação e setup de testes)
-    // -------------------------------------------------------------------------
+    /** Retorna a versão de optimistic locking atual para fins de diagnóstico. */
+    public Long getVersion() { return version; }
 
-    public void setBrlAvailable(BigDecimal brlAvailable) { this.brlAvailable = brlAvailable; }
-
-    public void setBrlLocked(BigDecimal brlLocked) { this.brlLocked = brlLocked; }
-
-    public void setVibAvailable(BigDecimal vibAvailable) { this.vibAvailable = vibAvailable; }
-
-    public void setVibLocked(BigDecimal vibLocked) { this.vibLocked = vibLocked; }
+    // Nota: setters públicos de saldo foram removidos intencionalmente (US-005).
+    // Toda mutação de estado deve ocorrer via métodos de domínio:
+    //   - reserveFunds()         → bloqueia saldo para uma ordem
+    //   - applyBuySettlement()   → liquida trade no lado comprador
+    //   - applySellSettlement()  → liquida trade no lado vendedor
+    //   - adjustBalance()        → ajuste administrativo via delta
+    // Isso garante que as invariantes do agregado não possam ser violadas
+    // por código externo à camada de domínio.
 }
