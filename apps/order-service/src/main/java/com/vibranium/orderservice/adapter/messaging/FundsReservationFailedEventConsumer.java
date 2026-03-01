@@ -1,13 +1,19 @@
 package com.vibranium.orderservice.adapter.messaging;
 
+import com.rabbitmq.client.Channel;
 import com.vibranium.contracts.enums.OrderStatus;
 import com.vibranium.contracts.events.wallet.FundsReservationFailedEvent;
 import com.vibranium.orderservice.config.RabbitMQConfig;
 import com.vibranium.orderservice.domain.model.Order;
+import com.vibranium.orderservice.domain.model.ProcessedEvent;
+import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.amqp.support.AmqpHeaders;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,55 +22,87 @@ import java.util.Optional;
 /**
  * Consumidor do evento de falha de reserva de fundos publicado pelo wallet-service.
  *
- * <p>Quando o wallet-service não consegue bloquear os fundos necessários
- * (saldo insuficiente, carteira não encontrada, etc.), publica um
+ * <p>Quando o wallet-service nao consegue bloquear os fundos necessarios
+ * (saldo insuficiente, carteira nao encontrada, etc.), publica um
  * {@link FundsReservationFailedEvent}. Este consumidor transiciona
  * a ordem para {@code CANCELLED} e registra o motivo da falha.</p>
  *
- * <p>Esta é a etapa de compensação da Saga: a ordem sai do estado
+ * <p>Esta e a etapa de compensacao da Saga: a ordem sai do estado
  * {@code PENDING} para {@code CANCELLED} sem nunca ter entrado no livro.</p>
+ *
+ * <p><strong>Estrategia de idempotencia:</strong> INSERT na tabela {@code tb_order_idempotency_keys}
+ * com {@code eventId} como PK. Se ja existir ({@link DataIntegrityViolationException}),
+ * a mensagem e duplicata e descartada com ACK sem reprocessar.</p>
+ *
+ * <p><strong>Sequencia garantida:</strong>
+ * {@code (1) INSERT idempotency_key -> (2) UPDATE Order -> (3) Commit -> (4) basicAck}</p>
  */
 @Component
 public class FundsReservationFailedEventConsumer {
 
     private static final Logger logger = LoggerFactory.getLogger(FundsReservationFailedEventConsumer.class);
 
-    private final OrderRepository orderRepository;
+    private final OrderRepository            orderRepository;
+    private final ProcessedEventRepository   processedEventRepository;
 
-    public FundsReservationFailedEventConsumer(OrderRepository orderRepository) {
-        this.orderRepository = orderRepository;
+    public FundsReservationFailedEventConsumer(OrderRepository orderRepository,
+                                               ProcessedEventRepository processedEventRepository) {
+        this.orderRepository         = orderRepository;
+        this.processedEventRepository = processedEventRepository;
     }
 
     /**
-     * Processa a falha de reserva de fundos e cancela a ordem correspondente.
+     * Processa a falha de reserva de fundos com ACK manual e idempotencia por tabela.
      *
-     * <p>Idempotente: se a ordem já estiver {@code CANCELLED}, o evento é ignorado.
-     * Isso protege contra redelivery do RabbitMQ em caso de falha de ACK.</p>
+     * <p>O {@code containerFactory = "manualAckContainerFactory"} habilita ACK manual.
+     * O ACK so e enviado apos o commit JPA, eliminando a janela de duplicacao.</p>
      *
-     * @param event Evento de falha publicado pelo wallet-service.
+     * @param event       Evento de falha publicado pelo wallet-service.
+     * @param channel     Canal AMQP para envio do ACK/NACK manual.
+     * @param deliveryTag Tag de entrega fornecida pelo broker.
      */
-    @RabbitListener(queues = RabbitMQConfig.QUEUE_FUNDS_FAILED)
+    @RabbitListener(
+            queues = RabbitMQConfig.QUEUE_FUNDS_FAILED,
+            containerFactory = "manualAckContainerFactory"
+    )
     @Transactional
-    public void onFundsReservationFailed(FundsReservationFailedEvent event) {
-        logger.info("Reserva de fundos falhou: correlationId={} orderId={} reason={}",
-                event.correlationId(), event.orderId(), event.reason());
+    public void onFundsReservationFailed(FundsReservationFailedEvent event,
+                                          Channel channel,
+                                          @Header(AmqpHeaders.DELIVERY_TAG) long deliveryTag) throws Exception {
+        String eventId = event.eventId().toString();
+        logger.info("FundsReservationFailedEvent recebido: eventId={} correlationId={} orderId={} reason={}",
+                eventId, event.correlationId(), event.orderId(), event.reason());
 
+        // 1. Idempotencia por tabela: INSERT com eventId como PK unica
+        //    DataIntegrityViolationException indica duplicata -> descarta com ACK
+        try {
+            processedEventRepository.saveAndFlush(new ProcessedEvent(event.eventId()));
+        } catch (DataIntegrityViolationException ex) {
+            logger.info("FundsReservationFailedEvent duplicado (idempotente): eventId={}", eventId);
+            channel.basicAck(deliveryTag, false);
+            return;
+        }
+
+        // 2. Localiza a ordem pelo correlationId da Saga
         Optional<Order> orderOpt = orderRepository.findByCorrelationId(event.correlationId());
         if (orderOpt.isEmpty()) {
-            logger.warn("Ordem não encontrada para correlationId={} — descartando evento",
+            logger.warn("Ordem nao encontrada para correlationId={} -- descartando evento",
                     event.correlationId());
+            channel.basicAck(deliveryTag, false);
             return;
         }
 
         Order order = orderOpt.get();
 
-        // Idempotência: não cancela duas vezes
+        // 3. Cancela a ordem com o motivo tecnico da falha
+        //    A idempotencia ja e garantida pela PK da tabela acima;
+        //    o check de status abaixo e uma defesa extra contra corrupcao de dados.
         if (order.getStatus() == OrderStatus.CANCELLED) {
-            logger.debug("Ordem já cancelada (idempotente): orderId={}", order.getId());
+            logger.debug("Ordem ja cancelada (defensivo): orderId={}", order.getId());
+            channel.basicAck(deliveryTag, false);
             return;
         }
 
-        // Cancela a ordem com o motivo técnico da falha
         String reason = event.reason() != null ? event.reason().name() : "UNKNOWN";
         String detail = event.detail() != null
                 ? reason + ": " + event.detail()
@@ -75,5 +113,8 @@ public class FundsReservationFailedEventConsumer {
 
         logger.info("Ordem cancelada: orderId={} correlationId={} reason={}",
                 order.getId(), event.correlationId(), reason);
+
+        // 4. ACK manual apos commit bem-sucedido do JPA
+        channel.basicAck(deliveryTag, false);
     }
 }
