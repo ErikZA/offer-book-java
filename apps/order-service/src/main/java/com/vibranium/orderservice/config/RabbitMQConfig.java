@@ -1,12 +1,15 @@
 package com.vibranium.orderservice.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.amqp.core.AcknowledgeMode;
 import org.springframework.amqp.core.Binding;
 import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.DirectExchange;
 import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.core.QueueBuilder;
 import org.springframework.amqp.core.TopicExchange;
+import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
+import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -317,5 +320,36 @@ public class RabbitMQConfig {
     @Bean
     MessageConverter jsonMessageConverter(ObjectMapper objectMapper) {
         return new Jackson2JsonMessageConverter(objectMapper);
+    }
+
+    // -------------------------------------------------------------------------
+    // Listener Container Factory — ACK Manual (idempotencia por tabela)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Container factory com {@link AcknowledgeMode#MANUAL} para os consumers que
+     * utilizam idempotencia por tabela ({@link com.vibranium.orderservice.adapter.messaging.FundsReservedEventConsumer}
+     * e {@link com.vibranium.orderservice.adapter.messaging.FundsReservationFailedEventConsumer}).
+     *
+     * <p>Com ACK manual, o broker somente remove a mensagem da fila apos o consumer
+     * chamar {@code channel.basicAck(deliveryTag, false)} explicitamente.
+     * Isso garante que o ACK ocorre <strong>apos</strong> o commit JPA,
+     * eliminando a janela de duplicacao presente no ACK automatico.</p>
+     *
+     * <p>Referenciado nos listeners via {@code @RabbitListener(containerFactory = "manualAckContainerFactory")}.</p>
+     *
+     * @param connectionFactory  Conexao AMQP gerenciada pelo Spring Boot auto-configure.
+     * @param jsonMessageConverter Conversor Jackson2JSON compartilhado.
+     */
+    @Bean
+    SimpleRabbitListenerContainerFactory manualAckContainerFactory(
+            ConnectionFactory connectionFactory,
+            MessageConverter jsonMessageConverter) {
+        SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
+        factory.setConnectionFactory(connectionFactory);
+        factory.setMessageConverter(jsonMessageConverter);
+        // ACK manual: o consumer e responsavel por chamar basicAck/basicNack explicitamente
+        factory.setAcknowledgeMode(AcknowledgeMode.MANUAL);
+        return factory;
     }
 }
