@@ -17,6 +17,8 @@ vibranium-orderbook/
 ├── 📄 pom.xml                      # POM raiz (multi-módulo Maven)
 ├── 📄 Makefile                     # Build tasks (Linux/macOS)
 ├── 📄 init.ps1                     # ⭐ Setup inicial (Windows)
+├── 📄 .env.example                 # ⭐ Template de variáveis de ambiente (commit)
+├── 📄 .env                         # 🔐 Credenciais locais (NÃO commit — gitignore)
 │
 ├── 📁 docs/                        # 📚 Documentação Detalhada
 │   ├── README.md                   # 📖 Índice de documentação (comece aqui!)
@@ -113,7 +115,29 @@ libs/common-contracts/src/main/java/com/vibranium/contracts/
 
 Tudo que não é regra de negócio, mas você não quer copiar e colar em todo microsserviço.
 
-**O que colocar aqui:**
+**O que está implementado hoje:**
+
+```
+libs/common-utils/src/main/java/com/vibranium/utils/
+├── jackson/
+│   └── VibraniumJacksonConfig.java     # Configuração central do ObjectMapper (ISO-8601)
+├── correlation/
+│   └── CorrelationIdGenerator.java     # Geração de UUID v4 para rastreabilidade
+└── messaging/
+    └── AmqpHeaderExtractor.java        # Extração de correlation-ID de headers AMQP
+```
+
+**Utilitários disponíveis:**
+
+| Classe | Método-chave | Finalidade |
+|--------|-------------|------------|
+| `VibraniumJacksonConfig` | `configure(ObjectMapper)` | Aplica ISO-8601, desabilita `FAIL_ON_UNKNOWN_PROPERTIES` |
+| `CorrelationIdGenerator` | `generate()` / `generateAsString()` | UUID v4 para correlation de requests |
+| `AmqpHeaderExtractor` | `extractCorrelationId(MessageProperties)` | Prioridade: `message-id` → `X-Correlation-ID` |
+
+> **⚠️ BREAKING CHANGE (US-007):** O `order-service` era configurado com `WRITE_DATES_AS_TIMESTAMPS=true` (epoch-millis). Após a unificação via `VibraniumJacksonConfig`, ambos os serviços serializam datas como **ISO-8601**. Campos que precisam de epoch-millis devem usar `@JsonFormat(shape = NUMBER_INT)` individualmente.
+
+**O que colocar aqui (futuro):**
 - Configurações genéricas do Spring Security (validação de JWT do Keycloak)
 - Manipuladores de erro globais (`@ControllerAdvice`)
 - Utilitários para logs (OpenTelemetry)
@@ -152,7 +176,7 @@ apps/order-service/.../order/
 
 ### 4. 🐳 `docker/` e ☁️ `infra/` — O Ambiente
 
-- **`infra/`:** Docker Compose e configs de infraestrutura centralizada. Execute `docker compose -f infra/docker-compose.dev.yml up` para subir RabbitMQ, PostgreSQL, MongoDB, Redis e Keycloak.
+- **`infra/`:** Docker Compose e configs de infraestrutura centralizada. Requer o arquivo `.env` na raiz (copie `.env.example`). Execute `docker compose -f infra/docker-compose.dev.yml up -d` para subir RabbitMQ, PostgreSQL, MongoDB, Redis, Keycloak, Kong e os dois microsserviços.
 - **`tests/`:** Docker Compose isolado para testes de integração. Execute `docker compose -f tests/docker-compose.test.yml up` para rodar a suite completa.
 
 ---
@@ -217,6 +241,7 @@ make ... (Linux/macOS)
 | `init.ps1` | Setup ambiente | **Raiz** |
 | `Makefile` | Build tasks | **Raiz** |
 | `pom.xml` | Maven multi-módulo | **Raiz** |
+| `.env.example` | Template de credenciais | **Raiz** |
 
 ### 📚 Documentação
 | Arquivo | Propósito | Onde |
@@ -247,6 +272,9 @@ make ... (Linux/macOS)
 | `OrderService*` | Service | **apps/order-service/** |
 | `WalletService*` | Service | **apps/wallet-service/** |
 | `common-contracts` | Library | **libs/** |
+| `VibraniumJacksonConfig` | Utility | **libs/common-utils/** |
+| `CorrelationIdGenerator` | Utility | **libs/common-utils/** |
+| `AmqpHeaderExtractor` | Utility | **libs/common-utils/** |
 
 ## ✨ Destaques da Novo Organização
 
@@ -260,5 +288,5 @@ make ... (Linux/macOS)
 
 ---
 
-**Última Atualização**: 27/02/2026
+**Última Atualização**: 28/02/2026 (US-007 — Docker Compose completo + common-utils)
 **Status**: ✅ Completo e Funcional

@@ -11,8 +11,10 @@
 ```
 ✅ wallet-service  —  57/57 testes GREEN  (BUILD SUCCESS)
 ✅ order-service   —  48/48 testes GREEN  (BUILD SUCCESS)
+✅ common-utils    —  21/21 testes GREEN  (BUILD SUCCESS)
 ✅ US-001 — Outbox Publisher (Debezium CDC) implementado e testado
 ✅ US-002 — Partial Fill: Requeue atômico + Idempotência por eventId
+✅ US-007 — Docker Compose Completo com Microsserviços + common-utils
 ✅ US-008 — Máquina de Estados Segura no Agregado Order
 ```
 
@@ -37,6 +39,12 @@
 | `Order#transitionTo()` (US-008) | ✅ | Rebaixado para package-private — uso exclusivo em testes de integração |
 | `FundsReservedEventConsumer` (US-008) | ✅ | `transitionTo(OPEN)` → `markAsOpen()` |
 | `OrderDomainTest` (US-008) | ✅ 20/20 GREEN | 20 testes unitários puros (< 0.5 s, sem Spring, sem Docker) |
+| **`VibraniumJacksonConfig`** (US-007) | ✅ | Configuração central ISO-8601 para todos os serviços (`libs/common-utils`) |
+| **`CorrelationIdGenerator`** (US-007) | ✅ | UUID v4 para rastreabilidade distribuída (`libs/common-utils`) |
+| **`AmqpHeaderExtractor`** (US-007) | ✅ | Extração de correlation-ID de headers AMQP (`libs/common-utils`) |
+| **`common-utils` test suite** (US-007) | ✅ 21/21 GREEN | 21 testes unitários (Jackson, CorrelationId, AMQP) |
+| **`docker-compose.dev.yml`** (US-007) | ✅ | Credenciais externalizadas via `.env`; order-service + wallet-service com healthcheck |
+| **`.env.example`** (US-007) | ✅ | Template de variáveis de ambiente commitado (`.env` nunca commitado) |
 
 ---
 
@@ -95,8 +103,16 @@
 # Passo 1: Validar Docker
 .\init.ps1
 
-# Passo 2: Executar testes no Docker
+# Passo 2: Configurar credenciais locais
+copy .env.example .env
+# O arquivo .env já contém os defaults de desenvolvimento
+
+# Passo 3: Executar testes no Docker
 .\build.ps1 docker-test
+
+# Passo 4: Iniciar ambiente completo (infra + serviços)
+docker compose -f infra/docker-compose.dev.yml up -d
+```
 
 # Passo 3: Iniciar desenvolvimento com hotreload
 .\build.ps1 docker-dev-up
@@ -108,24 +124,30 @@
 # Passo 1: Validar Docker
 make docker-status
 
-# Passo 2: Executar testes
+# Passo 2: Configurar credenciais locais
+cp .env.example .env
+
+# Passo 3: Executar testes
 make docker-test
 
-# Passo 3: Iniciar desenvolvimento
+# Passo 4: Iniciar desenvolvimento
 make docker-dev-up
 ```
 
 ### **Ou Direto com Docker Compose**
 
 ```bash
+# Pré-requisito: .env configurado
+cp .env.example .env
+
 # Validar
 docker compose -f infra/docker-compose.dev.yml ps
 
 # Testes
 docker compose -f tests/docker-compose.test.yml up
 
-# Dev
-docker compose -f infra/docker-compose.dev.yml up
+# Dev (infra + microsserviços com hotreload)
+docker compose -f infra/docker-compose.dev.yml up -d
 ```
 
 ### **Resultados Esperados**
@@ -248,11 +270,11 @@ docker compose -f infra/docker-compose.dev.yml up
 
 ```
 📁 Projeto:           Vibranium Order Book Platform
-🏢 Serviços:          2 (Order + Wallet)
+🏢 Serviços:          2 (Order + Wallet) + 2 libs (common-contracts + common-utils)
 📦 Stack:             Java 21, Spring Boot 3.4.13, Maven 3.9 + Debezium 2.7.4
-🧪 Testes:            105 total (48 order-service + 57 wallet-service) — 105/105 GREEN
+🧪 Testes:            126 total (48 order-service + 57 wallet-service + 21 common-utils) — 126/126 GREEN
 📖 Documentação:      10+ arquivos (1500+ linhas)
-⏱️ Tempo Setup:        ~10 min (Docker + validação)
+⏱️ Tempo Setup:        ~10 min (Docker + cp .env.example .env + validação)
 ```
 
 ---

@@ -11,7 +11,14 @@ Plataforma de trading com microsserviços em Spring Boot com **ambiente TDD comp
 # 1. Valide Docker
 .\init.ps1
 
-# 2. Inicie ambiente de desenvolvimento
+# 2. Configure variáveis de ambiente (credenciais locais)
+copy .env.example .env
+# Edite .env com suas credenciais ou use os defaults de desenvolvimento
+
+# 3. Inicie ambiente de desenvolvimento
+docker compose -f infra/docker-compose.dev.yml up -d
+
+# Ou via script
 .\build.ps1 docker-dev-up
 
 # Ou no Linux/Mac
@@ -46,7 +53,8 @@ docker compose -f infra/docker-compose.yml up
 │   ├── order-service/       # Trading orders
 │   └── wallet-service/      # Wallet & transactions
 ├── libs/                    # Bibliotecas compartilhadas
-│   └── common-contracts/    # Eventos e DTOs
+│   ├── common-contracts/    # Eventos e DTOs
+│   └── common-utils/        # Utilitários Jackson, Correlation ID, AMQP
 ├── infra/                   # Docker Compose + configs de infra (dev, staging, prod)
 ├── tests/                   # Docker Compose de testes de integração
 ├── scripts/                 # Utilitários
@@ -70,7 +78,7 @@ docker compose -f infra/docker-compose.yml up
 | Componente | Versão | Local |
 |-----------|--------|-------|
 | Java | 21 | Container |
-| Spring Boot | 3.2.3 | Container |
+| Spring Boot | 3.4.13 | Container |
 | Maven | 3.9+ | Container |
 | JUnit 5 | Por Spring Boot | Container |
 | AssertJ | 3.x | Container |
