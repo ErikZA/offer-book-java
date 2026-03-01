@@ -22,7 +22,7 @@ import java.util.UUID;
  * <p>Representa a máquina de estados da Saga de Ordem:</p>
  * <pre>
  *   PENDING → OPEN → PARTIAL → FILLED
- *                           ↘ CANCELLED
+ *                  ↘        ↘ CANCELLED
  * </pre>
  *
  * <p>Esta tabela NÃO é o Read Model — consultas de leitura vão ao MongoDB.
@@ -32,6 +32,22 @@ import java.util.UUID;
  * <p>{@code @Version} garante Optimistic Locking para evitar atualizações
  * concorrentes conflitantes (ex: FundsLocked + FundsReservationFailed chegando
  * ao mesmo tempo para a mesma ordem).</p>
+ *
+ * <h3>Invariantes do agregado Order</h3>
+ * <ul>
+ *   <li>{@code remainingAmount >= 0} — nunca negativo.</li>
+ *   <li>A quantidade executada acumulada nunca pode exceder {@code originalAmount}.</li>
+ *   <li>{@code FILLED}    → {@code remainingAmount == 0}.</li>
+ *   <li>{@code PARTIAL}   → {@code 0 < remainingAmount < originalAmount}.</li>
+ *   <li>{@code OPEN}      → {@code remainingAmount == originalAmount}.</li>
+ *   <li>{@code CANCELLED} → {@code remainingAmount > 0} (liquidação parcial não ocorreu).</li>
+ * </ul>
+ *
+ * <h3>Política de concorrência</h3>
+ * <p>{@code @Version} (optimistic locking) detecta conflitos de escrita simultânea.
+ * Um evento de match recebido após cancelamento ({@code CANCELLED + applyMatch})
+ * lança {@link IllegalStateException}, fazendo o container RabbitMQ enviar NACK
+ * e a mensagem ir para a DLQ configurada no {@code RabbitMQConfig}.</p>
  */
 @Entity
 @Table(name = "tb_orders")
@@ -133,42 +149,84 @@ public class Order {
     }
 
     // -------------------------------------------------------------------------
-    // Máquina de estados — transições permitidas
+    // Máquina de estados — API semântica pública
     // -------------------------------------------------------------------------
 
     /**
-     * Força uma transição de estado.
+     * Transita a ordem de {@code PENDING} para {@code OPEN}.
      *
-     * <p>Não valida a máquina de estados em ordem para facilitar os testes;
-     * a lógica de validação fica no serviço. Em produção, o {@code OrderCommandService}
-     * é responsável por chamar apenas transições permitidas.</p>
+     * <p>Chamado pelo {@code FundsReservedEventConsumer} quando o wallet-service
+     * confirma o bloqueio de fundos e a ordem entra no livro de ofertas (Redis).</p>
      *
-     * @param newStatus O novo estado desejado.
+     * @throws IllegalStateException se o status atual não for {@code PENDING}.
      */
-    public void transitionTo(OrderStatus newStatus) {
-        this.status = newStatus;
+    public void markAsOpen() {
+        requireStatus(OrderStatus.PENDING, "markAsOpen");
+        this.status    = OrderStatus.OPEN;
         this.updatedAt = Instant.now();
     }
 
     /**
      * Cancela a ordem registrando o motivo técnico da falha.
      *
-     * @param reason Motivo padronizado ou mensagem livre para auditoria.
+     * <p>Permitido apenas quando a ordem ainda não foi completamente executada.
+     * Uma ordem {@code FILLED} não pode ser revertida — a liquidação já ocorreu
+     * e o wallet-service confirmou a transferência de ativos.</p>
+     *
+     * @param reason Motivo padronizado (ex: {@code "INSUFFICIENT_FUNDS"}) ou mensagem livre.
+     * @throws IllegalStateException se o status for {@code FILLED}.
      */
     public void cancel(String reason) {
+        if (this.status == OrderStatus.FILLED) {
+            throw new IllegalStateException(
+                "Ordem FILLED não pode ser cancelada (orderId=%s)".formatted(this.id));
+        }
         this.status             = OrderStatus.CANCELLED;
         this.cancellationReason = reason;
         this.updatedAt          = Instant.now();
     }
 
     /**
-     * Decrementa a quantidade restante após um match parcial.
-     * Se {@code remainingAmount} chegar a zero, transita para FILLED.
+     * Decrementa a quantidade restante após um match (total ou parcial).
      *
-     * @param executedQty Quantidade executada no match.
+     * <p>Transições possíveis:</p>
+     * <ul>
+     *   <li>{@code OPEN    → FILLED}  quando {@code remainingAmount == 0}</li>
+     *   <li>{@code OPEN    → PARTIAL} quando {@code remainingAmount > 0}</li>
+     *   <li>{@code PARTIAL → FILLED}  quando {@code remainingAmount == 0}</li>
+     *   <li>{@code PARTIAL → PARTIAL} quando {@code remainingAmount > 0}</li>
+     * </ul>
+     *
+     * <p><strong>Política DLQ:</strong> se chamado em status terminal ({@code CANCELLED},
+     * {@code FILLED}) ou {@code PENDING}, lança {@link IllegalStateException}. O container
+     * RabbitMQ captura a exceção, envia NACK e a mensagem é roteada para a DLQ,
+     * impedindo corrupção silenciosa de dados em race conditions.</p>
+     *
+     * @param executedQty Quantidade executada no match. Deve ser positiva e ≤ {@code remainingAmount}.
+     * @throws IllegalArgumentException se {@code executedQty} for nula, zero ou negativa,
+     *                                  ou exceder {@code remainingAmount}.
+     * @throws IllegalStateException    se o status não permitir match
+     *                                  ({@code CANCELLED}, {@code FILLED}, {@code PENDING}).
      */
     public void applyMatch(BigDecimal executedQty) {
-        this.remainingAmount = this.remainingAmount.subtract(executedQty);
+        // Pré-condição 1: status deve ser OPEN ou PARTIAL
+        requireStatusIn("applyMatch", OrderStatus.OPEN, OrderStatus.PARTIAL);
+
+        // Pré-condição 2: quantidade executada deve ser positiva
+        if (executedQty == null || executedQty.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException(
+                "executedQty deve ser positivo: %s (orderId=%s)".formatted(executedQty, this.id));
+        }
+
+        // Pré-condição 3: não pode exceder a quantidade restante
+        if (executedQty.compareTo(this.remainingAmount) > 0) {
+            throw new IllegalArgumentException(
+                "executedQty=%s excede remainingAmount=%s (orderId=%s)"
+                    .formatted(executedQty, this.remainingAmount, this.id));
+        }
+
+        this.remainingAmount = this.remainingAmount.subtract(executedQty)
+                                                   .stripTrailingZeros();
         this.updatedAt       = Instant.now();
 
         if (this.remainingAmount.compareTo(BigDecimal.ZERO) <= 0) {
@@ -177,6 +235,59 @@ public class Order {
         } else {
             this.status = OrderStatus.PARTIAL;
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Máquina de estados — API restrita (package-private)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Força uma transição de estado sem validação da máquina de estados.
+     *
+     * <p><strong>Uso exclusivo em testes</strong> do mesmo pacote que precisam
+     * montar cenários arbitrários (ex: forçar {@code OPEN} para testar idempotência).
+     * Nunca deve ser chamado em código de produção.</p>
+     *
+     * @param newStatus O novo estado desejado.
+     */
+    void transitionTo(OrderStatus newStatus) {
+        this.status    = newStatus;
+        this.updatedAt = Instant.now();
+    }
+
+    // -------------------------------------------------------------------------
+    // Guards internos — legibilidade e reutilização
+    // -------------------------------------------------------------------------
+
+    /**
+     * Valida que o status atual é o esperado antes de executar uma operação.
+     *
+     * @param expected  Status exigido.
+     * @param operation Nome da operação (usado na mensagem de erro).
+     * @throws IllegalStateException se o status atual diferir do esperado.
+     */
+    private void requireStatus(OrderStatus expected, String operation) {
+        if (this.status != expected) {
+            throw new IllegalStateException(
+                "Operação '%s' inválida para orderId=%s: status atual=%s, esperado=%s"
+                    .formatted(operation, this.id, this.status, expected));
+        }
+    }
+
+    /**
+     * Valida que o status atual está dentro dos estados permitidos.
+     *
+     * @param operation Nome da operação (usado na mensagem de erro).
+     * @param allowed   Estados que permitem a operação.
+     * @throws IllegalStateException se o status atual não estiver na lista de permitidos.
+     */
+    private void requireStatusIn(String operation, OrderStatus... allowed) {
+        for (OrderStatus s : allowed) {
+            if (this.status == s) return;
+        }
+        throw new IllegalStateException(
+            "Operação '%s' inválida para orderId=%s: status=%s não é um dos permitidos=%s"
+                .formatted(operation, this.id, this.status, java.util.Arrays.toString(allowed)));
     }
 
     // -------------------------------------------------------------------------

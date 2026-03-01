@@ -32,7 +32,18 @@ No nosso MVP, usaremos o DDD para separar claramente as responsabilidades:
 
 
 2. **Contexto do Livro de Ofertas (Order Book):** Teremos um conceito de `Order` que lida com as regras de preço e quantidade.
-* O agregado `Order` possui a máquina de estados `PENDING → OPEN → PARTIAL → FILLED` e o invariante `remainingAmount >= 0`.
+* O agregado `Order` possui a máquina de estados `PENDING → OPEN → PARTIAL → FILLED` e impõe suas invariantes internamente:
+  * `markAsOpen()` — aceita somente se `status == PENDING`; lança `IllegalStateException` caso contrário.
+  * `applyMatch(executedQty)` — aceita `OPEN` ou `PARTIAL`; rejeita `qty ≤ 0`, `qty > remainingAmount` e status terminal (`CANCELLED`, `FILLED`, `PENDING`) com exceção rastreável.
+  * `cancel(reason)` — rejeita ordens `FILLED` (liquidação já ocorreu e não pode ser revertida).
+  * `transitionTo(OrderStatus)` é **package-private** — disponível apenas para testes de integração que montam cenários arbitrários; nunca chamado em produção.
+  * **Invariantes formais do agregado:**
+    - `remainingAmount >= 0` — nunca negativo.
+    - `FILLED`    → `remainingAmount == 0`.
+    - `PARTIAL`   → `0 < remainingAmount < originalAmount`.
+    - `OPEN`      → `remainingAmount == originalAmount`.
+    - `CANCELLED` → `remainingAmount > 0` (liquidação parcial não ocorreu).
+  * **Política DLQ para race conditions:** `applyMatch` chamado em `CANCELLED` (ex: evento de match chegando após cancelamento assíncrono) lança `IllegalStateException` → container RabbitMQ envia NACK → mensagem roteada para DLQ.
   * Cada chamada ao método `applyMatch(executedQty)` decrementa `remainingAmount` e transita para `PARTIAL` (se há residual) ou `FILLED` (se zerou).
   * **O Redis Sorted Set (livro) e o PostgreSQL (estado da ordem) ficam sincronizados pelo Script Lua atômico**: o Lua faz o `ZADD` do residual e retorna a quantidade executada; o Java usa a quantidade retornada para chamar `applyMatch` e persistir.
 * A comunicação entre a `Wallet` e o `Order Book` não é feita chamando métodos um do outro diretamente, mas sim conversando através de **Eventos** (nosso Event Storming!).
@@ -237,8 +248,11 @@ Ao juntar esses três padrões, criamos um sistema **robusto e escalável** para
 | Padrão         | Status | Detalhe                                                              |
 |----------------|--------|----------------------------------------------------------------------|
 | DDD            | ✅     | `Order`, `UserRegistry` como agregados; Bounded Contexts separados    |
+| DDD — State Machine | ✅ | `Order` impõe máquina de estados internamente (US-008); `transitionTo` package-private; guards em `markAsOpen`, `applyMatch`, `cancel` |
 | Event Sourcing | ✅     | `OrderDocument.history[]` no MongoDB; idempotência por `eventId`     |
 | CQRS Command   | ✅     | `POST /api/v1/orders` → PostgreSQL + Redis + RabbitMQ                |
 | CQRS Query     | ✅     | `GET /api/v1/orders` → MongoDB (eventual consistency)                |
 | Saga           | ✅     | Reserve Funds → Match Engine → FILLED/OPEN/CANCELLED                 |
+| Optimistic Lock| ✅     | `@Version` em `Order` detecta conflitos de escrita concorrente        |
+| DLQ Policy     | ✅     | `applyMatch` em status terminal → `IllegalStateException` → NACK → DLQ |
 | SLA 200ms p99  | ✅     | Virtual Threads + isolamento de containers em testes                  |

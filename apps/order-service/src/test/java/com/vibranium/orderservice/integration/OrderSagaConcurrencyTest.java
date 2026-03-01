@@ -85,7 +85,7 @@ class OrderSagaConcurrencyTest extends AbstractIntegrationTest {
                 orderId, correlId, userId.toString(), walletId,
                 OrderType.BUY, new BigDecimal("500.00"), new BigDecimal("10.00")
         );
-        order.transitionTo(OrderStatus.OPEN); // simula 1ª transição já ocorrida
+        order.markAsOpen(); // simula 1ª transição já ocorrida (PENDING → OPEN)
         orderRepository.save(order);
 
         // Cria evento com o mesmo correlationId (mensagem atrasada/duplicada)

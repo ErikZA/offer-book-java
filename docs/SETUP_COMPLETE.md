@@ -10,9 +10,10 @@
 
 ```
 ✅ wallet-service  —  57/57 testes GREEN  (BUILD SUCCESS)
-✅ order-service   —  28/28 testes GREEN  (BUILD SUCCESS)
+✅ order-service   —  48/48 testes GREEN  (BUILD SUCCESS)
 ✅ US-001 — Outbox Publisher (Debezium CDC) implementado e testado
 ✅ US-002 — Partial Fill: Requeue atômico + Idempotência por eventId
+✅ US-008 — Máquina de Estados Segura no Agregado Order
 ```
 
 ### Implementações recentes
@@ -30,6 +31,12 @@
 | `requeueResidual()` (US-002) | ✅ | API pública para disaster recovery (não chamada no fluxo normal) |
 | `ProcessedEvent` + Repo (US-002) | ✅ | Idempotência por `eventId` via `tb_processed_events` (PK conflict) |
 | `MatchEngineRedisIntegrationTest` | ✅ 9/9 GREEN | +4 cenários: PARTIAL_BID, PARTIAL_ASK via SELL, múltiplos partials, eventId idempotente |
+| `Order#markAsOpen()` (US-008) | ✅ | Transição semântica PENDING→OPEN com guard `requireStatus(PENDING)` |
+| `Order#applyMatch()` (US-008) | ✅ | Guards: status OPEN/PARTIAL, qty > 0, qty ≤ remainingAmount; política DLQ |
+| `Order#cancel()` (US-008) | ✅ | Guard: FILLED não pode ser cancelada (`IllegalStateException`) |
+| `Order#transitionTo()` (US-008) | ✅ | Rebaixado para package-private — uso exclusivo em testes de integração |
+| `FundsReservedEventConsumer` (US-008) | ✅ | `transitionTo(OPEN)` → `markAsOpen()` |
+| `OrderDomainTest` (US-008) | ✅ 20/20 GREEN | 20 testes unitários puros (< 0.5 s, sem Spring, sem Docker) |
 
 ---
 
@@ -53,14 +60,15 @@
 ```
 ✅ Testes no Docker - SUCESSO
    - Common Contracts:                       ✅ Built
-   - Order Service Test (28 testes):         ✅ 28/28 GREEN
+   - Order Service Test (48 testes):         ✅ 48/48 GREEN
+     └─ Unit — OrderDomainTest (US-008):       ✅ 20 testes (< 0.5 s, sem Spring)
      └─ Unit (EventRoute, Order domain):       ✅ 10 testes
      └─ Integration (Match Engine, Saga):      ✅ 18 testes (incl. 4 cenários US-002)
    - Wallet Service Test (57 testes):        ✅ 57/57 GREEN
      └─ Unit (EventRoute, WalletService):      ✅ 9 testes
      └─ Integration (Keycloak, Wallet):        ✅ 43 testes
      └─ Integration (OutboxPublisher CDC):     ✅ 5 testes
-   - Total: 85 testes, 0 falhas
+   - Total: 105 testes, 0 falhas
    - Cobertura de código:                 ✅ Gerada automaticamente
 ```
 
@@ -124,7 +132,7 @@ docker compose -f infra/docker-compose.dev.yml up
 ```
 ✅ BUILD SUCCESS (no Docker)
 ✅ Total time: ~17 segundos
-✅ 85 tests passed (order-service 28 + wallet-service 57)
+✅ 105 tests passed (order-service 48 + wallet-service 57)
 ✅ Cobertura: target/site/jacoco/index.html
 ```
 
@@ -242,7 +250,7 @@ docker compose -f infra/docker-compose.dev.yml up
 📁 Projeto:           Vibranium Order Book Platform
 🏢 Serviços:          2 (Order + Wallet)
 📦 Stack:             Java 21, Spring Boot 3.4.13, Maven 3.9 + Debezium 2.7.4
-🧪 Testes:            85 total (28 order-service + 57 wallet-service) — 85/85 GREEN
+🧪 Testes:            105 total (48 order-service + 57 wallet-service) — 105/105 GREEN
 📖 Documentação:      10+ arquivos (1500+ linhas)
 ⏱️ Tempo Setup:        ~10 min (Docker + validação)
 ```

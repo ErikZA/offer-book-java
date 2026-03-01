@@ -2,7 +2,6 @@ package com.vibranium.orderservice.adapter.messaging;
 
 import com.rabbitmq.client.Channel;
 import com.vibranium.contracts.enums.FailureReason;
-import com.vibranium.contracts.enums.OrderStatus;
 import com.vibranium.contracts.events.order.MatchExecutedEvent;
 import com.vibranium.contracts.events.order.OrderAddedToBookEvent;
 import com.vibranium.contracts.events.order.OrderCancelledEvent;
@@ -198,10 +197,12 @@ public class FundsReservedEventConsumer {
      * Processa ausencia de contraparte: transiciona para OPEN e publica evento.
      *
      * <p>A ordem ja foi inserida no Redis Sorted Set pelo Lua script.
-     * Aqui apenas atualizamos o estado no PostgreSQL e notificamos.</p>
+     * Utiliza {@link Order#markAsOpen()} que valida internamente que a ordem
+     * está em {@code PENDING} antes de transicionar — garantindo que qualquer
+     * race condition neste ponto gere uma exceção rastreável.</p>
      */
     private void handleNoMatch(Order order) {
-        order.transitionTo(OrderStatus.OPEN);
+        order.markAsOpen();
         orderRepository.save(order);
 
         OrderAddedToBookEvent addedEvent = OrderAddedToBookEvent.of(
