@@ -1,6 +1,7 @@
 package com.vibranium.walletservice.integration;
 
 import com.vibranium.contracts.commands.wallet.SettleFundsCommand;
+import com.vibranium.contracts.enums.AssetType;
 import com.vibranium.walletservice.AbstractIntegrationTest;
 import com.vibranium.walletservice.domain.model.Wallet;
 import com.vibranium.walletservice.domain.repository.OutboxMessageRepository;
@@ -21,7 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 /**
- * FASE RED — Testa a liquidação de fundos após um match executado.
+ * Testa a liquidação de fundos após um match executado.
  *
  * <p>O {@code SettleFundsCommand} é disparado pelo {@code order-service} após o motor
  * de match cruzar uma compra com uma venda. O wallet-service deve:
@@ -31,9 +32,10 @@ import static org.awaitility.Awaitility.await;
  *   <li>Salvar {@code FundsSettledEvent} no Outbox na mesma transação.</li>
  * </ul>
  *
- * <p><b>RED:</b> Falharão até a Fase Green.</p>
+ * <p>Setup usa métodos de domínio ({@code reserveFunds}) para construir o estado
+ * pre-condição — sem setters diretos, respeitando as invariantes do agregado.</p>
  */
-@DisplayName("[RED] WalletSettleFunds - Liquidação pós-match com atomicidade garantida")
+@DisplayName("WalletSettleFunds - Liquidação pós-match com atomicidade garantida")
 class WalletSettleFundsIntegrationTest extends AbstractIntegrationTest {
 
     private static final String WALLET_COMMANDS_EXCHANGE = "wallet.commands";
@@ -52,16 +54,14 @@ class WalletSettleFundsIntegrationTest extends AbstractIntegrationTest {
 
     @BeforeEach
     void setupWallets() {
-        // Comprador: tem R$200 bloqueados aguardando match
-        buyerWallet = Wallet.create(UUID.randomUUID(), BigDecimal.ZERO, BigDecimal.ZERO);
-        buyerWallet.setBrlAvailable(BigDecimal.ZERO);
-        buyerWallet.setBrlLocked(new BigDecimal("200.00"));
+        // Comprador: cria com R$200 disponíveis e reserva via domínio — saldo fica locked
+        buyerWallet = Wallet.create(UUID.randomUUID(), new BigDecimal("200.00"), BigDecimal.ZERO);
+        buyerWallet.reserveFunds(AssetType.BRL, new BigDecimal("200.00"));
         buyerWallet = walletRepository.save(buyerWallet);
 
-        // Vendedor: tem 10 VIB bloqueados aguardando match
-        sellerWallet = Wallet.create(UUID.randomUUID(), BigDecimal.ZERO, BigDecimal.ZERO);
-        sellerWallet.setVibLocked(new BigDecimal("10"));
-        sellerWallet.setVibAvailable(BigDecimal.ZERO);
+        // Vendedor: cria com 10 VIB disponíveis e reserva via domínio — saldo fica locked
+        sellerWallet = Wallet.create(UUID.randomUUID(), BigDecimal.ZERO, new BigDecimal("10"));
+        sellerWallet.reserveFunds(AssetType.VIBRANIUM, new BigDecimal("10"));
         sellerWallet = walletRepository.save(sellerWallet);
 
         buyOrderId = UUID.randomUUID();
@@ -164,24 +164,27 @@ class WalletSettleFundsIntegrationTest extends AbstractIntegrationTest {
     @Test
     @DisplayName("Liquidação com saldo bloqueado insuficiente (inconsistência) deve gerar falha e não alterar saldos")
     void shouldFailAndNotAlterBalancesWhenLockedFundsAreInsufficient() throws Exception {
-        // Arrange — comprador tem apenas R$50 bloqueados, mas o match é de R$200
-        buyerWallet.setBrlLocked(new BigDecimal("50.00"));
-        walletRepository.save(buyerWallet);
+        // Arrange — recria comprador com apenas R$50 bloqueados, mas o match exige R$200
+        // Usa reserveFunds() para construir o estado via domínio (sem setters diretos)
+        Wallet lowBuyerWallet = Wallet.create(UUID.randomUUID(), new BigDecimal("50.00"), BigDecimal.ZERO);
+        lowBuyerWallet.reserveFunds(AssetType.BRL, new BigDecimal("50.00"));
+        lowBuyerWallet = walletRepository.save(lowBuyerWallet);
 
         SettleFundsCommand command = new SettleFundsCommand(
                 UUID.randomUUID(), UUID.randomUUID(), buyOrderId, sellOrderId,
-                buyerWallet.getId(), sellerWallet.getId(),
-                new BigDecimal("20.00"), new BigDecimal("10") // total = $200
+                lowBuyerWallet.getId(), sellerWallet.getId(),
+                new BigDecimal("20.00"), new BigDecimal("10") // total = R$200
         );
 
         sendCommand(command, UUID.randomUUID().toString());
 
-        // Assert — saldo do comprador permanece inalterado
+        // Assert — saldo do comprador permanece inalterado após a falha
+        final UUID lowBuyerId = lowBuyerWallet.getId();
         await()
                 .atMost(10, TimeUnit.SECONDS)
                 .pollInterval(500, TimeUnit.MILLISECONDS)
                 .untilAsserted(() -> {
-                    var buyer = walletRepository.findById(buyerWallet.getId()).orElseThrow();
+                    var buyer = walletRepository.findById(lowBuyerId).orElseThrow();
                     assertThat(buyer.getBrlLocked()).isEqualByComparingTo("50.00");
                     assertThat(buyer.getVibAvailable()).isEqualByComparingTo("0");
 
