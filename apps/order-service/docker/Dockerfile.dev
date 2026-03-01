@@ -11,9 +11,12 @@ COPY pom.xml ./
 COPY apps/order-service/pom.xml ./apps/order-service/
 COPY apps/wallet-service/pom.xml ./apps/wallet-service/
 COPY libs/common-contracts/pom.xml ./libs/common-contracts/
+# common-utils: utilitários transversais (US-007 — VibraniumJacksonConfig, CorrelationIdGenerator, AmqpHeaderExtractor)
+COPY libs/common-utils/pom.xml ./libs/common-utils/
 
 # Copiar código-fonte
 COPY libs/common-contracts/src ./libs/common-contracts/src
+COPY libs/common-utils/src ./libs/common-utils/src
 COPY apps/order-service/src ./apps/order-service/src
 COPY apps/wallet-service/src ./apps/wallet-service/src
 

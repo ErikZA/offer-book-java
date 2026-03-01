@@ -1,37 +1,33 @@
 package com.vibranium.walletservice.config;
 
-import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.vibranium.utils.jackson.VibraniumJacksonConfig;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 
 /**
- * Configuração do ObjectMapper Jackson da aplicação.
+ * Configuração do ObjectMapper Jackson do wallet-service.
  *
- * <p>Expõe um {@code @Bean @Primary ObjectMapper} explícito para garantir que o bean
- * esteja disponível independentemente da ordem de carregamento da auto-configuração
- * do Spring Boot ({@code JacksonAutoConfiguration}).</p>
+ * <p>Delega para {@link VibraniumJacksonConfig} — configuração unificada da plataforma
+ * (US-007, Subtask 7.6). Garante consistência de serialização entre order-service
+ * e wallet-service: ISO-8601 como padrão, com {@code FAIL_ON_UNKNOWN_PROPERTIES=false}
+ * para tolerância à evolução de contratos de eventos.</p>
  *
- * <p>Customizações aplicadas:</p>
- * <ul>
- *   <li>{@code JavaTimeModule} — suporte a {@code Instant}, {@code LocalDate}, etc.</li>
- *   <li>{@code WRITE_DATES_AS_TIMESTAMPS = false} — serializa datas como ISO-8601 string
- *       (ex: {@code "2025-01-01T12:00:00Z"}) em vez de epoch numérico.</li>
- *   <li>{@code FAIL_ON_UNKNOWN_PROPERTIES = false} — tolerante a campos extras (evolução de contratos).</li>
- * </ul>
+ * <p>O bean é declarado explicitamente (não via {@code JacksonAutoConfiguration})
+ * para garantir disponibilidade antes do {@link RabbitMQConfig} ser processado.</p>
  */
 @Configuration
 public class JacksonConfig {
 
+    /**
+     * ObjectMapper principal do wallet-service, configurado via utilitário centralizado.
+     *
+     * @return ObjectMapper configurado com JavaTimeModule, ISO-8601 e tolerância a campos extras
+     */
     @Bean
     @Primary
     public ObjectMapper objectMapper() {
-        return new ObjectMapper()
-                .registerModule(new JavaTimeModule())
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+        return VibraniumJacksonConfig.configure(new ObjectMapper());
     }
 }

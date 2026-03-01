@@ -17,22 +17,60 @@
     <description>Utilitários compartilhados (decoradores, interceptadores, handlers de erro)</description>
 
     <dependencies>
-        <!-- Spring Web -->
+        <!-- =====================================================================
+             RUNTIME — Jackson: serialização/deserialização unificada
+             jackson-databind: transitivo via spring-boot-starter-web;
+             jackson-datatype-jsr310: módulo Java Time (Instant, LocalDate, etc.)
+        ====================================================================== -->
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+        </dependency>
+
+        <!-- =====================================================================
+             RUNTIME — Spring AMQP Core: MessageProperties, Message (opt.)
+             Declarado como optional para não vazar para consumidores que
+             não precisam de mensageria.
+        ====================================================================== -->
+        <dependency>
+            <groupId>org.springframework.amqp</groupId>
+            <artifactId>spring-amqp</artifactId>
+            <optional>true</optional>
         </dependency>
 
         <!-- Spring Validation -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
+            <optional>true</optional>
         </dependency>
 
         <!-- Micrometer for metrics -->
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-core</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- =====================================================================
+             TESTING
+        ====================================================================== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- spring-rabbit: necessário em test para que MessageProperties esteja
+             no classpath dos testes de AmqpHeaderExtractor -->
+        <dependency>
+            <groupId>org.springframework.amqp</groupId>
+            <artifactId>spring-rabbit</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 

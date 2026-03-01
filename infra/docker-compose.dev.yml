@@ -24,15 +24,16 @@ services:
         ports:
             - '27017:27017'
         environment:
-            MONGO_INITDB_ROOT_USERNAME: admin
-            MONGO_INITDB_ROOT_PASSWORD: admin123
+            # Credenciais via .env (veja .env.example na raiz do projeto)
+            MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
+            MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required — copie .env.example para .env}
             MONGO_INITDB_DATABASE: vibranium_orders
         volumes:
             - mongodb_data:/data/db
         networks:
             - vibranium-network-dev
         healthcheck:
-            test: ['CMD-SHELL', 'mongosh "mongodb://admin:admin123@localhost:27017/test?authSource=admin" --eval "db.runCommand(''ping'').ok" --quiet | grep -q "^1"']
+            test: ['CMD-SHELL', 'mongosh "mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD}@localhost:27017/test?authSource=admin" --eval "db.runCommand(''ping'').ok" --quiet | grep -q "^1"']
             interval: 10s
             timeout: 5s
             retries: 5
@@ -46,8 +47,9 @@ services:
         ports:
             - '5432:5432'
         environment:
-            POSTGRES_USER: postgres
-            POSTGRES_PASSWORD: postgres
+            # Credenciais via .env (veja .env.example na raiz do projeto)
+            POSTGRES_USER: ${POSTGRES_USER:-postgres}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copie .env.example para .env}
             # POSTGRES_DB é o banco padrão criado pelo entrypoint.
             # Os bancos de aplicação (vibranium_orders, vibranium_wallet)
             # são criados pelo script init-app-databases.sh abaixo.
@@ -67,9 +69,9 @@ services:
             test:
                 - 'CMD-SHELL'
                 - >-
-                    pg_isready -U postgres -d vibranium_orders &&
-                    psql -U postgres -d vibranium_orders -c "SELECT 1" -q --no-align --tuples-only &&
-                    psql -U postgres -d vibranium_wallet -c "SELECT 1" -q --no-align --tuples-only
+                    pg_isready -U ${POSTGRES_USER:-postgres} -d vibranium_orders &&
+                    psql -U ${POSTGRES_USER:-postgres} -d vibranium_orders -c "SELECT 1" -q --no-align --tuples-only &&
+                    psql -U ${POSTGRES_USER:-postgres} -d vibranium_wallet -c "SELECT 1" -q --no-align --tuples-only
             interval: 5s
             timeout: 5s
             retries: 15
@@ -104,8 +106,9 @@ services:
             - '5672:5672'
             - '15672:15672'
         environment:
-            RABBITMQ_DEFAULT_USER: guest
-            RABBITMQ_DEFAULT_PASS: guest
+            # Credenciais via .env (veja .env.example na raiz do projeto)
+            RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
+            RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
         volumes:
             - rabbitmq_data:/var/lib/rabbitmq
         networks:
@@ -123,15 +126,16 @@ services:
         image: postgres:16-alpine
         container_name: vibranium-keycloak-db-dev
         environment:
-            POSTGRES_USER: keycloak
-            POSTGRES_PASSWORD: keycloak
+            # Credenciais do banco dedicado Keycloak via .env
+            POSTGRES_USER: ${KEYCLOAK_DB_USER:-keycloak}
+            POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?KEYCLOAK_DB_PASSWORD is required — copie .env.example para .env}
             POSTGRES_DB: keycloak_db
         volumes:
             - keycloak_db_data:/var/lib/postgresql/data
         networks:
             - vibranium-network-dev
         healthcheck:
-            test: ['CMD-SHELL', 'pg_isready -U keycloak -d keycloak_db']
+            test: ['CMD-SHELL', 'pg_isready -U ${KEYCLOAK_DB_USER:-keycloak} -d keycloak_db']
             interval: 10s
             timeout: 5s
             retries: 5
@@ -156,10 +160,10 @@ services:
         environment:
             KC_DB: postgres
             KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak_db
-            KC_DB_USERNAME: keycloak
-            KC_DB_PASSWORD: keycloak
-            KEYCLOAK_ADMIN: admin
-            KEYCLOAK_ADMIN_PASSWORD: admin123
+            KC_DB_USERNAME: ${KEYCLOAK_DB_USER:-keycloak}
+            KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+            KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+            KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required — copie .env.example para .env}
             KC_HTTP_ENABLED: 'true'
             KC_HTTP_PORT: 8080
             KC_HOSTNAME_STRICT: 'false'
@@ -170,8 +174,8 @@ services:
             # Plugin keycloak-event-listener-rabbitmq
             KK_TO_RMQ_URL: rabbitmq
             KK_TO_RMQ_PORT: 5672
-            KK_TO_RMQ_USERNAME: guest
-            KK_TO_RMQ_PASSWORD: guest
+            KK_TO_RMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            KK_TO_RMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS}
             KK_TO_RMQ_VHOST: /
             KK_TO_RMQ_EXCHANGE: amq.topic
             KK_TO_RMQ_USE_TLS: 'false'
@@ -265,10 +269,15 @@ services:
             # Banco dedicado — evita shared-database anti-pattern
             # O Flyway FALHA se vibranium_orders não existir (garantido pelo healthcheck)
             SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/vibranium_orders
-            SPRING_DATASOURCE_USERNAME: postgres
-            SPRING_DATASOURCE_PASSWORD: postgres
+            SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-postgres}
+            SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+            # Redis e MongoDB: sobrescrevem os defaults 'localhost' do application.yaml
+            SPRING_DATA_REDIS_HOST: redis
+            SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD}@mongodb:27017/vibranium_orders?authSource=admin
             SPRING_RABBITMQ_HOST: rabbitmq
             SPRING_RABBITMQ_PORT: '5672'
+            SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS}
         volumes:
             - ../apps/order-service:/app/apps/order-service
             - ../libs:/app/libs
@@ -316,10 +325,12 @@ services:
             JAVA_OPTS: '-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5006'
             # Banco dedicado — o Flyway FALHA se vibranium_wallet não existir
             SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/vibranium_wallet
-            SPRING_DATASOURCE_USERNAME: postgres
-            SPRING_DATASOURCE_PASSWORD: postgres
+            SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-postgres}
+            SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
             SPRING_RABBITMQ_HOST: rabbitmq
             SPRING_RABBITMQ_PORT: '5672'
+            SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS}
         volumes:
             - ../apps/wallet-service:/app/apps/wallet-service
             - ../libs:/app/libs
