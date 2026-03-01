@@ -41,7 +41,7 @@ import static org.awaitility.Awaitility.await;
  *   <li>{@code FundsReservationFailedEventConsumer} com ACK manual e idempotência por tabela</li>
  * </ul>
  */
-@DisplayName("[RED] OrderIdempotency — Proteção contra duplo processamento de eventos")
+@DisplayName("OrderIdempotency — Proteção contra duplo processamento de eventos")
 class OrderIdempotencyIntegrationTest extends AbstractIntegrationTest {
 
     @Autowired

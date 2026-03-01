@@ -38,7 +38,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *   <li>Modificação de {@code OrderCommandService.placeOrder()} para usar outbox</li>
  * </ul>
  */
-@DisplayName("[RED] OrderOutbox — Garantia de entrega via tabela de outbox")
+@DisplayName("OrderOutbox — Garantia de entrega via tabela de outbox")
 class OrderOutboxIntegrationTest extends AbstractIntegrationTest {
 
     @Autowired

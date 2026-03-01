@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -178,6 +179,155 @@ class WalletDomainTest {
             // Estado preservado após exceção
             assertThat(seller.getVibLocked()).isEqualByComparingTo(vibLockedAntes);
             assertThat(seller.getBrlAvailable()).isEqualByComparingTo(brlAntes);
+        }
+    }
+
+    // =========================================================================
+    // adjustBalance
+    // =========================================================================
+
+    @Nested
+    @DisplayName("adjustBalance()")
+    class AdjustBalanceTests {
+
+        @Test
+        @DisplayName("Crédito BRL positivo: deve aumentar brlAvailable sem alterar VIB")
+        void adjustBalance_positiveBrlDelta_increasesBrlAvailable() {
+            Wallet wallet = walletWith(new BigDecimal("100.00"), new BigDecimal("5.00"));
+
+            wallet.adjustBalance(new BigDecimal("50.00"), null);
+
+            assertThat(wallet.getBrlAvailable()).isEqualByComparingTo("150.00");
+            assertThat(wallet.getVibAvailable()).isEqualByComparingTo("5.00");
+        }
+
+        @Test
+        @DisplayName("Débito BRL negativo válido: deve reduzir brlAvailable sem alterar VIB")
+        void adjustBalance_negativeBrlDelta_decreasesBrlAvailable() {
+            Wallet wallet = walletWith(new BigDecimal("200.00"), BigDecimal.ZERO);
+
+            wallet.adjustBalance(new BigDecimal("-80.00"), null);
+
+            assertThat(wallet.getBrlAvailable()).isEqualByComparingTo("120.00");
+        }
+
+        @Test
+        @DisplayName("Crédito VIB positivo: deve aumentar vibAvailable sem alterar BRL")
+        void adjustBalance_positiveVibDelta_increasesVibAvailable() {
+            Wallet wallet = walletWith(BigDecimal.ZERO, new BigDecimal("10.00"));
+
+            wallet.adjustBalance(null, new BigDecimal("3.00"));
+
+            assertThat(wallet.getVibAvailable()).isEqualByComparingTo("13.00");
+            assertThat(wallet.getBrlAvailable()).isEqualByComparingTo("0.00");
+        }
+
+        @Test
+        @DisplayName("Ambos os deltas: deve ajustar BRL e VIB simultaneamente")
+        void adjustBalance_bothDeltas_adjustsBothBalances() {
+            Wallet wallet = walletWith(new BigDecimal("500.00"), new BigDecimal("10.00"));
+
+            wallet.adjustBalance(new BigDecimal("-100.00"), new BigDecimal("2.00"));
+
+            assertThat(wallet.getBrlAvailable()).isEqualByComparingTo("400.00");
+            assertThat(wallet.getVibAvailable()).isEqualByComparingTo("12.00");
+        }
+
+        @Test
+        @DisplayName("Débito BRL resultaria negativo: deve lançar InsufficientFundsException sem alterar estado")
+        void adjustBalance_brlWouldGoNegative_throwsAndPreservesState() {
+            Wallet wallet = walletWith(new BigDecimal("50.00"), new BigDecimal("5.00"));
+            BigDecimal brlAntes = wallet.getBrlAvailable();
+            BigDecimal vibAntes = wallet.getVibAvailable();
+
+            // Débito de R$100 em carteira com R$50 → ficaria negativo
+            assertThatThrownBy(() -> wallet.adjustBalance(new BigDecimal("-100.00"), null))
+                    .isInstanceOf(InsufficientFundsException.class)
+                    .hasMessageContaining("BRL");
+
+            // Atomicidade: nenhum campo alterado
+            assertThat(wallet.getBrlAvailable()).isEqualByComparingTo(brlAntes);
+            assertThat(wallet.getVibAvailable()).isEqualByComparingTo(vibAntes);
+        }
+
+        @Test
+        @DisplayName("Débito VIB resultaria negativo: deve lançar InsufficientFundsException sem alterar estado")
+        void adjustBalance_vibWouldGoNegative_throwsAndPreservesState() {
+            Wallet wallet = walletWith(new BigDecimal("100.00"), new BigDecimal("2.00"));
+            BigDecimal brlAntes = wallet.getBrlAvailable();
+            BigDecimal vibAntes = wallet.getVibAvailable();
+
+            // Débito de 5 VIB em carteira com apenas 2 → ficaria negativo
+            assertThatThrownBy(() -> wallet.adjustBalance(null, new BigDecimal("-5.00")))
+                    .isInstanceOf(InsufficientFundsException.class)
+                    .hasMessageContaining("VIB");
+
+            // Atomicidade: nenhum campo alterado
+            assertThat(wallet.getBrlAvailable()).isEqualByComparingTo(brlAntes);
+            assertThat(wallet.getVibAvailable()).isEqualByComparingTo(vibAntes);
+        }
+
+        @Test
+        @DisplayName("Atomicidade: BRL inválido + VIB válido → nenhum campo deve ser alterado")
+        void adjustBalance_brlInvalidVibValid_neitherFieldChanged() {
+            Wallet wallet = walletWith(new BigDecimal("10.00"), new BigDecimal("10.00"));
+            BigDecimal brlAntes = wallet.getBrlAvailable();
+            BigDecimal vibAntes = wallet.getVibAvailable();
+
+            // BRL ficaria negativo mesmo com VIB sendo crédito válido
+            assertThatThrownBy(() -> wallet.adjustBalance(new BigDecimal("-50.00"), new BigDecimal("5.00")))
+                    .isInstanceOf(InsufficientFundsException.class);
+
+            // Nenhum campo alterado — a validação ocorre antes de qualquer modificação
+            assertThat(wallet.getBrlAvailable()).isEqualByComparingTo(brlAntes);
+            assertThat(wallet.getVibAvailable()).isEqualByComparingTo(vibAntes);
+        }
+    }
+
+    // =========================================================================
+    // Wallet.create() — factory method e getters completos
+    // =========================================================================
+
+    @Nested
+    @DisplayName("Wallet.create() e getters")
+    class CreateAndGetterTests {
+
+        @Test
+        @DisplayName("create(): deve inicializar todos os campos corretamente com saldos locked = ZERO")
+        void create_withValidParams_initializesAllFields() {
+            UUID userId        = UUID.randomUUID();
+            BigDecimal brlInit = new BigDecimal("1000.00");
+            BigDecimal vibInit = new BigDecimal("50.00");
+            Instant before     = Instant.now().minusMillis(1);
+
+            Wallet wallet = Wallet.create(userId, brlInit, vibInit);
+
+            // Saldos disponíveis
+            assertThat(wallet.getBrlAvailable()).isEqualByComparingTo(brlInit);
+            assertThat(wallet.getVibAvailable()).isEqualByComparingTo(vibInit);
+            // Saldos bloqueados iniciam em ZERO
+            assertThat(wallet.getBrlLocked()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(wallet.getVibLocked()).isEqualByComparingTo(BigDecimal.ZERO);
+            // UserId preservado (imutável)
+            assertThat(wallet.getUserId()).isEqualTo(userId);
+            // Timestamps gerados na criação
+            assertThat(wallet.getCreatedAt()).isAfterOrEqualTo(before);
+            assertThat(wallet.getUpdatedAt()).isAfterOrEqualTo(before);
+            // Version é null para instâncias não persistidas
+            assertThat(wallet.getVersion()).isNull();
+            // Id é null antes da persistência (gerado pelo JPA @GeneratedValue)
+            assertThat(wallet.getId()).isNull();
+        }
+
+        @Test
+        @DisplayName("create() com saldos zero: deve criar carteira zerada")
+        void create_withZeroBalances_createsZeroWallet() {
+            Wallet wallet = Wallet.create(UUID.randomUUID(), BigDecimal.ZERO, BigDecimal.ZERO);
+
+            assertThat(wallet.getBrlAvailable()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(wallet.getVibAvailable()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(wallet.getBrlLocked()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(wallet.getVibLocked()).isEqualByComparingTo(BigDecimal.ZERO);
         }
     }
 }

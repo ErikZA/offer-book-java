@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -28,6 +29,53 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 @DisplayName("Order — Máquina de Estados (Testes Unitários)")
 class OrderDomainTest {
+
+    // =========================================================================
+    // Subtask 6.1 — Order.create() factory method
+    // =========================================================================
+
+    @Nested
+    @DisplayName("create()")
+    class CreateTests {
+
+        @Test
+        @DisplayName("Com parâmetros válidos: deve criar ordem no estado PENDING")
+        void create_withValidParams_createsOrderInPendingState() {
+            UUID id            = UUID.randomUUID();
+            UUID correlationId = UUID.randomUUID();
+            UUID walletId      = UUID.randomUUID();
+
+            Order order = Order.create(
+                    id, correlationId, "user-keycloak-id", walletId,
+                    OrderType.BUY, new BigDecimal("500.00"), new BigDecimal("10.00")
+            );
+
+            assertThat(order.getId()).isEqualTo(id);
+            assertThat(order.getCorrelationId()).isEqualTo(correlationId);
+            assertThat(order.getUserId()).isEqualTo("user-keycloak-id");
+            assertThat(order.getWalletId()).isEqualTo(walletId);
+            assertThat(order.getOrderType()).isEqualTo(OrderType.BUY);
+            assertThat(order.getPrice()).isEqualByComparingTo("500.00");
+            assertThat(order.getAmount()).isEqualByComparingTo("10.00");
+            // Invariante PENDING: remainingAmount == originalAmount na criação
+            assertThat(order.getRemainingAmount()).isEqualByComparingTo(order.getAmount());
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.PENDING);
+            assertThat(order.getCancellationReason()).isNull();
+        }
+
+        @Test
+        @DisplayName("Ordem SELL criada deve ter OrderType=SELL e status PENDING")
+        void create_sellOrder_shouldHaveSellTypeAndPendingStatus() {
+            Order order = Order.create(
+                    UUID.randomUUID(), UUID.randomUUID(), "seller-id", UUID.randomUUID(),
+                    OrderType.SELL, new BigDecimal("450.00"), new BigDecimal("5.00")
+            );
+
+            assertThat(order.getOrderType()).isEqualTo(OrderType.SELL);
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.PENDING);
+            assertThat(order.getRemainingAmount()).isEqualByComparingTo("5.00");
+        }
+    }
 
     // -------------------------------------------------------------------------
     // Helpers de fixture
@@ -64,7 +112,7 @@ class OrderDomainTest {
         void whenPending_shouldTransitionToOpen() {
             Order order = pendingOrder();
 
-            order.markAsOpen(); // [RED] método ainda não existe em Order.java
+            order.markAsOpen();
 
             assertThat(order.getStatus()).isEqualTo(OrderStatus.OPEN);
             assertThat(order.getUpdatedAt()).isNotNull();
@@ -298,6 +346,122 @@ class OrderDomainTest {
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("FILLED")
                     .hasMessageContaining(order.getId().toString());
+        }
+    }
+
+    // =========================================================================
+    // JPA Lifecycle callbacks — package-private, chamáveis diretamente em testes
+    // =========================================================================
+
+    @Nested
+    @DisplayName("JPA lifecycle: onPersist() / onUpdate()")
+    class JpaLifecycleTests {
+
+        @Test
+        @DisplayName("onPersist(): deve definir createdAt e manter status PENDING quando status já definido")
+        void onPersist_withExistingStatus_preservesStatus() {
+            Order order = pendingOrder(); // status já é PENDING
+
+            order.onPersist(); // callback @PrePersist — package-private
+
+            assertThat(order.getCreatedAt()).isNotNull();
+            assertThat(order.getCreatedAt()).isBeforeOrEqualTo(Instant.now());
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.PENDING);
+        }
+
+        @Test
+        @DisplayName("onPersist(): deve definir status=PENDING quando status for null (guard de segurança)")
+        void onPersist_withNullStatus_setsPending() {
+            Order order = pendingOrder();
+            // Força status null para testar o guard do @PrePersist
+            order.transitionTo(null);
+
+            order.onPersist();
+
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.PENDING);
+        }
+
+        @Test
+        @DisplayName("onUpdate(): deve atualizar updatedAt para o timestamp atual")
+        void onUpdate_setsUpdatedAt() {
+            Order order = pendingOrder();
+            Instant before = Instant.now().minusMillis(1);
+
+            order.onUpdate(); // callback @PreUpdate — package-private
+
+            assertThat(order.getUpdatedAt()).isAfterOrEqualTo(before);
+        }
+    }
+
+    // =========================================================================
+    // transitionTo() — helper package-private para cenários de teste
+    // =========================================================================
+
+    @Nested
+    @DisplayName("transitionTo() — helper de teste")
+    class TransitionToTests {
+
+        @Test
+        @DisplayName("Deve forçar transição para qualquer status sem validação")
+        void transitionTo_forcesCandidateStatus() {
+            Order order = pendingOrder();
+
+            order.transitionTo(OrderStatus.OPEN);
+
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.OPEN);
+            assertThat(order.getUpdatedAt()).isNotNull();
+        }
+
+        @Test
+        @DisplayName("Deve permitir transição mesmo para estados que seriam inválidos na máquina de estados")
+        void transitionTo_bypassesStateMachineValidation() {
+            Order order = pendingOrder();
+            order.markAsOpen();
+            order.applyMatch(AMOUNT); // FILLED
+
+            // transitionTo é exclusivo para testes — permite cenários arbitrários
+            order.transitionTo(OrderStatus.PARTIAL);
+
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.PARTIAL);
+        }
+    }
+
+    // =========================================================================
+    // Getters — cobertura completa para garantir invariantes de leitura
+    // =========================================================================
+
+    @Nested
+    @DisplayName("Getters do agregado")
+    class GetterTests {
+
+        @Test
+        @DisplayName("Todos os getters devem retornar os valores definidos em create()")
+        void allGetters_returnCorrectValues() {
+            UUID id            = UUID.randomUUID();
+            UUID correlationId = UUID.randomUUID();
+            UUID walletId      = UUID.randomUUID();
+            BigDecimal price   = new BigDecimal("999.99");
+            BigDecimal amount  = new BigDecimal("2.50");
+
+            Order order = Order.create(
+                    id, correlationId, "user-abc", walletId,
+                    OrderType.SELL, price, amount
+            );
+
+            assertThat(order.getId()).isEqualTo(id);
+            assertThat(order.getCorrelationId()).isEqualTo(correlationId);
+            assertThat(order.getUserId()).isEqualTo("user-abc");
+            assertThat(order.getWalletId()).isEqualTo(walletId);
+            assertThat(order.getOrderType()).isEqualTo(OrderType.SELL);
+            assertThat(order.getPrice()).isEqualByComparingTo(price);
+            assertThat(order.getAmount()).isEqualByComparingTo(amount);
+            assertThat(order.getRemainingAmount()).isEqualByComparingTo(amount);
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.PENDING);
+            assertThat(order.getCancellationReason()).isNull();
+            assertThat(order.getCreatedAt()).isNull(); // @PrePersist ainda não foi chamado
+            assertThat(order.getUpdatedAt()).isNull(); // não houve transição de estado ainda
+            // version é null para instâncias não persistidas (gerenciado pelo JPA)
+            assertThat(order.getVersion()).isNull();
         }
     }
 }

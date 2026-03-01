@@ -2,8 +2,8 @@ package com.vibranium.orderservice.integration;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vibranium.orderservice.config.RabbitMQConfig;
-import com.vibranium.orderservice.domain.model.UserRegistry;                     // [RED] classe ainda não existe
-import com.vibranium.orderservice.domain.repository.UserRegistryRepository;       // [RED] classe ainda não existe
+import com.vibranium.orderservice.domain.model.UserRegistry;
+import com.vibranium.orderservice.domain.repository.UserRegistryRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -51,7 +51,7 @@ class KeycloakUserRegistryIntegrationTest extends AbstractIntegrationTest {
     private static final String KC_ROUTING_KEY = "KK.EVENT.CLIENT.orderbook-realm.REGISTER";
 
     @Autowired
-    private UserRegistryRepository userRegistryRepository;   // [RED] não existe
+    private UserRegistryRepository userRegistryRepository;
 
     @Autowired
     private ObjectMapper objectMapper;

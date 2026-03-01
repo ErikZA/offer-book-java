@@ -10,8 +10,8 @@ import com.vibranium.contracts.events.wallet.FundsReservedEvent;
 import com.vibranium.orderservice.config.RabbitMQConfig;
 import com.vibranium.orderservice.domain.model.UserRegistry;
 import com.vibranium.orderservice.domain.repository.UserRegistryRepository;
-import com.vibranium.orderservice.query.model.OrderDocument;                         // [RED] não existe
-import com.vibranium.orderservice.query.repository.OrderHistoryRepository;             // [RED] não existe
+import com.vibranium.orderservice.query.model.OrderDocument;
+import com.vibranium.orderservice.query.repository.OrderHistoryRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -53,7 +53,7 @@ class OrderQueryControllerTest extends AbstractMongoIntegrationTest {
     private UserRegistryRepository userRegistryRepository;
 
     @Autowired
-    private OrderHistoryRepository orderHistoryRepository;    // [RED] não existe
+    private OrderHistoryRepository orderHistoryRepository;
 
     private UUID userId;
     private UUID walletId;
@@ -73,7 +73,7 @@ class OrderQueryControllerTest extends AbstractMongoIntegrationTest {
         userRegistryRepository.save(ur);
 
         // Limpa o Read Model entre testes (idempotência garantida mas estado limpo)
-        orderHistoryRepository.deleteAll();                   // [RED] método não existe
+        orderHistoryRepository.deleteAll();
     }
 
     // =========================================================================

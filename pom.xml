@@ -112,8 +112,6 @@
                             <exclude>com/vibranium/**/config/**</exclude>
                             <!-- Spring Boot main class -->
                             <exclude>com/vibranium/**/*Application.class</exclude>
-                            <!-- JPA entities: getters/setters gerados pelo Lombok/@Data -->
-                            <exclude>com/vibranium/**/domain/model/**</exclude>
                             <!-- JPA repository interfaces: implementação gerada pelo Spring Data -->
                             <exclude>com/vibranium/**/domain/repository/**</exclude>
                             <!-- DTOs/request/response: classes de transporte sem lógica -->
@@ -123,6 +121,9 @@
                             <exclude>com/vibranium/**/*Exception.class</exclude>
                             <!-- common-contracts: records imutáveis e enums (sem lógica de negócio) -->
                             <exclude>com/vibranium/contracts/**</exclude>
+                            <!-- NOTA: domain/model NÃO é excluído aqui — Order, Wallet possuem
+                                 lógica de negócio (máquina de estados) que deve ser medida e
+                                 ter threshold de cobertura aplicado (US-006, Subtask 6.3). -->
                         </excludes>
                     </configuration>
                     <executions>

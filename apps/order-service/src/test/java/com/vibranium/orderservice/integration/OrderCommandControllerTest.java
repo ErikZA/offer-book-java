@@ -2,9 +2,9 @@ package com.vibranium.orderservice.integration;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vibranium.contracts.enums.OrderType;
-import com.vibranium.orderservice.domain.model.UserRegistry;                  // [RED] não existe
-import com.vibranium.orderservice.domain.repository.UserRegistryRepository;   // [RED] não existe
-import com.vibranium.orderservice.web.dto.PlaceOrderRequest;                  // [RED] não existe
+import com.vibranium.orderservice.domain.model.UserRegistry;
+import com.vibranium.orderservice.domain.repository.UserRegistryRepository;
+import com.vibranium.orderservice.web.dto.PlaceOrderRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.RepeatedTest;
@@ -56,7 +56,7 @@ class OrderCommandControllerTest extends AbstractIntegrationTest {
     private static final String RESERVE_FUNDS_QUEUE = "wallet.commands.reserve-funds";
 
     @Autowired
-    private UserRegistryRepository userRegistryRepository; // [RED]
+    private UserRegistryRepository userRegistryRepository;
 
     @Autowired
     private ObjectMapper objectMapper;
@@ -71,7 +71,6 @@ class OrderCommandControllerTest extends AbstractIntegrationTest {
         walletId = UUID.randomUUID();
 
         userRegistryRepository.deleteAll();
-        // [RED] UserRegistry é a entidade que será criada na Fase GREEN
         UserRegistry userRegistry = new UserRegistry(registeredUserId.toString());
         userRegistryRepository.save(userRegistry);
 

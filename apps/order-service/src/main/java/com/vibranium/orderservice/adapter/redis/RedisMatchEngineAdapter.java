@@ -174,8 +174,12 @@ public class RedisMatchEngineAdapter {
      *
      * <p>Redis devolve os elementos como {@code byte[]} ou {@code String},
      * dependendo do serializer. Cobrimos os dois casos.</p>
+     *
+     * <p><strong>Visibilidade package-private</strong> intencional: permite testes
+     * unitários diretos em {@code RedisMatchEngineAdapterParseResultTest} sem
+     * necessidade de mock de {@code StringRedisTemplate}.</p>
      */
-    private static MatchResult parseResult(List<Object> result) {
+    static MatchResult parseResult(List<Object> result) {
         if (result == null || result.isEmpty()) {
             return MatchResult.noMatch();
         }

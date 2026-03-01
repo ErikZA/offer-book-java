@@ -56,7 +56,7 @@ class OrderSagaConcurrencyTest extends AbstractIntegrationTest {
     private static final String FUNDS_RESERVATION_FAILED_RK  = "wallet.events.funds-reservation-failed";
 
     @Autowired
-    private OrderRepository orderRepository; // [RED]
+    private OrderRepository orderRepository;
 
     @BeforeEach
     void cleanup() {
@@ -80,7 +80,6 @@ class OrderSagaConcurrencyTest extends AbstractIntegrationTest {
         UUID correlId    = UUID.randomUUID();
         UUID userId      = UUID.randomUUID();
 
-        // [RED] Order ainda não existe — será criada na Fase GREEN
         Order order = Order.create(
                 orderId, correlId, userId.toString(), walletId,
                 OrderType.BUY, new BigDecimal("500.00"), new BigDecimal("10.00")
