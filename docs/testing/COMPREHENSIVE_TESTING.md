@@ -1377,6 +1377,48 @@ jobs:
 
 ## Testes de CDC — Debezium Outbox
 
+Esta seção cobre dois padrões complementares do Outbox Pattern no `order-service`:
+
+### AT-01.1 — Refatoração de Transacionalidade (Eliminação de Dual Write)
+
+O `OrderCommandServiceTest` valida, em camada unitária pura (Mockito, sem containers), que
+`placeOrder()` persiste **duas entradas atomicamente** em `tb_order_outbox` dentro da mesma
+`@Transactional`, eliminando o anti-pattern de `Thread.ofVirtual()` + `RabbitTemplate` fora da transação:
+
+| Cenário | Resultado esperado |
+|---------|-------------------|
+| Happy path BUY/SELL | `orderRepository.save` × 1, `outboxRepository.save` × 2 |
+| Jackson falha no `ReserveFundsCommand` | `IllegalStateException`, nenhum `outboxRepository.save` |
+| Jackson falha no `OrderReceivedEvent` | `IllegalStateException`, `outboxRepository.save` × 1 (antes da falha) |
+| Construtor sem `RabbitTemplate` | Instanciável com 4 parâmetros; `parameterCount == 4` por reflexão |
+| `keycloakId` não registrado | `UserNotRegisteredException`, nenhum save |
+
+Schema das duas entradas no outbox (conforme [Debezium Outbox Event Router](https://debezium.io/documentation/reference/3.5/transformations/outbox-event-router)):
+
+```
+aggregate_type = "Order"
+aggregate_id   = orderId
+event_type     = "ReserveFundsCommand"  |  "OrderReceivedEvent"
+exchange       = vibranium.commands     |  vibranium.events
+routing_key    = wallet.commands.reserve-funds  |  order.events.order-received
+payload        = JSON serializado do comando/evento
+```
+
+### Outbox Publisher — Relay por Scheduler
+
+O `OrderOutboxIntegrationTest` (Testcontainers — PostgreSQL + RabbitMQ) valida o relay pelo
+`OrderOutboxPublisherService` (`@Scheduled`). Após a refatoração AT-01.1, cada `placeOrder()`
+gera **2 entradas** no outbox, e os testes de integração foram atualizados para refletir isso:
+
+```java
+// placeOrder() único → 2 mensagens no outbox
+assertThat(outboxRepository.findAll()).hasSize(2);
+assertThat(eventTypes).containsExactlyInAnyOrder("ReserveFundsCommand", "OrderReceivedEvent");
+
+// 2 usuários distintos → 4 mensagens no outbox
+assertThat(outboxRepository.findAll()).hasSize(4);
+```
+
 O `OutboxPublisherIntegrationTest` valida o caminho completo do evento desde a inserção na tabela `outbox_message` até a chegada na fila RabbitMQ via Debezium CDC. Esta seção documenta os padrões e armadilhas encontrados.
 
 ### Por que um contexto Spring separado
@@ -1871,9 +1913,10 @@ Os setters foram removidos (US-005). Além disso, usar `reserveFunds()` no setup
 ---
 
 **Status**: ✅ Consolidado e Completo  
-**Última atualização**: 28 de fevereiro de 2026
+**Última atualização**: 1 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-01.1**: Refatoração de Transacionalidade — eliminação do Dual Write (`Thread.ofVirtual` + `RabbitTemplate`) em `OrderCommandService.placeOrder()`. `OrderReceivedEvent` agora persiste via Outbox na mesma transação. Adicionado `OrderCommandServiceTest` (6 testes unitários TDD) e atualizado `OrderOutboxIntegrationTest` (2 entradas por `placeOrder`).
 > - **US-005**: Adicionada seção 16 — Invariantes de Domínio Wallet (encapsulamento de agregado, remoção de setters, `applyBuySettlement`, `applySellSettlement`, `@Version`)
 > - **US-005**: Documentados 4 padrões de teste unitário de domínio puro (`WalletDomainTest`) e padrão de setup de integração sem setters
 > - Adicionada hierarquia `AbstractMongoIntegrationTest` (Query Side) separada de `AbstractIntegrationTest` (Command Side) — US-003

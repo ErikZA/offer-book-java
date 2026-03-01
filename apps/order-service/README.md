@@ -8,7 +8,9 @@ Implementa CQRS com PostgreSQL no Command Side (escrita) e MongoDB no Query Side
 ### Command Side
 - ✅ Aceitar ordens (`POST /api/v1/orders`) com autenticação JWT (Keycloak)
 - ✅ Verificar registro local do usuário (`tb_user_registry`) antes de aceitar a ordem
-- ✅ Persistir a ordem em estado `PENDING` e publicar `ReserveFundsCommand` no RabbitMQ
+- ✅ Persistir a ordem em estado `PENDING` e gravar `ReserveFundsCommand` **e** `OrderReceivedEvent`
+  em `tb_order_outbox` dentro da **mesma transação** (Outbox Pattern — AT-01.1)
+- ✅ `OrderOutboxPublisherService` (scheduler) faz o relay atômico para o RabbitMQ de forma eventual
 - ✅ Consumir eventos `FundsReservedEvent` / `FundsReservationFailedEvent` do wallet-service
 - ✅ Executar o Motor de Match atômico via Script Lua no Redis Sorted Set
 - ✅ Consumir eventos `REGISTER` do Keycloak (plugin aznamier) via `amq.topic` e popular `tb_user_registry`
@@ -89,8 +91,8 @@ src/main/java/com/vibranium/orderservice/
 
 | Fila / Exchange               | Exchange              | Routing Key                        | Propósito                 |
 |-------------------------------|-----------------------|------------------------------------|---------------------------|
-| `wallet.commands.reserve-funds` | `vibranium.commands`  | `wallet.commands.reserve-funds`  | Saga: reserva de fundos   |
-| — (event)                     | `vibranium.events`    | `order.events.order-received`      | Projeção Read Model       |
+| `wallet.commands.reserve-funds` | `vibranium.commands`  | `wallet.commands.reserve-funds`  | Saga: reserva de fundos (via outbox)   |
+| — (event)                     | `vibranium.events`    | `order.events.order-received`      | Projeção Read Model (via outbox — AT-01.1) |
 
 ### Filas de projeção (Query Side — US-003)
 
@@ -132,19 +134,32 @@ spring.rabbitmq.listener.simple:
 POST /api/v1/orders
    → verifica tb_user_registry (403 se ausente)
    → persiste Order{PENDING} em tb_orders (PostgreSQL)
-   → publica ReserveFundsCommand em wallet.commands.reserve-funds
-   → publica OrderReceivedEvent em vibranium.events (Virtual Thread — não bloqueia a tx)
-      │                                                        │
-      │    (Command Side)                                      │ (Query Side — MongoDB)
-      ↓                                               ┌────────┘
-   wallet-service                             OrderEventProjectionConsumer
-      ├── Fundos OK → FundsReservedEvent      │  onOrderReceived   → OrderDocument{PENDING}
-      │      → FundsReservedEventConsumer     │  onFundsReserved   → status → OPEN
-      │            → Lua no Redis             │  onMatchExecuted   → FILLED ou PARTIAL
-      │                ├── match → FILLED     │  onOrderCancelled  → status → CANCELLED
-      │                └── no match → OPEN   │
-      └── Insuficiente → FundsReservationFailed
-             → FundsReservationFailedEventConsumer → Order{CANCELLED}
+   ╔══════════════════════════════════════════════════════╗
+   ║  MESMA TRANSAÇÃO @Transactional — Outbox Pattern     ║
+   ║  (AT-01.1: elimina Dual Write / Virtual Thread)      ║
+   ║  → INSERT tb_order_outbox: ReserveFundsCommand       ║
+   ║  → INSERT tb_order_outbox: OrderReceivedEvent        ║
+   ╚══════════════════════════════════════════════════════╝
+       ↓ (scheduler OrderOutboxPublisherService — relay assíncrono)
+   RabbitMQ
+      ├── wallet.commands.reserve-funds (ReserveFundsCommand)
+      │       ↓
+      │   wallet-service
+      │      ├── Fundos OK → FundsReservedEvent
+      │      │      → FundsReservedEventConsumer
+      │      │            → Lua no Redis
+      │      │                ├── match → FILLED
+      │      │                └── no match → OPEN
+      │      └── Insuficiente → FundsReservationFailed
+      │             → FundsReservationFailedEventConsumer → Order{CANCELLED}
+      │
+      └── vibranium.events / order.events.order-received (OrderReceivedEvent)
+              ↓ (Query Side — MongoDB)
+          OrderEventProjectionConsumer
+             onOrderReceived   → OrderDocument{PENDING}
+             onFundsReserved   → status → OPEN
+             onMatchExecuted   → FILLED ou PARTIAL
+             onOrderCancelled  → status → CANCELLED
 
 GET /api/v1/orders          → OrderQueryController → MongoDB (Read Model — consistência eventual)
 GET /api/v1/orders/{id}     → OrderQueryController → MongoDB (history[] completo)

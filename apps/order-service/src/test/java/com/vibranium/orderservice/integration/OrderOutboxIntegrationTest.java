@@ -69,7 +69,7 @@ class OrderOutboxIntegrationTest extends AbstractIntegrationTest {
     // =========================================================================
 
     @Test
-    @DisplayName("placeOrder() deve persistir ReserveFundsCommand na tabela outbox dentro da mesma transação")
+    @DisplayName("placeOrder() deve persistir ReserveFundsCommand E OrderReceivedEvent na tabela outbox (AT-01.1)")
     void placeOrder_shouldPersistCommandInOutboxWithinSameTransaction() throws Exception {
         // Act — realiza a chamada REST de colocação de ordem
         mockMvc.perform(post("/api/v1/orders")
@@ -78,13 +78,20 @@ class OrderOutboxIntegrationTest extends AbstractIntegrationTest {
                         .with(jwt().jwt(j -> j.subject(keycloakId))))
                 .andExpect(status().isAccepted());
 
-        // Assert — exatamente 1 mensagem não publicada no outbox
-        assertThat(outboxRepository.findAll()).hasSize(1);
+        // Assert — exatamente 2 mensagens (ReserveFundsCommand + OrderReceivedEvent)
+        // AT-01.1: OrderReceivedEvent agora persiste via Outbox, eliminando o Dual Write
+        var messages = outboxRepository.findAll();
+        assertThat(messages).hasSize(2);
 
-        var outboxMessage = outboxRepository.findAll().get(0);
-        assertThat(outboxMessage.getPublishedAt()).isNull();            // ainda não enviado
-        assertThat(outboxMessage.getEventType()).isEqualTo("ReserveFundsCommand");
-        assertThat(outboxMessage.getAggregateType()).isEqualTo("Order");
+        var eventTypes = messages.stream()
+                .map(m -> m.getEventType())
+                .toList();
+        assertThat(eventTypes)
+                .containsExactlyInAnyOrder("ReserveFundsCommand", "OrderReceivedEvent");
+
+        // Ambas com published_at=null (pendentes para o scheduler)
+        assertThat(messages).allMatch(m -> m.getPublishedAt() == null);
+        assertThat(messages).allMatch(m -> m.getAggregateType().equals("Order"));
     }
 
     @Test
@@ -121,15 +128,16 @@ class OrderOutboxIntegrationTest extends AbstractIntegrationTest {
                         .with(jwt().jwt(j -> j.subject(keycloakId))))
                 .andExpect(status().isAccepted());
 
-        // Assert — aguarda o scheduler publicar (max 15s para cobrir o fixedDelay padrão)
+        // Assert — aguarda o scheduler publicar ambas as mensagens (max 15s para cobrir o fixedDelay padrão)
+        // AT-01.1: cada placeOrder gera 2 entradas (ReserveFundsCommand + OrderReceivedEvent)
         await()
                 .atMost(15, TimeUnit.SECONDS)
                 .pollInterval(500, TimeUnit.MILLISECONDS)
                 .untilAsserted(() -> {
                     var messages = outboxRepository.findAll();
-                    assertThat(messages).hasSize(1);
-                    // published_at deve estar preenchido após o relay
-                    assertThat(messages.get(0).getPublishedAt()).isNotNull();
+                    assertThat(messages).hasSize(2);
+                    // Todas as mensagens devem ter published_at preenchido após o relay
+                    assertThat(messages).allMatch(m -> m.getPublishedAt() != null);
                 });
     }
 
@@ -154,8 +162,14 @@ class OrderOutboxIntegrationTest extends AbstractIntegrationTest {
                         .with(jwt().jwt(j -> j.subject(keycloakId2))))
                 .andExpect(status().isAccepted());
 
-        // Assert — 2 mensagens no outbox
-        assertThat(outboxRepository.findAll()).hasSize(2);
+        // Assert — 4 mensagens no outbox (2 ordens × 2 mensagens cada: ReserveFundsCommand + OrderReceivedEvent)
+        // AT-01.1: cada placeOrder persiste atomicamente ReserveFundsCommand + OrderReceivedEvent
+        var messages = outboxRepository.findAll();
+        assertThat(messages).hasSize(4);
+        assertThat(messages.stream().filter(m -> m.getEventType().equals("ReserveFundsCommand")).count())
+                .isEqualTo(2);
+        assertThat(messages.stream().filter(m -> m.getEventType().equals("OrderReceivedEvent")).count())
+                .isEqualTo(2);
     }
 
     // =========================================================================
