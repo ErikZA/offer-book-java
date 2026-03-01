@@ -18,22 +18,41 @@ Microsserviço responsável pela gestão de carteiras de usuários e transaçõe
 src/
 ├── main/
 │   ├── java/com/vibranium/walletservice/
-│   │   ├── WalletServiceApplication.java     # Aplicação principal
-│   │   ├── controller/WalletController.java  # Endpoints REST
+│   │   ├── WalletServiceApplication.java
+│   │   ├── WalletController.java                         # Endpoints REST
+│   │   ├── application/
+│   │   │   ├── dto/                                      # WalletResponse, KeycloakEventDto
+│   │   │   └── service/WalletService.java                # Orquestra casos de uso
 │   │   ├── domain/
-│   │   │   ├── Wallet.java                   # Entidade
-│   │   │   └── WalletTransaction.java        # Transação
-│   │   ├── listener/OrderEventListener.java  # Consome eventos
-│   │   ├── service/WalletService.java        # Lógica de negócio
-│   │   └── repository/...                    # Persistência
+│   │   │   ├── model/
+│   │   │   │   ├── Wallet.java                           # Aggregate Root (US-005)
+│   │   │   │   ├── OutboxMessage.java
+│   │   │   │   └── IdempotencyKey.java
+│   │   │   └── repository/                               # Interfaces JPA
+│   │   ├── infrastructure/
+│   │   │   ├── messaging/                                # Listeners RabbitMQ
+│   │   │   └── outbox/                                   # Debezium + OutboxPublisher
+│   │   ├── config/                                       # RabbitMQ, Outbox, Jackson
+│   │   └── exception/                                    # InsufficientFundsException, etc.
 │   └── resources/
-│       └── application.yaml                  # Configurações
+│       ├── application.yaml
+│       └── db/migration/                                 # V1…V4 (Flyway)
 └── test/
-    └── java/.../WalletServiceApplicationTest.java  # Testes
+    ├── java/com/vibranium/walletservice/
+    │   ├── unit/
+    │   │   ├── WalletDomainTest.java                     # Testes de domínio puro (US-005)
+    │   │   └── EventRouteTest.java
+    │   └── integration/
+    │       ├── WalletReserveFundsIntegrationTest.java
+    │       ├── WalletSettleFundsIntegrationTest.java
+    │       ├── WalletIdempotencyIntegrationTest.java
+    │       ├── WalletBalanceUpdateIntegrationTest.java
+    │       └── OutboxPublisherIntegrationTest.java
+    └── resources/application-test.yaml
 
 docker/
 ├── Dockerfile                # Build production
-└── Dockerfile.dev           # Build desenvolvimento
+└── Dockerfile.dev            # Build desenvolvimento
 ```
 
 ## 🚀 Desenvolvimento
@@ -125,9 +144,45 @@ public void onUserRegistered(KeycloakEvent event) {
 ```
 
 ### Eventos Publicados
-- `WalletCreditedEvent` - Quando crédito é realizado
-- `WalletDebitedEvent` - Quando débito é realizado
-- `InsufficientFundsEvent` - Quando não há fundos
+- `WalletCreatedEvent` — carteira criada via onboarding Keycloak
+- `FundsReservedEvent` — reserva de saldo bem-sucedida
+- `FundsReservationFailedEvent` — saldo insuficiente para reserva
+- `FundsSettledEvent` — liquidação pós-match executada com sucesso
+- `FundsSettlementFailedEvent` — erro na liquidação (carteira não encontrada ou saldo insuficiente)
+
+---
+
+## 🧩 Domínio — Agregado `Wallet`
+
+O `Wallet` é o **Aggregate Root** do contexto de carteira. Toda mutação de saldo deve ocorrer exclusivamente via seus métodos de comportamento — setters públicos de saldo foram removidos (US-005).
+
+### Métodos de domínio
+
+| Método | Descrição | Lança se violado |
+|--------|-----------|-----------------|
+| `reserveFunds(AssetType, amount)` | Move `amount` de `available` → `locked` | `InsufficientFundsException` |
+| `applyBuySettlement(brl, vib)` | Liquida comprador: libera `brlLocked`, credita `vibAvailable` | `InsufficientFundsException` |
+| `applySellSettlement(vib, brl)` | Liquida vendedor: libera `vibLocked`, credita `brlAvailable` | `InsufficientFundsException` |
+| `adjustBalance(brlDelta, vibDelta)` | Ajuste administrativo via delta (crédito/débito) | `InsufficientFundsException` |
+
+### Invariantes
+
+```
+- Nenhum saldo pode ser negativo
+- Locked nunca pode exceder o available anterior à reserva
+- Toda operação preserva consistência interna
+- Wallet é aggregate root e controla seu próprio estado
+- Optimistic locking via @Version (coluna: version — migration V4)
+```
+
+### Schema Flyway
+
+| Migration | Descrição |
+|-----------|-----------|
+| `V1__create_wallet.sql` | Tabela `tb_wallet` com constraints CHECK de saldo ≥ 0 |
+| `V2__create_outbox.sql` | Tabela `outbox_message` para Transactional Outbox |
+| `V3__create_idempotency_key.sql` | Tabela `idempotency_key` para deduplicação de mensagens |
+| `V4__add_wallet_version.sql` | Coluna `version BIGINT` para optimistic locking (US-005) |
 
 ## 📦 Dependências
 

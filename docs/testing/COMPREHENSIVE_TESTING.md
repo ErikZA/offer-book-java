@@ -17,7 +17,8 @@
 13. [Troubleshooting](#troubleshooting)
 14. [Testes de CDC — Debezium Outbox](#testes-de-cdc--debezium-outbox)
 15. [Partial Fill — Requeue Atômico e Idempotência por eventId (US-002)](#partial-fill--requeue-atômico-e-idempotência-por-eventid-us-002)
-16. [Referências](#referências)
+16. [Invariantes de Domínio Wallet — Encapsulamento de Agregado (US-005)](#invariantes-de-domínio-wallet--encapsulamento-de-agregado-us-005)
+17. [Referências](#referências)
 
 ---
 
@@ -1672,6 +1673,192 @@ sequencialmente e use o `await()` do `FILLED` como barreira implícita.
 
 ---
 
+## Invariantes de Domínio Wallet — Encapsulamento de Agregado (US-005)
+
+Esta seção documenta os padrões de teste para a US-005: **encapsulamento das invariantes de negócio no agregado `Wallet`** — eliminando setters públicos e garantindo que toda mutação de saldo passe pelos métodos de domínio.
+
+### Contexto do problema
+
+Antes da US-005, `WalletService.settleFunds()` manipulava saldos diretamente via setters:
+
+```java
+// ❌ Anti-padrão: qualquer camada pode bypassar as regras de negócio
+buyer.setBrlLocked(buyer.getBrlLocked().subtract(totalBrl));
+buyer.setVibAvailable(buyer.getVibAvailable().add(cmd.matchAmount()));
+```
+
+Isso permitia que código fora do domínio contornasse as invariantes (ex: saldo negativo).
+
+### Solução: métodos de comportamento no agregado
+
+```java
+// ✅ Correto: o agregado valida suas próprias pré-condições
+buyer.applyBuySettlement(totalBrl, cmd.matchAmount());   // lança InsufficientFundsException se brlLocked < totalBrl
+seller.applySellSettlement(cmd.matchAmount(), totalBrl); // lança InsufficientFundsException se vibLocked < amount
+```
+
+### Invariantes declaradas em `Wallet`
+
+```
+- Nenhum saldo pode ser negativo
+- Locked nunca pode exceder o available anterior à reserva
+- Toda operação deve preservar consistência interna
+- Wallet é aggregate root e controla seu próprio estado
+- Wallet utiliza optimistic locking via @Version
+```
+
+---
+
+### Padrão: teste unitário de domínio puro (sem Spring)
+
+Testes em `WalletDomainTest` validam o agregado de forma isolada — sem container, sem banco — seguindo o ciclo TDD RED → GREEN.
+
+```java
+@DisplayName("WalletDomain — Invariantes do agregado Wallet")
+class WalletDomainTest {
+
+    // Helper: cria estado pós-reserva usando o próprio domínio (sem setter)
+    private Wallet walletWithBrlLocked(BigDecimal brlLocked) {
+        Wallet w = Wallet.create(UUID.randomUUID(), brlLocked, BigDecimal.ZERO);
+        w.reserveFunds(AssetType.BRL, brlLocked);
+        return w;
+    }
+
+    @Test
+    @DisplayName("reserveFunds: com saldo suficiente reduz available e aumenta locked")
+    void reserveFunds_withSufficientBalance_reducesAvailableAndIncreasesLocked() {
+        Wallet wallet = Wallet.create(UUID.randomUUID(), new BigDecimal("500.00"), BigDecimal.ZERO);
+
+        wallet.reserveFunds(AssetType.BRL, new BigDecimal("150.00"));
+
+        assertThat(wallet.getBrlAvailable()).isEqualByComparingTo("350.00");
+        assertThat(wallet.getBrlLocked()).isEqualByComparingTo("150.00");
+    }
+
+    @Test
+    @DisplayName("reserveFunds: com saldo insuficiente lança exceção e não altera estado")
+    void reserveFunds_withInsufficientBalance_throwsInsufficientFundsException() {
+        Wallet wallet = Wallet.create(UUID.randomUUID(), new BigDecimal("100.00"), BigDecimal.ZERO);
+
+        assertThatThrownBy(() -> wallet.reserveFunds(AssetType.BRL, new BigDecimal("200.00")))
+                .isInstanceOf(InsufficientFundsException.class)
+                .hasMessageContaining("saldo BRL insuficiente");
+
+        // Invariante: estado não é modificado após exceção
+        assertThat(wallet.getBrlAvailable()).isEqualByComparingTo("100.00");
+        assertThat(wallet.getBrlLocked()).isEqualByComparingTo(BigDecimal.ZERO);
+    }
+}
+```
+
+**Por que usar factory helper em vez de setters no teste?**
+Com os setters removidos, a única forma de construir um estado pré-reserva é chamar `reserveFunds()` — o que é semanticamente correto e garante que o próprio teste respeite as invariantes do agregado.
+
+---
+
+### Padrão: `applyBuySettlement` — liquidação do comprador
+
+```java
+@Test
+@DisplayName("applyBuySettlement: com BRL locked válido transfere corretamente")
+void applyBuySettlement_withValidLock_transfersCorrectly() {
+    // Arrange — comprador com R$200 bloqueados (via domínio)
+    Wallet buyer = walletWithBrlLocked(new BigDecimal("200.00"));
+
+    // Act — match de 10 VIB a R$20 = R$200 total
+    buyer.applyBuySettlement(new BigDecimal("200.00"), new BigDecimal("10.00"));
+
+    // Assert
+    assertThat(buyer.getBrlLocked()).isEqualByComparingTo("0.00");
+    assertThat(buyer.getVibAvailable()).isEqualByComparingTo("10.00");
+    assertThat(buyer.getBrlAvailable()).isEqualByComparingTo("0.00"); // não muda para comprador
+}
+
+@Test
+@DisplayName("applyBuySettlement: BRL locked insuficiente lança exceção sem alterar estado")
+void applyBuySettlement_withInsufficientLock_throwsException() {
+    Wallet buyer = walletWithBrlLocked(new BigDecimal("50.00"));
+
+    assertThatThrownBy(() -> buyer.applyBuySettlement(new BigDecimal("200.00"), new BigDecimal("10.00")))
+            .isInstanceOf(InsufficientFundsException.class)
+            .hasMessageContaining("BRL locked insuficiente");
+
+    // Estado preservado
+    assertThat(buyer.getBrlLocked()).isEqualByComparingTo("50.00");
+    assertThat(buyer.getVibAvailable()).isEqualByComparingTo("0.00");
+}
+```
+
+---
+
+### Padrão: `applySellSettlement` — liquidação do vendedor
+
+```java
+@Test
+@DisplayName("applySellSettlement: com VIB locked válido transfere corretamente")
+void applySellSettlement_withValidLock_transfersCorrectly() {
+    Wallet seller = walletWithVibLocked(new BigDecimal("10.00"));
+
+    seller.applySellSettlement(new BigDecimal("10.00"), new BigDecimal("200.00"));
+
+    assertThat(seller.getVibLocked()).isEqualByComparingTo("0.00");
+    assertThat(seller.getBrlAvailable()).isEqualByComparingTo("200.00");
+    assertThat(seller.getVibAvailable()).isEqualByComparingTo("0.00"); // não muda para vendedor
+}
+
+@Test
+@DisplayName("applySellSettlement: VIB locked insuficiente lança exceção")
+void applySellSettlement_releasesBelowZero_throwsException() {
+    Wallet seller = walletWithVibLocked(new BigDecimal("5.00"));
+
+    assertThatThrownBy(() -> seller.applySellSettlement(new BigDecimal("10.00"), new BigDecimal("200.00")))
+            .isInstanceOf(InsufficientFundsException.class)
+            .hasMessageContaining("VIB locked insuficiente");
+
+    assertThat(seller.getVibLocked()).isEqualByComparingTo("5.00");
+}
+```
+
+---
+
+### Padrão: setup de integração com domínio (sem setters)
+
+Testes de integração que precisam construir um estado "pós-reserva" devem usar `reserveFunds()`:
+
+```java
+@BeforeEach
+void setupWallets() {
+    // ✅ Cria e reserva via domínio — sem setBrlLocked()
+    buyerWallet = Wallet.create(UUID.randomUUID(), new BigDecimal("200.00"), BigDecimal.ZERO);
+    buyerWallet.reserveFunds(AssetType.BRL, new BigDecimal("200.00"));
+    buyerWallet = walletRepository.save(buyerWallet);
+
+    sellerWallet = Wallet.create(UUID.randomUUID(), BigDecimal.ZERO, new BigDecimal("10"));
+    sellerWallet.reserveFunds(AssetType.VIBRANIUM, new BigDecimal("10"));
+    sellerWallet = walletRepository.save(sellerWallet);
+}
+```
+
+**Por que não usar setters no setup de testes de integração?**
+Os setters foram removidos (US-005). Além disso, usar `reserveFunds()` no setup cria um estado que reflete o ciclo real da Saga (a reserva sempre precede o settlement), tornando os testes mais fiéis ao cenário de produção.
+
+---
+
+### Artefatos gerados pela US-005
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `WalletDomainTest` | Novo | 6 testes unitários de domínio puro (sem Spring) |
+| `Wallet.applyBuySettlement()` | Novo | Liquida trade do lado comprador com validação |
+| `Wallet.applySellSettlement()` | Novo | Liquida trade do lado vendedor com validação |
+| `Wallet.@Version` | Novo | Optimistic locking JPA |
+| `V4__add_wallet_version.sql` | Novo | Flyway migration para coluna `version` |
+| `WalletService.settleFunds()` | Refatorado | Substituídos 5 setter/validações por 2 chamadas de domínio |
+| `WalletSettleFundsIntegrationTest` | Refatorado | Setup usa `reserveFunds()` em vez de setters removidos |
+| Setters `setBrlLocked` etc. | Removido | 4 setters públicos de saldo eliminados |
+
+---
+
 ## Referências
 
 - [JUnit 5 Documentation](https://junit.org/junit5/docs/current/user-guide/)
@@ -1687,6 +1874,8 @@ sequencialmente e use o `await()` do `FILLED` como barreira implícita.
 **Última atualização**: 28 de fevereiro de 2026
 
 > **Mudanças recentes:**
+> - **US-005**: Adicionada seção 16 — Invariantes de Domínio Wallet (encapsulamento de agregado, remoção de setters, `applyBuySettlement`, `applySellSettlement`, `@Version`)
+> - **US-005**: Documentados 4 padrões de teste unitário de domínio puro (`WalletDomainTest`) e padrão de setup de integração sem setters
 > - Adicionada hierarquia `AbstractMongoIntegrationTest` (Query Side) separada de `AbstractIntegrationTest` (Command Side) — US-003
 > - Documentado problema de SLA com 4 containers e solução via isolamento de hierarquia
 > - Adicionada seção sobre `@ConditionalOnProperty` para beans MongoDB condicionais
