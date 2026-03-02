@@ -20,7 +20,8 @@
 16. [Invariantes de Domínio Wallet — Encapsulamento de Agregado (US-005)](#invariantes-de-domínio-wallet--encapsulamento-de-agregado-us-005)
 17. [Criação Lazy Determinística de OrderDocument (AT-05.1)](#criação-lazy-determinística-de-orderdocument-at-051)
 18. [Idempotência Atômica com MongoTemplate (AT-05.2)](#idempotência-atômica-com-mongotemplate-at-052)
-19. [Referências](#referências)
+19. [Índice MongoDB history.eventId com sparse (AT-06.1)](#índice-mongodb-historyeventid-com-sparse-at-061)
+20. [Referências](#referências)
 
 ---
 
@@ -2291,13 +2292,16 @@ O `baseUpdate()` aplica `$push history` e `$set updatedAt` — nenhuma leitura p
 
 ### Índice `idx_history_eventId`
 
-Sem índice, o filtro `"history.eventId": {$ne: eventId}` percorre o array inteiro a cada operação — **O(n)** onde n é o tamanho do histórico. O índice multikey criado em `MongoIndexConfig` resolve isso para **O(log n)**:
+Sem índice, o filtro `"history.eventId": {$ne: eventId}` percorre o array inteiro a cada operação — **O(n)** onde n é o tamanho do histórico. O índice multikey criado em `MongoIndexConfig` resolve isso para **O(log n)**.
+
+O índice é **sparse** (AT-06.1): documentos com `history[]` vazia não produzem entrada no índice, o que evita que 100% dos `OrderDocument` recém-criados inflem o B-tree com chaves nulas.
 
 ```java
-// MongoIndexConfig — AT-05.2
+// MongoIndexConfig — AT-06.1 (sparse adicionado; AT-05.2 criou a base)
 indexOps.ensureIndex(
     new Index("history.eventId", Sort.Direction.ASC)
         .named("idx_history_eventId")
+        .sparse()   // exclui docs com history[] vazia do índice
 );
 ```
 
@@ -2347,9 +2351,66 @@ assertThat(result.getHistory())
 | Artefato | Tipo | Descrição |
 |---|---|---|
 | `OrderAtomicHistoryWriter` | Novo | `@Service` encapsulando todas as escritas atômicas no Read Model |
-| `MongoIndexConfig` | Modificado | Adicionado `idx_history_eventId` para filtro de idempotência eficiente |
+| `MongoIndexConfig` | Modificado | Adicionado `idx_history_eventId` para filtro de idempotência eficiente (AT-05.2); `.sparse()` adicionado em AT-06.1 |
 | `OrderEventProjectionConsumer` | Refatorado | `findById+save` → `atomicWriter.*` em todos os handlers de eventos |
 | `OrderAtomicIdempotencyTest` | Novo | TDD RED→GREEN: `TC-ATOMIC-1` (100 lost updates) e `TC-ATOMIC-2` (100 duplicatas) |
+
+---
+
+## Índice MongoDB history.eventId com sparse (AT-06.1)
+
+Esta seção documenta a evolução do índice `idx_history_eventId` introduzido em AT-05.2, com a adição da propriedade `sparse: true` como parte do AT-06.1 — preparação para deduplicação atômica em AT-06.2.
+
+### Problema
+
+Todo `OrderDocument` nasce com `history = new ArrayList<>()`. Sem `sparse`, o MongoDB indexa o campo `history.eventId` como nulo para cada documento recém-criado, inflando o índice com entradas desnecessárias e aumentando o custo de write.
+
+### Solução: sparse multikey index
+
+| Propriedade | Valor | Efeito |
+|---|---|---|
+| Campo | `history.eventId` | Índice multikey sobre array |
+| Direção | `ASC (1)` | Compatível com filtro `$ne` e range queries |
+| `sparse` | `true` | Exclui docs sem `history.eventId` do índice |
+| Nome | `idx_history_eventId` | Identificação idempotente no `ensureIndex` |
+
+### Idempotência de criação
+
+`ensureIndex()` no MongoDB 7+ é no-op se o índice já existir com a mesma definição. Um restart da aplicação não cria índice duplicado nem lança exceção.
+
+### Testes: `MongoIndexConfigIntegrationTest`
+
+Arquivo: `apps/order-service/src/test/java/.../integration/MongoIndexConfigIntegrationTest.java`
+
+| Teste | `@DisplayName` | Cenário | Fase |
+|---|---|---|---|
+| `TC-IDX-1` | índice deve existir após startup | `getIndexInfo()` retorna `idx_history_eventId` | RED sem índice, GREEN com |
+| `TC-IDX-2` | índice deve ter `sparse=true` | `IndexInfo.isSparse()` | **RED** sem `.sparse()`, GREEN com |
+| `TC-IDX-3` | índice deve ser ASC | `IndexField.getDirection() == ASC` | GREEN após criação |
+| `TC-IDX-4` | `ensureIndex` duas vezes = idempotente | segunda chamada não duplica nem lança exceção | GREEN |
+| `TC-IDX-5` | query com 1000 entradas < 50ms | `findById` com histórico de 1000 items | GREEN com índice |
+
+### Preparação para AT-06.2
+
+O índice multikey + sparse habilita a deduplicação atômica que AT-06.2 implementará:
+
+```java
+// AT-06.2 (próxima atividade): substituirá appendHistory() + save() por:
+mongoTemplate.updateFirst(
+    Query.query(Criteria.where("_id").is(orderId)
+                       .and("history.eventId").ne(eventId)),
+    new Update().push("history", entry).set("updatedAt", Instant.now()),
+    OrderDocument.class
+);
+// O índice multikey em history.eventId torna o filtro $ne O(log n) em vez de O(n).
+```
+
+### Artefatos gerados pelo AT-06.1
+
+| Artefato | Tipo | Descrição |
+|---|---|---------|
+| `MongoIndexConfig` | Modificado | `.sparse()` adicionado ao `ensureIndex` de `idx_history_eventId` |
+| `MongoIndexConfigIntegrationTest` | Novo | 5 testes TDD: TC-IDX-1 a TC-IDX-5 (existência, sparse, ASC, idempotência, performance) |
 
 ---
 
@@ -2365,9 +2426,10 @@ assertThat(result.getHistory())
 ---
 
 **Status**: ✅ Consolidado e Completo  
-**Última atualização**: 1 de março de 2026
+**Última atualização**: 2 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-06.1**: Índice MongoDB `history.eventId` com `sparse: true` — evolução do `idx_history_eventId` criado em AT-05.2. Propriedade `sparse` adicionada em `MongoIndexConfig` para excluir `OrderDocument`s com `history[]` vazia do índice, reduzindo footprint e custo de write. Novo `MongoIndexConfigIntegrationTest` com 5 testes TDD (TC-IDX-1 a TC-IDX-5): existência do índice, propriedade sparse, direção ASC, idempotência de `ensureIndex` e performance < 50ms com 1000 entradas. Prepara AT-06.2 (deduplicação atômica via `updateFirst` + filtro `$ne`).
 > - **AT-02.2**: Routing Key Literal Guard — eliminadas todas as strings literais de routing key fora de `RabbitMQConfig`. Adicionado `RoutingKeyLiteralTest` (guarda arquitetural estático). 5 arquivos refatorados. Adicionada seção 18 neste guia.
 > - **AT-05.2**: Idempotência Atômica com MongoTemplate — eliminação do Lost Update em `OrderEventProjectionConsumer`. `findById+appendHistory+save` substituídos por `$push/$setOnInsert/$inc` via `MongoTemplate`. Novo `OrderAtomicHistoryWriter`, índice `idx_history_eventId` e testes `OrderAtomicIdempotencyTest` (TC-ATOMIC-1, TC-ATOMIC-2) com 100 Virtual Threads concorrentes.
 > - **AT-05.1**: Criação Lazy Determinística de `OrderDocument` — eliminação de `IllegalStateException` e `return` silencioso em `OrderEventProjectionConsumer`. Adicionados `createMinimalPending()` e `enrichFields()` em `OrderDocument`. Novos testes `OrderOutOfOrderEventsIntegrationTest` (TC-LAZY-1, TC-LAZY-2, TC-LAZY-3).

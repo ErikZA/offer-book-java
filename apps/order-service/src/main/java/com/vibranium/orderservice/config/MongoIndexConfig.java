@@ -71,11 +71,11 @@ public class MongoIndexConfig {
      * <ul>
      *   <li>{@code idx_userId_createdAt}: composto {@code {userId: 1, createdAt: -1}} —
      *       suporta a query paginada {@code findByUserIdOrderByCreatedAtDesc} em O(log n).</li>
-     *   <li>{@code idx_history_eventId}: {@code {"history.eventId": 1}} —
-     *       suporta o filtro de idempotência atômica (AT-05.2):
-     *       {@code {"history.eventId": {$ne: eventId}}} em O(log n) em vez de O(n).
-     *       Sem este índice, cada {@code updateFirst} com o filtro {@code $ne} faria
-     *       um scan linear em todos os elementos do array {@code history} para cada write.</li>
+     *   <li>{@code idx_history_eventId}: {@code {"history.eventId": 1, sparse: true}} —
+     *       índice multikey + sparse (AT-06.1). Suporta o filtro de idempotência atômica
+     *       (AT-06.2): {@code {"history.eventId": {$ne: eventId}}} em O(log n) em vez de O(n).
+     *       {@code sparse: true} exclui documentos com {@code history[]} vazia do índice,
+     *       reduzindo tamanho do índice e overhead de write em novas ordens sem histórico.</li>
      * </ul>
      *
      * @param mongoTemplate Template MongoDB auto-configurado pelo Spring Boot.
@@ -105,17 +105,29 @@ public class MongoIndexConfig {
                             .named("idx_userId_createdAt")
             );
 
-            // Índice 2 (AT-05.2): suporta filtro de idempotência atômica
-            // updateFirst({_id: X, "history.eventId": {$ne: eventId}}, {$push: ...})
+            // Índice 2 (AT-06.1): suporta filtro de idempotência atômica e lookup eficiente
+            // no campo de array history.eventId.
+            //
+            // Uso operacional:
+            //   updateFirst({_id: X, "history.eventId": {$ne: eventId}}, {$push: ...})
             // Sem este índice, o filtro $ne em "history.eventId" faz scan O(n) no array
             // para cada write — inaceitável em documentos com histórico extenso.
-            // O índice multikey em array torna o filtro O(log n).
+            // O índice multikey em array torna o filtro O(log n) via B-tree.
+            //
+            // sparse=true: documentos com history[] vazia (todos os OrderDocument recém-criados)
+            // NÃO produzem entrada no índice. Sem sparse, cada novo documento geraria uma
+            // entrada nula no índice, inflando seu tamanho e aumentando latência de write
+            // em ordens que ainda não possuem histórico.
+            // Com sparse, somente documentos com ao menos um history.eventId são indexados.
+            //
+            // Prepara AT-06.2: deduplicação atômica via updateFirst com filtro $ne.
             indexOps.ensureIndex(
                     new Index("history.eventId", Sort.Direction.ASC)
                             .named("idx_history_eventId")
+                            .sparse()
             );
 
-            logger.info("Índices MongoDB para 'orders' prontos: idx_userId_createdAt, idx_history_eventId.");
+            logger.info("Índices MongoDB para 'orders' prontos: idx_userId_createdAt, idx_history_eventId (sparse=true).");
         };
     }
 }
