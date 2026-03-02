@@ -5,6 +5,8 @@ import com.vibranium.orderservice.domain.model.Order;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -51,4 +53,20 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
      * @return Número de ordens no status especificado.
      */
     long countByStatus(OrderStatus status);
+
+    /**
+     * Retorna ordens cujo status é o informado e cujo {@code createdAt} é anterior
+     * ao instante de corte — utilizado pelo {@link com.vibranium.orderservice.application.service.SagaTimeoutCleanupJob}
+     * para identificar ordens presas em {@code PENDING} além do tempo limite da Saga.
+     *
+     * <p>O índice parcial {@code idx_orders_status_created_at} (Flyway V6) suporta
+     * esta query com performance O(log n), evitando full scan em alta carga.</p>
+     *
+     * <p>Spring Data deriva o SQL: {@code WHERE status = ? AND created_at < ?}</p>
+     *
+     * @param status  Status esperado (geralmente {@code OrderStatus.PENDING}).
+     * @param cutoff  Instante de corte: apenas ordens criadas ANTES deste instante são retornadas.
+     * @return Lista de ordens elegíveis para cancelamento por timeout; pode ser vazia, nunca {@code null}.
+     */
+    List<Order> findByStatusAndCreatedAtBefore(OrderStatus status, Instant cutoff);
 }

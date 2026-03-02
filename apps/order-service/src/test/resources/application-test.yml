@@ -79,6 +79,14 @@ app:
             asks: '{vibranium}:asks'
             bids: '{vibranium}:bids'
             order-index: '{vibranium}:order_index'
+    # -----------------------------------------------------------------------
+    # Saga timeout (AT-09.1): delay alto em testes para evitar execução automática
+    # do SagaTimeoutCleanupJob enquanto outros testes de integração estão rodando.
+    # Os testes do job invocam cancelStalePendingOrders() diretamente, sem esperar.
+    # -----------------------------------------------------------------------
+    saga:
+        pending-timeout-minutes: 5
+        cleanup-delay-ms: 3600000  # 1h — efetivamente desabilita execução automática em testes
 
 logging:
     level:
