@@ -36,10 +36,11 @@ app:
             # Slot exclusivo para testes — dropado ao parar o engine
             slot-name: wallet_outbox_test
 
-            # MemoryOffsetBackingStore: sem persistência de offset entre testes
-            # Cada reinício do engine começa do WAL atual (combinado com snapshot.mode=never)
+            # MemoryOffsetBackingStore: sem persistência de offset entre testes.
+            # Cada reinício do engine começa do WAL atual (combinado com snapshot.mode=never).
+            # AT-08.1: testes usam Memory; produção usa JdbcOffsetBackingStore (application.yaml).
+            # Propriedades offset-storage-jdbc-* são ignoradas com MemoryOffsetBackingStore.
             offset-storage: org.apache.kafka.connect.storage.MemoryOffsetBackingStore
-            offset-storage-file: /tmp/wallet-outbox-test-offset.dat
 
             # Dropa o slot ao parar o engine de teste para não acumular slots inativos
             drop-slot-on-stop: true

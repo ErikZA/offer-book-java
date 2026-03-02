@@ -44,6 +44,14 @@ erDiagram
         timestamp processed_at
     }
 
+    WALLET_OUTBOX_OFFSET {
+        string id PK "ID interno do conector Debezium"
+        string offset_key "Chave de partição do offset"
+        bytea offset_val "LSN do WAL serializado (formato Kafka Connect)"
+        timestamp record_insert_ts "Auditoria: timestamp de inserção"
+        serial record_insert_seq "Auditoria: sequência de inserção"
+    }
+
 ```
 
 ---
@@ -81,6 +89,15 @@ Se o RabbitMQ tiver um soluço, ele pode entregar a mensagem de "Match Realizado
 
 * 
 **Como funciona:** Antes de processar qualquer liquidação (adicionar Vibranium e tirar reais), o sistema tenta gravar o `message_id` (o ID único do evento) nesta tabela. Se o banco disser "Erro, essa chave primária já existe", o sistema sabe que já processou essa mensagem e ignora a duplicata. Isso garante a Idempotência!
+
+### 5. `wallet_outbox_offset` (O Bookmark do Debezium — AT-08.1)
+
+Persiste a posição exata do WAL (LSN) lida pelo Debezium Embedded Engine. Criada pela migration `V5__create_wallet_outbox_offset.sql`, substituindo o `FileOffsetBackingStore` que armazenava o offset em `/tmp` (efêmero em containers).
+
+* **Por que é crítica:** Com `/tmp`, um restart do container apagava o offset. O Debezium reconectava ao replication slot sem saber o último LSN processado, podendo reler e republicar eventos já entregues ao RabbitMQ — **duplicatas financeiras inaceitáveis**.
+* **Como funciona:** O `JdbcOffsetBackingStore` lê e escreve o offset como bytes (`BYTEA`) nesta tabela. Por estar no mesmo PostgreSQL que sobrevive ao restart, o Debezium sempre retoma do ponto exato onde parou.
+* **Colunas requeridas pelo Debezium 2.7.x:** `id` (PK do conector), `offset_key` (chave de partição), `offset_val` (LSN binário).
+* **Colunas de auditoria:** `record_insert_ts` (timestamp) e `record_insert_seq` (sequência SERIAL) para diagnóstico operacional.
 
 
 

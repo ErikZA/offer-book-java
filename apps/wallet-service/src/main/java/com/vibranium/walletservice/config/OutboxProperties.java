@@ -12,7 +12,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * Ativado via {@code @EnableConfigurationProperties} na classe de configuração
  * ou via {@code spring.factories}.</p>
  *
- * <p><b>Exemplo de configuração:</b></p>
+ * <p><b>Exemplo de configuração (AT-08.1 — JdbcOffsetBackingStore):</b></p>
  * <pre>
  * app:
  *   outbox:
@@ -25,8 +25,11 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  *       db-user: postgres
  *       db-password: postgres
  *       slot-name: wallet_outbox_slot
- *       offset-storage: org.apache.kafka.connect.storage.FileOffsetBackingStore
- *       offset-storage-file: /tmp/wallet-outbox-offset.dat
+ *       offset-storage: io.debezium.storage.jdbc.offset.JdbcOffsetBackingStore
+ *       offset-storage-jdbc-url: ${SPRING_DATASOURCE_URL}
+ *       offset-storage-jdbc-username: ${SPRING_DATASOURCE_USERNAME}
+ *       offset-storage-jdbc-password: ${SPRING_DATASOURCE_PASSWORD}
+ *       offset-storage-jdbc-table-name: wallet_outbox_offset
  *       drop-slot-on-stop: false
  * </pre>
  */
@@ -87,19 +90,65 @@ public record OutboxProperties(
             @DefaultValue("wallet_outbox_slot") String slotName,
 
             /**
-             * Classe de storage de offsets Debezium.
+             * Classe de storage de offsets do Debezium.
+             *
              * <ul>
-             *   <li>Produção: {@code org.apache.kafka.connect.storage.FileOffsetBackingStore}</li>
-             *   <li>Testes: {@code org.apache.kafka.connect.storage.MemoryOffsetBackingStore}</li>
+             *   <li><b>Produção (AT-08.1):</b>
+             *       {@code io.debezium.storage.jdbc.offset.JdbcOffsetBackingStore} —
+             *       persiste o LSN do WAL na tabela {@code wallet_outbox_offset} do PostgreSQL.
+             *       Garante sobrevivência ao restart do container e continuidade exata do WAL.</li>
+             *   <li><b>Testes:</b>
+             *       {@code org.apache.kafka.connect.storage.MemoryOffsetBackingStore} —
+             *       sem persistência entre testes; cada contexto começa do LSN atual.</li>
              * </ul>
+             *
+             * <p>A antiga opção {@code FileOffsetBackingStore} foi removida em AT-08.1
+             * por armazenar offsets em {@code /tmp} (efêmero em containers Docker),
+             * causando potencial duplicação de eventos após restart.</p>
              */
-            @DefaultValue("org.apache.kafka.connect.storage.FileOffsetBackingStore") String offsetStorage,
+            @DefaultValue("io.debezium.storage.jdbc.offset.JdbcOffsetBackingStore") String offsetStorage,
+
+            // ----------------------------------------------------------------
+            // Propriedades exclusivas do JdbcOffsetBackingStore (AT-08.1)
+            // ----------------------------------------------------------------
 
             /**
-             * Caminho do arquivo de offsets (usado quando {@code offsetStorage} é FileOffsetBackingStore).
-             * Ignorado para MemoryOffsetBackingStore.
+             * URL JDBC para conexão do {@code JdbcOffsetBackingStore} com o banco de dados.
+             * Deve apontar para o mesmo banco da datasource principal do serviço.
+             *
+             * <p>Em produção, referenciar {@code ${SPRING_DATASOURCE_URL}} para reuso
+             * das credenciais já configuradas. Em testes, sobrescrito via
+             * {@code @DynamicPropertySource} com a URL do container Testcontainers.</p>
+             *
+             * <p>Ignorado quando {@code offsetStorage} for {@code MemoryOffsetBackingStore}.</p>
              */
-            @DefaultValue("/tmp/wallet-outbox-offset.dat") String offsetStorageFile,
+            @DefaultValue("jdbc:postgresql://localhost:5432/vibranium_wallet") String offsetStorageJdbcUrl,
+
+            /**
+             * Usuário para a conexão JDBC do {@code JdbcOffsetBackingStore}.
+             * Deve ser o mesmo da datasource principal para evitar configuração duplicada.
+             *
+             * <p>Ignorado quando {@code offsetStorage} for {@code MemoryOffsetBackingStore}.</p>
+             */
+            @DefaultValue("postgres") String offsetStorageJdbcUsername,
+
+            /**
+             * Senha para a conexão JDBC do {@code JdbcOffsetBackingStore}.
+             * Deve ser externalizada via variável de ambiente em produção.
+             *
+             * <p>Ignorado quando {@code offsetStorage} for {@code MemoryOffsetBackingStore}.</p>
+             */
+            @DefaultValue("postgres") String offsetStorageJdbcPassword,
+
+            /**
+             * Nome da tabela onde o {@code JdbcOffsetBackingStore} persiste os offsets.
+             * Criada pela migration Flyway {@code V5__create_wallet_outbox_offset.sql}.
+             *
+             * <p>O Debezium 2.7.x usa a tabela para ler/escrever o LSN confirmado do WAL.
+             * A PRIMARY KEY em {@code id} garante lookup O(1) por ID de conector.
+             * Default alinhado ao schema criado pela migration V5.</p>
+             */
+            @DefaultValue("wallet_outbox_offset") String offsetStorageJdbcTableName,
 
             /**
              * Quando {@code true}, dropa o slot de replicação ao parar o engine.

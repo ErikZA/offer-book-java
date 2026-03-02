@@ -36,7 +36,7 @@ src/
 │   │   └── exception/                                    # InsufficientFundsException, etc.
 │   └── resources/
 │       ├── application.yaml
-│       └── db/migration/                                 # V1…V4 (Flyway)
+│       └── db/migration/                                 # V1…V5 (Flyway)
 └── test/
     ├── java/com/vibranium/walletservice/
     │   ├── unit/
@@ -53,8 +53,9 @@ src/
     │       ├── WalletIdempotencyIntegrationTest.java
     │       ├── WalletBalanceUpdateIntegrationTest.java
     │       ├── OutboxPublisherIntegrationTest.java
-    │       └── ReserveFundsDlqIntegrationTest.java       # AT-07.1 — DLQ routing para reserve-funds
-    └── resources/application-test.yaml
+│       ├── ReserveFundsDlqIntegrationTest.java       # AT-07.1 — DLQ routing para reserve-funds
+│       ├── DebeziumJdbcOffsetMigrationTest.java      # AT-08.1 RED — tabela wallet_outbox_offset
+│       └── DebeziumRestartIdempotencyTest.java       # AT-08.1 RED→GREEN — idempotência pós-restart
 
 docker/
 ├── Dockerfile                # Build production
@@ -229,6 +230,81 @@ restaurada por mapeamento após a aquisição dos locks, sem alterar contratos p
 |--------|------|-------------|
 | `ReserveFundsDlqIntegrationTest` (Teste 1) | Integração (RabbitMQ) | Consulta Management API e valida que `wallet.commands.reserve-funds` possui `x-dead-letter-exchange=vibranium.dlq` e `x-dead-letter-routing-key` configurados |
 | `ReserveFundsDlqIntegrationTest` (Teste 2) | Integração (RabbitMQ) | Simula poison pill via `@MockBean`, verifica que mensagem NACKed não fica na fila principal e aparece em `wallet.commands.reserve-funds.dlq` com header `x-death` |
+
+### Persistência de Offset Debezium — JdbcOffsetBackingStore (AT-08.1)
+
+O `FileOffsetBackingStore` armazenava o offset do WAL em `/tmp/wallet-outbox-offset.dat`, um caminho efêmero em containers Docker. Após restart, o Debezium perdia o LSN confirmado e podia reprocessar eventos já publicados no RabbitMQ (duplicatas).
+
+**Solução — `JdbcOffsetBackingStore`:** o offset é persistido na tabela `wallet_outbox_offset` do próprio PostgreSQL (migration V5). O banco sobrevive ao restart do container, garantindo continuidade exata do WAL.
+
+Benefícios:
+- Offset sobrevive ao restart do container
+- Nenhuma duplicata por perda de offset
+- `FileSchemaHistory` em `/tmp` também eliminado — schema reconstruído do WAL no startup
+- Alinha o sistema com exactly-once semantics (combinado com `claimAndPublish` atômico)
+
+| Classe | Tipo | O que prova |
+|--------|------|-------------|
+| `DebeziumJdbcOffsetMigrationTest` | Integração (RED→GREEN) | Valida existência, estrutura e PK da tabela `wallet_outbox_offset` após migration V5 |
+| `DebeziumRestartIdempotencyTest` | Integração (RED→GREEN) | Confirma que offset persiste no banco e que restart controlado não republica eventos já processados |
+
+---
+
+## ⚠️ Debezium Embedded Limitation
+
+> **O `wallet-service` com Debezium Embedded suporta apenas deployment single-instance.**
+> Escalonar horizontalmente este serviço sem remover o `DebeziumOutboxEngine` causa
+> falha imediata ou WAL bloat no PostgreSQL.
+
+### Por que a limitação existe
+
+O Debezium Embedded cria **um replication slot por instância** no PostgreSQL e não
+possui coordenação distribuída. Com múltiplas instâncias:
+
+| Cenário                          | Resultado                                                                 |
+|----------------------------------|---------------------------------------------------------------------------|
+| Mesmo slot (`APP_OUTBOX_SLOT_NAME` igual) | PostgreSQL rejeita a 2ª conexão: `slot already active` (SQLState 55006) |
+| Slots distintos por instância    | Todas as instâncias recebem os mesmos eventos (fan-out). **WAL bloat:** o banco retém WAL até que *todos* os slots confirmem o LSN. Uma instância lenta pode esgotar o disco. |
+
+### Configuração atual
+
+```yaml
+# application.yaml
+app.outbox.debezium.slot-name: ${APP_OUTBOX_SLOT_NAME:wallet_outbox_slot}
+```
+
+O nome é **fixo por padrão**. Nenhum mecanismo gera automaticamente um sufixo único
+por pod/hostname.
+
+### Caminhos evolutivos para alta disponibilidade
+
+| Fase | Estratégia | Trade-off |
+|------|-----------|-----------|
+| **Imediato** | Single-instance (status quo) | Sem escala horizontal do publisher |
+| **Curto prazo** | Desabilitar Debezium; usar Polling Scheduler com `SELECT FOR UPDATE SKIP LOCKED` | Latência maior (~polling interval); sem WAL bloat |
+| **Médio prazo** | Migrar para Debezium Server dedicado + Kafka | Kafka como dependência; CDC desacoplado da JVM da app |
+
+### Monitoramento de WAL bloat
+
+```sql
+-- Verificar lag de cada replication slot (bytes retidos no WAL)
+SELECT slot_name, active,
+       pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) AS lag_bytes
+FROM pg_replication_slots;
+```
+
+> Slot com `active = false` e `lag_bytes` crescente indica instância travada.
+> Ação: `SELECT pg_drop_replication_slot('wallet_outbox_slot');` (IRREVERSÍVEL — Debezium
+> reiniciará do LSN corrente).
+
+### Documentação arquitetural
+
+Decisão versionada em: [`docs/architecture/adr-001-debezium-single-instance.md`](../../docs/architecture/adr-001-debezium-single-instance.md)
+
+Teste de garantia: [`DebeziumSingleInstanceConstraintTest`](src/test/java/com/vibranium/walletservice/architecture/DebeziumSingleInstanceConstraintTest.java) (AT-08.2)
+
+---
+
 ### Schema Flyway
 
 | Migration | Descrição |
@@ -236,8 +312,7 @@ restaurada por mapeamento após a aquisição dos locks, sem alterar contratos p
 | `V1__create_wallet.sql` | Tabela `tb_wallet` com constraints CHECK de saldo ≥ 0 |
 | `V2__create_outbox.sql` | Tabela `outbox_message` para Transactional Outbox |
 | `V3__create_idempotency_key.sql` | Tabela `idempotency_key` para deduplicação de mensagens |
-| `V4__add_wallet_version.sql` | Coluna `version BIGINT` para optimistic locking (US-005) |
-
+| `V4__add_wallet_version.sql` | Coluna `version BIGINT` para optimistic locking (US-005) || `V5__create_wallet_outbox_offset.sql` | Tabela `wallet_outbox_offset` para `JdbcOffsetBackingStore` (AT-08.1) |
 ## 📦 Dependências
 
 | Biblioteca | Versão | Uso |

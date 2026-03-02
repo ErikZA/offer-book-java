@@ -61,6 +61,38 @@ app:
         batch-size: 100
 
         debezium:
+            # =========================================================================
+            # ⚠️  RESTRIÇÃO ARQUITETURAL — SINGLE-INSTANCE ONLY (ADR-001 / AT-08.2)
+            # =========================================================================
+            # O Debezium Embedded NÃO suporta deployment multi-instance.
+            #
+            # Motivo técnico: o engine cria 1 replication slot por instância no
+            # PostgreSQL e não possui coordenação distribuída (sem leader election,
+            # sem cluster awareness). Com múltiplas instâncias:
+            #
+            #   Cenário A — mesmo slot (padrão):
+            #     PostgreSQL rejeita a 2ª conexão com:
+            #     "ERROR: replication slot wallet_outbox_slot is already active"
+            #     (SQLState 55006). A instância entra em loop de retry.
+            #
+            #   Cenário B — slots distintos por instância (fan-out):
+            #     O PostgreSQL retém o WAL até que TODOS os slots confirmem o LSN.
+            #     Uma instância lenta ou travada causa WAL bloat ilimitado, podendo
+            #     esgotar o disco e derrubar o banco de dados inteiro.
+            #
+            # REGRA: replicas: 1 obrigatório em qualquer orquestrador (Docker Compose,
+            #        Kubernetes Deployment/StatefulSet) enquanto este componente estiver ativo.
+            #
+            # Para escala horizontal, desabilite o Debezium (enabled: false) e use o
+            # Polling Scheduler com SELECT FOR UPDATE SKIP LOCKED, ou migre para
+            # Debezium Server externo + Kafka (ver ADR-001).
+            #
+            # Referências:
+            #   - docs/architecture/adr-001-debezium-single-instance.md
+            #   - DebeziumSingleInstanceConstraintTest (AT-08.2)
+            #   - https://debezium.io/documentation/reference/stable/development/engine.html
+            # =========================================================================
+
             # Desligado por padrão; ativar explicitamente em cada ambiente
             enabled: ${APP_OUTBOX_DEBEZIUM_ENABLED:false}
 
@@ -73,14 +105,24 @@ app:
             db-user: ${SPRING_DATASOURCE_USERNAME:postgres}
             db-password: ${SPRING_DATASOURCE_PASSWORD:postgres123}
 
-            # Nome do slot de replicação. Deve ser ÚNICO por instância do serviço
-            # quando múltiplas instâncias precisam receber todos os eventos (fan-out).
-            # Use um sufixo com o hostname/pod-name em ambientes Kubernetes.
+            # Nome do slot de replicação lógica no PostgreSQL.
+            # ⚠️  Deve ser ÚNICO no cluster PostgreSQL — não configure dois slots com o
+            # mesmo nome em instâncias distintas (banco rejeita a 2ª conexão).
+            # ⚠️  NÃO use slots distintos por instância para fan-out: o PostgreSQL retém
+            # o WAL até que TODOS os slots confirmem o LSN, causando WAL bloat ilimitado
+            # se qualquer instância ficar lenta ou travada (ver ADR-001).
+            # REGRA: este serviço deve rodar com replicas: 1 enquanto Debezium estiver ativo.
             slot-name: ${APP_OUTBOX_SLOT_NAME:wallet_outbox_slot}
 
-            # Produção: FileOffsetBackingStore — persiste posição do WAL em disco
-            offset-storage: org.apache.kafka.connect.storage.FileOffsetBackingStore
-            offset-storage-file: ${APP_OUTBOX_OFFSET_FILE:/tmp/wallet-outbox-offset.dat}
+            # AT-08.1: JdbcOffsetBackingStore — offset persistido no banco PostgreSQL.
+            # Substitui FileOffsetBackingStore (/tmp efêmero, não persiste em containers)
+            # para garantir continuidade exata do WAL após restart sem duplicatas.
+            # Tabela criada pela migration V5__create_wallet_outbox_offset.sql (Flyway).
+            offset-storage: io.debezium.storage.jdbc.offset.JdbcOffsetBackingStore
+            offset-storage-jdbc-url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/vibranium_wallet}
+            offset-storage-jdbc-username: ${SPRING_DATASOURCE_USERNAME:postgres}
+            offset-storage-jdbc-password: ${SPRING_DATASOURCE_PASSWORD:postgres123}
+            offset-storage-jdbc-table-name: wallet_outbox_offset
 
             # Não dropa o slot ao parar em produção — preserva posição do WAL
             drop-slot-on-stop: false
