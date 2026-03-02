@@ -15,7 +15,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
-import java.util.Optional;
 
 /**
  * Consumer de projeção que constrói e mantém o Read Model de Ordens no MongoDB.
@@ -31,10 +30,14 @@ import java.util.Optional;
  * Mensagens re-entregues pelo RabbitMQ (broker restart, NACK etc.) são descartadas
  * silenciosamente se já foram processadas.</p>
  *
- * <p><strong>Resiliência a Ordem de Eventos:</strong> Se um evento posterior
- * (ex: MATCH_EXECUTED) chegar antes do ORDER_RECEIVED, o documento não existirá
- * e o evento será logado e descartado. O retry do listener devolverá a mensagem
- * para a fila (max 3 tentativas, backoff exponencial) para nova tentativa.</p>
+ * <p><strong>Resiliência a Ordem de Eventos — AT-05.1 Criação Lazy Determinística:</strong>
+ * Eventos podem chegar fora de ordem (ex: {@code FUNDS_RESERVED} antes de
+ * {@code ORDER_RECEIVED}). Quando o documento não existe, o consumer cria um stub mínimo
+ * via {@link OrderDocument#createMinimalPending} para que o evento seja registrado no
+ * histórico sem ser descartado. Quando {@code ORDER_RECEIVED} chegar posteriormente,
+ * {@link OrderDocument#enrichFields} preenche os campos financeiros faltantes de forma
+ * idempotente. Zero {@link IllegalStateException} por ausência de documento.
+ * Zero {@code return} silencioso. Zero eventos descartados.</p>
  *
  * <p><strong>Decisão de design:</strong> MongoDB {@code findById} + {@code save}
  * em vez de {@code $push} nativo — mais legível, mesma performance para o volume
@@ -77,7 +80,8 @@ public class OrderEventProjectionConsumer {
         String orderId = event.orderId().toString();
         String userId  = event.userId().toString();
 
-        // Idempotência: se o documento já existe, apenas appenda o history entry
+        // Idempotência: se o documento já existe (normal ou stub lazy), reaproveita-o.
+        // Se não existe, cria com todos os dados financeiros.
         OrderDocument doc = orderHistoryRepository.findById(orderId)
                 .orElseGet(() -> OrderDocument.createPending(
                         orderId,
@@ -87,6 +91,10 @@ public class OrderEventProjectionConsumer {
                         event.amount(),
                         event.occurredOn()
                 ));
+
+        // AT-05.1: se o documento foi criado lazily por evento out-of-order (sem dados financeiros),
+        // enriquece com os dados do ORDER_RECEIVED. enrich Fields() é idempotente.
+        doc.enrichFields(userId, event.orderType().name(), event.price(), event.amount());
 
         OrderHistoryEntry entry = new OrderHistoryEntry(
                 event.eventId().toString(),
@@ -103,7 +111,7 @@ public class OrderEventProjectionConsumer {
         }
 
         orderHistoryRepository.save(doc);
-        logger.info("Read Model criado: orderId={} status=PENDING userId={}", orderId, userId);
+        logger.info("Read Model criado/enriquecido: orderId={} status={} userId={}", orderId, doc.getStatus(), userId);
     }
 
     // =========================================================================
@@ -125,16 +133,16 @@ public class OrderEventProjectionConsumer {
 
         String orderId = event.orderId().toString();
 
-        Optional<OrderDocument> optDoc = orderHistoryRepository.findById(orderId);
-        if (optDoc.isEmpty()) {
-            // Evento chegou antes do ORDER_RECEIVED (fora de ordem) — retry do listener
-            logger.warn("FUNDS_RESERVED sem documento pai: orderId={} — será re-tentado",
-                    orderId);
-            throw new IllegalStateException(
-                    "OrderDocument não encontrado para orderId=" + orderId + " (FUNDS_RESERVED)");
-        }
+        // AT-05.1 — Criação Lazy: se o documento não existe (FUNDS_RESERVED chegou antes de
+        // ORDER_RECEIVED), cria stub mínimo em vez de lançar IllegalStateException.
+        // ORDER_RECEIVED tardio enriquecerá os campos financeiros via enrichFields().
+        OrderDocument doc = orderHistoryRepository.findById(orderId)
+                .orElseGet(() -> {
+                    logger.warn("FUNDS_RESERVED sem documento pai: orderId={} — criando stub lazy (AT-05.1)",
+                            orderId);
+                    return OrderDocument.createMinimalPending(orderId, event.occurredOn());
+                });
 
-        OrderDocument doc = optDoc.get();
         OrderHistoryEntry entry = new OrderHistoryEntry(
                 event.eventId().toString(),
                 "FUNDS_RESERVED",
@@ -189,16 +197,15 @@ public class OrderEventProjectionConsumer {
      * @param event   Evento de match com os dados do cruzamento.
      */
     private void updateDocumentWithMatch(String orderId, MatchExecutedEvent event) {
-        Optional<OrderDocument> optDoc = orderHistoryRepository.findById(orderId);
-        if (optDoc.isEmpty()) {
-            // Pode ocorrer se o vendedor (sell order) não foi originado por este serviço
-            // (ex: ordem de outro usuário no livro). Log e continue.
-            logger.debug("MATCH_EXECUTED sem documento no Read Model: orderId={} — ignorando",
-                    orderId);
-            return;
-        }
-
-        OrderDocument doc = optDoc.get();
+        // AT-05.1 — Criação Lazy: se o documento não existe (MATCH_EXECUTED chegou antes de
+        // ORDER_RECEIVED), cria stub mínimo garantindo que o evento seja registrado.
+        // Zero return silencioso — critério de aceite AT-05.1.
+        OrderDocument doc = orderHistoryRepository.findById(orderId)
+                .orElseGet(() -> {
+                    logger.warn("MATCH_EXECUTED sem documento no Read Model: orderId={} — criando stub lazy (AT-05.1)",
+                            orderId);
+                    return OrderDocument.createMinimalPending(orderId, event.occurredOn());
+                });
 
         OrderHistoryEntry entry = new OrderHistoryEntry(
                 // Prefixo do orderId garante eventId único por lado quando o mesmo matchId
@@ -216,9 +223,13 @@ public class OrderEventProjectionConsumer {
             return;
         }
 
-        // Decrementa remainingQty e determina o novo status
-        BigDecimal newRemaining = doc.getRemainingQty().subtract(event.matchAmount());
-        doc.updateRemainingQty(newRemaining.max(BigDecimal.ZERO));
+        // AT-05.1: documento lazy pode ter remainingQty=null (sem ORDER_RECEIVED prévio).
+        // Assume qty residual=0 como best-effort. ORDER_RECEIVED tardio enriquecerá o doc.
+        BigDecimal currentQty = doc.getRemainingQty() != null
+                ? doc.getRemainingQty()
+                : BigDecimal.ZERO;
+        BigDecimal newRemaining = currentQty.subtract(event.matchAmount()).max(BigDecimal.ZERO);
+        doc.updateRemainingQty(newRemaining);
 
         String newStatus = newRemaining.compareTo(BigDecimal.ZERO) <= 0 ? "FILLED" : "PARTIAL";
         doc.transitionStatus(newStatus);
@@ -235,8 +246,9 @@ public class OrderEventProjectionConsumer {
     /**
      * Marca o documento como CANCELLED ao receber o evento de cancelamento.
      *
-     * <p>Se o documento não existir (raro: ordem cancelada antes de ser projetada),
-     * o evento é logado e descartado sem exceção para evitar loop infinito de retry.</p>
+     * <p>Se o documento não existir (ordem cancelada antes de ser projetada),
+     * cria um stub mínimo para que o cancelamento seja registrado no histórico.
+     * Cancelamentos são eventos terminais — registrar o fato é preferível a perder a informação.</p>
      *
      * @param event Evento publicado por {@code FundsReservedEventConsumer.cancelOrder()}.
      */
@@ -247,16 +259,16 @@ public class OrderEventProjectionConsumer {
 
         String orderId = event.orderId().toString();
 
-        Optional<OrderDocument> optDoc = orderHistoryRepository.findById(orderId);
-        if (optDoc.isEmpty()) {
-            // Evento de cancelamento sem documento pai é possível se ORDER_RECEIVED
-            // ainda não foi processado. Logamos e descartamos (sem throw para evitar DLQ).
-            logger.warn("ORDER_CANCELLED sem documento pai: orderId={} reason={} — evento descartado",
-                    orderId, event.reason());
-            return;
-        }
+        // AT-05.1 — Criação Lazy: se o documento não existe (ORDER_CANCELLED chegou antes
+        // de ORDER_RECEIVED), cria stub mínimo para registrar o cancelamento no histórico.
+        // Cancelamentos são terminais — melhor registrar do que descartar silenciosamente.
+        OrderDocument doc = orderHistoryRepository.findById(orderId)
+                .orElseGet(() -> {
+                    logger.warn("ORDER_CANCELLED sem documento pai: orderId={} reason={} — criando stub lazy (AT-05.1)",
+                            orderId, event.reason());
+                    return OrderDocument.createMinimalPending(orderId, event.occurredOn());
+                });
 
-        OrderDocument doc = optDoc.get();
         OrderHistoryEntry entry = new OrderHistoryEntry(
                 event.eventId().toString(),
                 "ORDER_CANCELLED",

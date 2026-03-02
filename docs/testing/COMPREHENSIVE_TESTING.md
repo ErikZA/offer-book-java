@@ -18,7 +18,8 @@
 14. [Testes de CDC — Debezium Outbox](#testes-de-cdc--debezium-outbox)
 15. [Partial Fill — Requeue Atômico e Idempotência por eventId (US-002)](#partial-fill--requeue-atômico-e-idempotência-por-eventid-us-002)
 16. [Invariantes de Domínio Wallet — Encapsulamento de Agregado (US-005)](#invariantes-de-domínio-wallet--encapsulamento-de-agregado-us-005)
-17. [Referências](#referências)
+17. [Criação Lazy Determinística de OrderDocument (AT-05.1)](#criação-lazy-determinística-de-orderdocument-at-051)
+18. [Referências](#referências)
 
 ---
 
@@ -1901,6 +1902,116 @@ Os setters foram removidos (US-005). Além disso, usar `reserveFunds()` no setup
 
 ---
 
+## Criação Lazy Determinística de OrderDocument (AT-05.1)
+
+Esta seção documenta a estratégia de tolerância a **eventos out-of-order** no Read Model MongoDB, implementada em `OrderEventProjectionConsumer` como parte do AT-05.1.
+
+### Contexto do problema
+
+Eventos de domínio podem chegar às filas de projeção em ordem diferente da ordem causal real:
+
+| Cenário out-of-order | Comportamento antigo | Impacto |
+|---|---|---|
+| `FUNDS_RESERVED` antes de `ORDER_RECEIVED` | `IllegalStateException` → retry → DLQ | Documento nunca criado; estado inconsistente permanente |
+| `MATCH_EXECUTED` antes de `ORDER_RECEIVED` | `return` silencioso | Evento descartado; histórico auditável incompleto |
+| `ORDER_CANCELLED` antes de `ORDER_RECEIVED` | `return` silencioso | Cancelamento perdido no histórico |
+
+### Solução: Criação Lazy com `createMinimalPending()`
+
+Quando qualquer evento chegar sem documento pai, o consumer cria um **stub mínimo** em vez de lançar exceção ou descartar:
+
+```java
+// AT-05.1 — Consumer onFundsReserved (antes: IllegalStateException)
+OrderDocument doc = orderHistoryRepository.findById(orderId)
+        .orElseGet(() -> {
+            logger.warn("FUNDS_RESERVED sem documento pai: orderId={} — criando stub lazy (AT-05.1)", orderId);
+            return OrderDocument.createMinimalPending(orderId, event.occurredOn());
+        });
+```
+
+O stub contém apenas `orderId`, `status=PENDING` e `createdAt`. Quando `ORDER_RECEIVED` chegar posteriormente, `enrichFields()` preenche os dados financeiros de forma **idempotente**:
+
+```java
+// AT-05.1 — onOrderReceived enriquece stub sem sobrescrever dados já existentes
+doc.enrichFields(userId, event.orderType().name(), event.price(), event.amount());
+```
+
+**`enrichFields()` é idempotente:** se o campo já está preenchido (doc criado normalmente via `ORDER_RECEIVED`), o valor existente não é sobrescrito.
+
+### Cuidado: `remainingQty = null` em documentos lazy
+
+Documentos criados por `createMinimalPending()` têm `remainingQty = null`. Consumidores que calculam qty residual devem tratar isso explicitamente:
+
+```java
+// AT-05.1: remainingQty pode ser null em doc lazy (sem ORDER_RECEIVED prévio)
+BigDecimal currentQty = doc.getRemainingQty() != null
+        ? doc.getRemainingQty()
+        : BigDecimal.ZERO;
+BigDecimal newRemaining = currentQty.subtract(event.matchAmount()).max(BigDecimal.ZERO);
+```
+
+### Testes: `OrderOutOfOrderEventsIntegrationTest`
+
+Arquivo: `apps/order-service/src/test/java/.../integration/OrderOutOfOrderEventsIntegrationTest.java`
+
+| Teste | `@DisplayName` | Cenário |
+|---|---|---|
+| `TC-LAZY-1` | FUNDS_RESERVED antes de ORDER_RECEIVED | Stub criado → doc enriquecido → history com ambos eventos |
+| `TC-LAZY-2` | MATCH_EXECUTED antes de qualquer evento | Stub criado → MATCH_EXECUTED no history |
+| `TC-LAZY-3` | ORDER_RECEIVED após match lazy | Enriquecimento sem duplicar história |
+
+**Padrão de publicação nos testes:**
+
+```java
+// TC-LAZY-1: Fase 1 — publica FUNDS_RESERVED sem ORDER_RECEIVED prévio
+FundsReservedEvent fundsEvent = FundsReservedEvent.of(
+        correlationId, orderId, walletId, AssetType.BRL, new BigDecimal("25000.00"));
+
+rabbitTemplate.convertAndSend(
+        RabbitMQConfig.EVENTS_EXCHANGE,
+        RabbitMQConfig.RK_FUNDS_RESERVED,   // "wallet.events.funds-reserved"
+        fundsEvent
+);
+
+await().atMost(10, TimeUnit.SECONDS)
+       .untilAsserted(() -> {
+           Optional<OrderDocument> doc = orderHistoryRepository.findById(orderId.toString());
+           assertThat(doc).isPresent();
+           assertThat(doc.get().getHistory())
+                   .anyMatch(h -> h.eventType().equals("FUNDS_RESERVED"));
+       });
+```
+
+> **Por que `RK_FUNDS_RESERVED` e não a routing key da fila de projeção?**
+> O `FundsReservedEvent` é publicado na exchange `vibranium.events` com a routing key
+> `wallet.events.funds-reserved`. A fila de projeção `order.projection.funds-reserved`
+> está vinculada a essa mesma routing key — o fanout pattern garante que
+> ambas as filas (Command Side e projection) recebam o evento automaticamente.
+
+### Propriedades de Consistência Eventual Garantidas (AT-05.1)
+
+| Propriedade | Garantia |
+|---|---|
+| Zero `IllegalStateException` por ausência de doc | ✅ Todos os consumers usam `orElseGet()` com stub lazy |
+| Zero `return` silencioso — e evento nunca descartado | ✅ Todos os `return` silenciosos removidos |
+| Documento sempre existente após qualquer evento | ✅ `createMinimalPending()` garante existência |
+| Idempotência preservada | ✅ `appendHistory()` e `enrichFields()` são idempotentes |
+| Testes anteriores não regridem | ✅ `OrderQueryControllerTest` TC-1 a TC-7 continuam passando |
+
+### Artefatos gerados pelo AT-05.1
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `OrderDocument.createMinimalPending()` | Novo | Factory para stub lazy com `orderId`, `status=PENDING`, `createdAt` |
+| `OrderDocument.enrichFields()` | Novo | Preenchimento idempotente de campos financeiros no stub |
+| `OrderEventProjectionConsumer.onFundsReserved()` | Refatorado | `IllegalStateException` → criação lazy |
+| `OrderEventProjectionConsumer.updateDocumentWithMatch()` | Refatorado | `return` silencioso → criação lazy + tratamento de `remainingQty=null` |
+| `OrderEventProjectionConsumer.onOrderCancelled()` | Refatorado | `return` silencioso → criação lazy |
+| `OrderEventProjectionConsumer.onOrderReceived()` | Refatorado | + chamada a `enrichFields()` após `orElseGet()` |
+| `OrderOutOfOrderEventsIntegrationTest` | Novo | 3 testes de integração: TC-LAZY-1, TC-LAZY-2, TC-LAZY-3 |
+
+---
+
 ## Referências
 
 - [JUnit 5 Documentation](https://junit.org/junit5/docs/current/user-guide/)
@@ -1916,6 +2027,7 @@ Os setters foram removidos (US-005). Além disso, usar `reserveFunds()` no setup
 **Última atualização**: 1 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-05.1**: Criação Lazy Determinística de `OrderDocument` — eliminação de `IllegalStateException` e `return` silencioso em `OrderEventProjectionConsumer`. Adicionados `createMinimalPending()` e `enrichFields()` em `OrderDocument`. Novos testes `OrderOutOfOrderEventsIntegrationTest` (TC-LAZY-1, TC-LAZY-2, TC-LAZY-3).
 > - **AT-01.1**: Refatoração de Transacionalidade — eliminação do Dual Write (`Thread.ofVirtual` + `RabbitTemplate`) em `OrderCommandService.placeOrder()`. `OrderReceivedEvent` agora persiste via Outbox na mesma transação. Adicionado `OrderCommandServiceTest` (6 testes unitários TDD) e atualizado `OrderOutboxIntegrationTest` (2 entradas por `placeOrder`).
 > - **US-005**: Adicionada seção 16 — Invariantes de Domínio Wallet (encapsulamento de agregado, remoção de setters, `applyBuySettlement`, `applySellSettlement`, `@Version`)
 > - **US-005**: Documentados 4 padrões de teste unitário de domínio puro (`WalletDomainTest`) e padrão de setup de integração sem setters
@@ -1925,3 +2037,4 @@ Os setters foram removidos (US-005). Além disso, usar `reserveFunds()` no setup
 > - Adicionado padrão de pre-criação de índices e connection pool MongoDB
 > - Adicionados padrões de testes de CDC Debezium (seção [Testes de CDC — Debezium Outbox](#testes-de-cdc--debezium-outbox))
 > - Adicionados padrões de Partial Fill e Idempotência por eventId (seção 15 — US-002)
+
