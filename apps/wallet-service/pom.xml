@@ -52,6 +52,20 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
+
+        <!-- AT-10.1: Spring Security — autenticação server-side independente do Kong.
+             Defense-in-depth: valida JWT mesmo que o gateway seja bypassado via rede interna.
+             spring-boot-starter-security: filtros, configuração base do SecurityFilterChain.
+             spring-boot-starter-oauth2-resource-server: suporte a Bearer Token + JwtDecoder
+             integrado ao Keycloak via issuer-uri (OIDC Discovery automático em runtime). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
@@ -110,6 +124,16 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- AT-10.1: spring-security-test — suporte a @WithMockUser nos testes.
+             @WithMockUser pré-popula o SecurityContext com um usuário autenticado,
+             permitindo que os testes de integração existentes continuem passando
+             sem precisar de um JWT real do Keycloak. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
             <scope>test</scope>
         </dependency>
 

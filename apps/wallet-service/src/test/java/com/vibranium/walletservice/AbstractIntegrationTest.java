@@ -12,6 +12,8 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.containers.RabbitMQContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
+// AT-10.1: @WithMockUser — bypass de autenticação JWT nos testes de integração
+import org.springframework.security.test.context.support.WithMockUser;
 
 /**
  * Base abstrata para todos os testes de integração do wallet-service.
@@ -22,9 +24,15 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * <p>Usa {@link DynamicPropertySource} para sobrescrever as propriedades de datasource
  * e broker dinamicamente com as portas alocadas pelo Testcontainers.</p>
  */
+// AT-10.1: @WithMockUser garante que todos os testes de integração continuem passando
+// após a adição do SecurityConfig + oauth2ResourceServer.
+// Pre-popula o SecurityContext com um usuário autenticado (UsernamePasswordAuthenticationToken),
+// bypassando a validação JWT do BearerTokenAuthenticationFilter.
+// Sem isto, todas as requisições dos testes retornariam 401 (nenhum Bearer Token presente).
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers
 @ActiveProfiles("test")
+@WithMockUser
 public abstract class AbstractIntegrationTest {
 
     // ---------------------------------------------------------------------------

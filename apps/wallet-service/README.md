@@ -11,6 +11,7 @@ Microsserviço responsável pela gestão de carteiras de usuários e transaçõe
 - ✅ Registrar histórico de transações
 - ✅ Consumir eventos de ordem para débito/crédito
 - ✅ Publicar eventos de transação
+- ✅ Validar autenticação JWT via OAuth2 Resource Server (AT-10.1)
 
 ## 🏗️ Estrutura
 
@@ -32,7 +33,7 @@ src/
 │   │   ├── infrastructure/
 │   │   │   ├── messaging/                                # Listeners RabbitMQ
 │   │   │   └── outbox/                                   # Debezium + OutboxPublisher
-│   │   ├── config/                                       # RabbitMQ, Outbox, Jackson
+│   │   ├── config/                                       # RabbitMQ, Outbox, Jackson, SecurityConfig
 │   │   └── exception/                                    # InsufficientFundsException, etc.
 │   └── resources/
 │       ├── application.yaml
@@ -56,6 +57,8 @@ src/
 │       ├── ReserveFundsDlqIntegrationTest.java       # AT-07.1 — DLQ routing para reserve-funds
 │       ├── DebeziumJdbcOffsetMigrationTest.java      # AT-08.1 RED — tabela wallet_outbox_offset
 │       └── DebeziumRestartIdempotencyTest.java       # AT-08.1 RED→GREEN — idempotência pós-restart
+│   └── security/
+│       └── SecurityUnauthorizedTest.java             # AT-10.1 — 401 sem token, 200 com token
 
 docker/
 ├── Dockerfile                # Build production
@@ -313,6 +316,43 @@ Teste de garantia: [`DebeziumSingleInstanceConstraintTest`](src/test/java/com/vi
 | `V2__create_outbox.sql` | Tabela `outbox_message` para Transactional Outbox |
 | `V3__create_idempotency_key.sql` | Tabela `idempotency_key` para deduplicação de mensagens |
 | `V4__add_wallet_version.sql` | Coluna `version BIGINT` para optimistic locking (US-005) || `V5__create_wallet_outbox_offset.sql` | Tabela `wallet_outbox_offset` para `JdbcOffsetBackingStore` (AT-08.1) |
+## � Segurança — OAuth2 Resource Server (AT-10.1)
+
+O `wallet-service` protege todos os endpoints REST com validação de JWT emitido pelo Keycloak.
+A autenticação é **stateless** (sem sessão HTTP) e **independente do Kong** (defesa em profundidade).
+
+### Fluxo de autenticação
+
+```
+Cliente → [Bearer Token] → BearerTokenAuthenticationFilter
+                                     ↓
+                             JwtDecoder (JWKS via Keycloak)
+                                     ↓
+                          SecurityContext populado → Controller
+```
+
+### Endpoints públicos
+
+| Endpoint | Autenticação |
+|----------|-------------|
+| `GET /actuator/health` | Pública (sem token) |
+| `GET /actuator/info` | Pública (sem token) |
+| Qualquer outro | JWT obrigatório (HTTP 401 se ausente/inválido) |
+
+### Variáveis de ambiente
+
+| Variável | Padrão | Descrição |
+|----------|--------|-----------|
+| `KEYCLOAK_ISSUER_URI` | `http://keycloak:8080/realms/orderbook-realm` | URL do issuer Keycloak (OIDC Discovery) |
+
+### Estratégia de testes
+
+- `AbstractIntegrationTest` — `@WithMockUser` garante que testes existentes não quebrem após ativação do `SecurityConfig`
+- `SecurityUnauthorizedTest` — valida 401 para qualquer endpoint sem token (`@WithAnonymousUser`) e 200 com token
+- Perfil `test` usa `jwk-set-uri` (lazy) em vez de `issuer-uri` para evitar OIDC Discovery no startup dos testes
+
+---
+
 ## 📦 Dependências
 
 | Biblioteca | Versão | Uso |
@@ -321,9 +361,12 @@ Teste de garantia: [`DebeziumSingleInstanceConstraintTest`](src/test/java/com/vi
 | Spring Data JPA | 3.2.3 | Persistência |
 | Spring Data MongoDB | 3.2.3 | Audit logs |
 | PostgreSQL | 16 | Banco de dados |
+| Spring Security | Por Spring Boot | Filtro de autenticação JWT (AT-10.1) |
+| Spring OAuth2 Resource Server | Por Spring Boot | Decoder JWT via JWKS do Keycloak (AT-10.1) |
 | JUnit 5 | Por Spring | Testes |
 | AssertJ | 3.x | Assertions |
 | REST Assured | 5.x | Testes de API |
+| Spring Security Test | Por Spring | `@WithMockUser`, `@WithAnonymousUser` (AT-10.1) |
 
 ## 🔍 Debugging
 

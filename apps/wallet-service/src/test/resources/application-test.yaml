@@ -16,6 +16,23 @@ spring:
                 prefetch: 1
                 default-requeue-rejected: false
 
+    # ---------------------------------------------------------------------------
+    # AT-10.1: Segurança — perfil de testes
+    # ---------------------------------------------------------------------------
+    # jwk-set-uri é LAZY: o JwtDecoder não contacta o endpoint no startup.
+    # Como os testes de integração usam @WithMockUser (via AbstractIntegrationTest),
+    # nenhuma validação JWT real ocorre — a URL abaixo nunca é acessada.
+    # Isso evita que testes falhem por ausência do Keycloak no ambiente CI.
+    #
+    # Diferença entre as propriedades:
+    #   issuer-uri  → faz OIDC Discovery em startup (HTTP síncrono obrigatório).
+    #   jwk-set-uri → lazy, contactado apenas ao validar um Bearer Token real.
+    security:
+        oauth2:
+            resourceserver:
+                jwt:
+                    jwk-set-uri: ${KEYCLOAK_JWK_SET_URI:http://localhost:9999/.well-known/jwks.json}
+
 # ---------------------------------------------------------------------------
 # Outbox Publisher — configuração de teste (Debezium desligado por padrão)
 # Ativado individualmente em OutboxPublisherIntegrationTest via @TestPropertySource

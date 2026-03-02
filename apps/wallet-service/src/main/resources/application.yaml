@@ -49,6 +49,25 @@ spring:
                 prefetch: 1
                 default-requeue-rejected: false
 
+    # ---------------------------------------------------------------------------
+    # AT-10.1: Spring Security — OAuth2 Resource Server
+    # ---------------------------------------------------------------------------
+    # Defense-in-depth: valida JWT independentemente do Kong.
+    # O issuer-uri aciona OIDC Discovery automático em startup:
+    #   GET ${issuer-uri}/.well-known/openid-configuration
+    # O JwtDecoder usa o JWKS endpoint descoberto para validar assinaturas RS256.
+    # KEYCLOAK_ISSUER_URI = http://keycloak:8080/realms/orderbook-realm (docker-compose)
+    #
+    # Fallback local: apenas para que a avaliação de condições do Spring não falhe
+    # quando KEYCLOAK_ISSUER_URI não está definida (IDE local sem Docker).
+    # Em testes (@WebMvcTest), jwk-set-uri do @TestPropertySource toma precedência —
+    # o decoder de issuer-uri é ignorado via @ConditionalOnMissingBean(JwtDecoder.class).
+    security:
+        oauth2:
+            resourceserver:
+                jwt:
+                    issuer-uri: ${KEYCLOAK_ISSUER_URI:http://keycloak:8080/realms/orderbook-realm}
+
 server:
     port: 8081
 
