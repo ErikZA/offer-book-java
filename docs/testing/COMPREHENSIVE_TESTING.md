@@ -19,7 +19,8 @@
 15. [Partial Fill — Requeue Atômico e Idempotência por eventId (US-002)](#partial-fill--requeue-atômico-e-idempotência-por-eventid-us-002)
 16. [Invariantes de Domínio Wallet — Encapsulamento de Agregado (US-005)](#invariantes-de-domínio-wallet--encapsulamento-de-agregado-us-005)
 17. [Criação Lazy Determinística de OrderDocument (AT-05.1)](#criação-lazy-determinística-de-orderdocument-at-051)
-18. [Referências](#referências)
+18. [Idempotência Atômica com MongoTemplate (AT-05.2)](#idempotência-atômica-com-mongotemplate-at-052)
+19. [Referências](#referências)
 
 ---
 
@@ -2012,6 +2013,123 @@ await().atMost(10, TimeUnit.SECONDS)
 
 ---
 
+## Idempotência Atômica com MongoTemplate (AT-05.2)
+
+Esta seção documenta a eliminação do padrão de **Lost Update** no Read Model MongoDB, substituindo `findById + appendHistory + save()` por operações atômicas via `MongoTemplate`, implementada como AT-05.2.
+
+### Contexto do problema — Lost Update
+
+O padrão `MongoRepository.save()` realiza **substituição total do documento** (replace). Em cenários de alta concorrência, duas threads que leram o mesmo documento e empurram entradas à sua cópia local acabam sobrescrevendo uma à outra:
+
+| Passo | Thread A | Thread B | Resultado |
+|---|---|---|---|
+| 1 | `findById(orderId)` → doc v1 | `findById(orderId)` → doc v1 | Ambas com cópia desatualizada |
+| 2 | `doc.appendHistory(matchA)` | `doc.appendHistory(matchB)` | Mutações em cópias isoladas |
+| 3 | `save(doc)` → persiste v2 com matchA | `save(doc)` → persiste **v2** com apenas matchB | ❌ matchA **perdido** |
+
+Além disso, a verificação de idempotência `history.contains(eventId)` em memória não era atômica perante outras réplicas da aplicação.
+
+### Solução: Operações Atômicas via `MongoTemplate`
+
+O `OrderAtomicHistoryWriter` encapsula todas as escritas no Read Model usando **operações server-side atômicas**:
+
+| Operação | Método | Semântica |
+|---|---|---|
+| `$push` com filtro `{$ne: eventId}` | `updateFirst` | Append idempotente — nunca duplica uma entrada de histórico |
+| `$setOnInsert` | `upsert` | Cria o documento na primeira escrita; ignora nos upserts subsequentes |
+| `$init` com `$inc` | `findAndModify` | Decrementa `remainingQty` e retorna o novo documento atomicamente |
+| `$set` condicional com `$exists: false` | `updateFirst` | Preenche campos nulos sem sobrescrever valores já existentes |
+
+**Filtro de idempotência — núcleo da solução:**
+
+```java
+// AT-05.2 — filtro atômico: só aplica o $push se eventId ainda não está no array
+private Query idempotencyQuery(String orderId, String eventId) {
+    return new Query(
+        Criteria.where("_id").is(orderId)
+                .and("history.eventId").ne(eventId)   // $ne: nunca duplica
+    );
+}
+```
+
+**Append atômico típico (`upsertAndAppend`):**
+
+```java
+// AT-05.2 — upsert com $setOnInsert para criação atômica + $push idempotente
+Update update = baseUpdate(entry)
+    .setOnInsert("_id",       orderId)
+    .setOnInsert("occurredOn", occurredOn)
+    /* campos extras (status, userId, etc.) via consumer */;
+
+mongoTemplate.upsert(idempotencyQuery(orderId, eventId), update, OrderDocument.class);
+```
+
+O `baseUpdate()` aplica `$push history` e `$set updatedAt` — nenhuma leitura prévia é necessária.
+
+### Índice `idx_history_eventId`
+
+Sem índice, o filtro `"history.eventId": {$ne: eventId}` percorre o array inteiro a cada operação — **O(n)** onde n é o tamanho do histórico. O índice multikey criado em `MongoIndexConfig` resolve isso para **O(log n)**:
+
+```java
+// MongoIndexConfig — AT-05.2
+indexOps.ensureIndex(
+    new Index("history.eventId", Sort.Direction.ASC)
+        .named("idx_history_eventId")
+);
+```
+
+### Testes: `OrderAtomicIdempotencyTest`
+
+Arquivo: `apps/order-service/src/test/java/.../integration/OrderAtomicIdempotencyTest.java`
+
+**Estratégia:** O teste injeta `OrderEventProjectionConsumer` diretamente (bypass do broker RabbitMQ), expondo a condição de corrida no MongoDB com **100 Virtual Threads concorrentes**.
+
+| Teste | `@DisplayName` | Cenário | Assertion |
+|---|---|---|---|
+| `TC-ATOMIC-1` | 100 threads — eventIds únicos | 100 `MatchExecutedEvent` distintos enviados em paralelo | `history.size() == 100` — nenhum lost update |
+| `TC-ATOMIC-2` | 100 threads — mesmo eventId | Mesmo `MatchExecutedEvent` enviado 100 vezes em paralelo | `history.size() == 1` — idempotência DB-level |
+
+**Padrão de concorrência com Virtual Threads:**
+
+```java
+// TC-ATOMIC-1: 100 threads concorrentes, cada uma com eventId único
+try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    for (int i = 0; i < 100; i++) {
+        final int idx = i;
+        executor.submit(() ->
+            consumer.onMatchExecuted(buildMatchEvent(orderId, UUID.randomUUID().toString(), idx))
+        );
+    }
+}  // AutoCloseable: bloqueia até todas as threads concluírem
+
+OrderDocument result = orderHistoryRepository.findById(orderId.toString()).orElseThrow();
+assertThat(result.getHistory())
+    .filteredOn(h -> "MATCH_EXECUTED".equals(h.eventType()))
+    .hasSize(100);
+```
+
+### Propriedades de Consistência Garantidas (AT-05.2)
+
+| Propriedade | Garantia |
+|---|---|
+| Zero lost updates em alta concorrência | ✅ `$push` server-side elimina o padrão replace |
+| Idempotência no nível do banco de dados | ✅ Filtro `history.eventId: {$ne: eventId}` atômico |
+| Criação concorrente sem duplicatas | ✅ `$setOnInsert` + retry em `DuplicateKeyException` |
+| Decremento de `remainingQty` sem leitura prévia | ✅ `$inc` em `findAndModify` |
+| Compatibilidade com AT-05.1 (docs lazy) | ✅ `upsertAndAppend` preserva semântica out-of-order |
+| Performance do filtro de idempotência | ✅ `idx_history_eventId` — O(log n) em vez de O(n) |
+
+### Artefatos gerados pelo AT-05.2
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `OrderAtomicHistoryWriter` | Novo | `@Service` encapsulando todas as escritas atômicas no Read Model |
+| `MongoIndexConfig` | Modificado | Adicionado `idx_history_eventId` para filtro de idempotência eficiente |
+| `OrderEventProjectionConsumer` | Refatorado | `findById+save` → `atomicWriter.*` em todos os handlers de eventos |
+| `OrderAtomicIdempotencyTest` | Novo | TDD RED→GREEN: `TC-ATOMIC-1` (100 lost updates) e `TC-ATOMIC-2` (100 duplicatas) |
+
+---
+
 ## Referências
 
 - [JUnit 5 Documentation](https://junit.org/junit5/docs/current/user-guide/)
@@ -2027,6 +2145,7 @@ await().atMost(10, TimeUnit.SECONDS)
 **Última atualização**: 1 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-05.2**: Idempotência Atômica com MongoTemplate — eliminação do Lost Update em `OrderEventProjectionConsumer`. `findById+appendHistory+save` substituídos por `$push/$setOnInsert/$inc` via `MongoTemplate`. Novo `OrderAtomicHistoryWriter`, índice `idx_history_eventId` e testes `OrderAtomicIdempotencyTest` (TC-ATOMIC-1, TC-ATOMIC-2) com 100 Virtual Threads concorrentes.
 > - **AT-05.1**: Criação Lazy Determinística de `OrderDocument` — eliminação de `IllegalStateException` e `return` silencioso em `OrderEventProjectionConsumer`. Adicionados `createMinimalPending()` e `enrichFields()` em `OrderDocument`. Novos testes `OrderOutOfOrderEventsIntegrationTest` (TC-LAZY-1, TC-LAZY-2, TC-LAZY-3).
 > - **AT-01.1**: Refatoração de Transacionalidade — eliminação do Dual Write (`Thread.ofVirtual` + `RabbitTemplate`) em `OrderCommandService.placeOrder()`. `OrderReceivedEvent` agora persiste via Outbox na mesma transação. Adicionado `OrderCommandServiceTest` (6 testes unitários TDD) e atualizado `OrderOutboxIntegrationTest` (2 entradas por `placeOrder`).
 > - **US-005**: Adicionada seção 16 — Invariantes de Domínio Wallet (encapsulamento de agregado, remoção de setters, `applyBuySettlement`, `applySellSettlement`, `@Version`)
