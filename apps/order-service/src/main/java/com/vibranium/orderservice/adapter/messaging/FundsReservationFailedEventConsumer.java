@@ -7,8 +7,7 @@ import com.vibranium.orderservice.config.RabbitMQConfig;
 import com.vibranium.orderservice.domain.model.Order;
 import com.vibranium.orderservice.domain.model.ProcessedEvent;
 import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
-import com.vibranium.orderservice.domain.repository.OrderRepository;
-import org.slf4j.Logger;
+import com.vibranium.orderservice.domain.repository.OrderRepository;import io.micrometer.tracing.Tracer;import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.support.AmqpHeaders;
@@ -44,11 +43,18 @@ public class FundsReservationFailedEventConsumer {
 
     private final OrderRepository            orderRepository;
     private final ProcessedEventRepository   processedEventRepository;
+    // AT-14.1: Micrometer Tracing — enriquece o span do listener com atributos da Saga.
+    // O span é gerado automaticamente pelo RabbitListenerObservation do Spring AMQP
+    // ao receber a mensagem. Adicionamos saga.correlation_id e order.id para
+    // rastreabilidade end-to-end no Jaeger (placeOrder → FundsReservationFailed).
+    private final Tracer                     tracer;
 
     public FundsReservationFailedEventConsumer(OrderRepository orderRepository,
-                                               ProcessedEventRepository processedEventRepository) {
+                                               ProcessedEventRepository processedEventRepository,
+                                               Tracer tracer) {
         this.orderRepository         = orderRepository;
         this.processedEventRepository = processedEventRepository;
+        this.tracer                  = tracer;
     }
 
     /**
@@ -93,6 +99,15 @@ public class FundsReservationFailedEventConsumer {
         }
 
         Order order = orderOpt.get();
+
+        // AT-14.1: Enriquece o span ativo com atributos de domínio.
+        // Permite ao Jaeger exibir o trecho de cancelação da Saga com o contexto correto.
+        io.micrometer.tracing.Span currentSpan = tracer.currentSpan();
+        if (currentSpan != null) {
+            currentSpan
+                    .tag("saga.correlation_id", event.correlationId().toString())
+                    .tag("order.id",            event.orderId().toString());
+        }
 
         // 3. Cancela a ordem com o motivo tecnico da falha
         //    A idempotencia ja e garantida pela PK da tabela acima;

@@ -6,6 +6,7 @@ import com.vibranium.contracts.commands.wallet.ReserveFundsCommand;
 import com.vibranium.contracts.commands.wallet.SettleFundsCommand;
 import com.vibranium.walletservice.application.service.WalletService;
 import com.vibranium.walletservice.domain.repository.IdempotencyKeyRepository;
+import io.micrometer.tracing.Tracer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.core.Message;
@@ -43,13 +44,20 @@ public class OrderCommandRabbitListener {
     private final WalletService walletService;
     private final IdempotencyKeyRepository idempotencyKeyRepository;
     private final ObjectMapper objectMapper;
+    // AT-14.1: Micrometer Tracing — enriquece o span do listener com atributos de domínio.
+    // O Spring AMQP gera automaticamente um span para cada mensagem recebida pelo @RabbitListener.
+    // Adicionamos saga.correlation_id e order.id para que o trace no Jaeger mostre:
+    //   order-service:placeOrder → wallet-service:ReserveFundsCommand (saga.correlation_id=...)
+    private final Tracer tracer;
 
     public OrderCommandRabbitListener(WalletService walletService,
                                        IdempotencyKeyRepository idempotencyKeyRepository,
-                                       ObjectMapper objectMapper) {
+                                       ObjectMapper objectMapper,
+                                       Tracer tracer) {
         this.walletService = walletService;
         this.idempotencyKeyRepository = idempotencyKeyRepository;
         this.objectMapper = objectMapper;
+        this.tracer = tracer;
     }
 
     /**
@@ -93,12 +101,19 @@ public class OrderCommandRabbitListener {
 
             if (ReserveFundsCommand.class.getName().equals(commandType)) {
                 ReserveFundsCommand cmd = objectMapper.readValue(body, ReserveFundsCommand.class);
+                // AT-14.1: Enriquece o span do listener com atributos de domínio.
+                // O trace no Jaeger mostrará: order-service:placeOrder → wallet-service:ReserveFunds
+                // com saga.correlation_id permitindo correlacionar ao trace do order-service.
+                enrichSpan(cmd.correlationId(), cmd.orderId());
                 walletService.reserveFunds(cmd, messageId);
                 logger.info("ReserveFundsCommand processed: walletId={}, messageId={}",
                         cmd.walletId(), messageId);
 
             } else if (SettleFundsCommand.class.getName().equals(commandType)) {
                 SettleFundsCommand cmd = objectMapper.readValue(body, SettleFundsCommand.class);
+                // AT-14.1: SettleFundsCommand também carrega correlationId da Saga
+                // (via matchId); mapeamos matchId como order.id para visível no Jaeger.
+                enrichSpanSettle(cmd.correlationId(), cmd.matchId());
                 walletService.settleFunds(cmd, messageId);
                 logger.info("SettleFundsCommand processed: matchId={}, messageId={}",
                         cmd.matchId(), messageId);
@@ -127,6 +142,46 @@ public class OrderCommandRabbitListener {
             logger.error("Failed to process wallet command messageId={}: {}", messageId, e.getMessage(), e);
             // NACK sem requeue — em produção configurar dead-letter exchange para análise
             channel.basicNack(deliveryTag, false, false);
+        }
+    }
+
+    // =========================================================================
+    // AT-14.1 — Span enrichment helpers
+    // =========================================================================
+
+    /**
+     * Enriquece o span ativo com atributos de domínio do {@code ReserveFundsCommand}.
+     *
+     * <p>{@code tracer.currentSpan()} retorna o span criado pelo
+     * {@code RabbitListenerObservation} do Spring AMQP ao receber a mensagem.
+     * Retornará {@code null} se nenhum span estiver ativo (ex.: testes sem bridge).</p>
+     *
+     * @param correlationId ID de correlação da Saga — visível no Jaeger como {@code saga.correlation_id}.
+     * @param orderId       UUID da ordem — visível como {@code order.id}.
+     */
+    private void enrichSpan(java.util.UUID correlationId, java.util.UUID orderId) {
+        io.micrometer.tracing.Span currentSpan = tracer.currentSpan();
+        if (currentSpan != null && correlationId != null && orderId != null) {
+            currentSpan
+                    .tag("saga.correlation_id", correlationId.toString())
+                    .tag("order.id",            orderId.toString());
+        }
+    }
+
+    /**
+     * Enriquece o span ativo com atributos de domínio do {@code SettleFundsCommand}.
+     *
+     * @param correlationId ID de correlação da Saga.
+     * @param matchId       UUID do match executado — mapeado como {@code order.id} para
+     *                      manter consistência semântica no Jaeger.
+     */
+    private void enrichSpanSettle(java.util.UUID correlationId, java.util.UUID matchId) {
+        io.micrometer.tracing.Span currentSpan = tracer.currentSpan();
+        if (currentSpan != null && correlationId != null) {
+            currentSpan.tag("saga.correlation_id", correlationId.toString());
+            if (matchId != null) {
+                currentSpan.tag("order.id", matchId.toString());
+            }
         }
     }
 }

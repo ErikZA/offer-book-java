@@ -14,6 +14,8 @@ Microsserviço responsável pela gestão de carteiras de usuários e transaçõe
 - ✅ Validar autenticação JWT via OAuth2 Resource Server (AT-10.1)
 - ✅ Verificar propriedade de recurso (resource ownership) — `jwt.sub == wallet.userId` (AT-10.2)
 - ✅ Cobrir regressões silenciosas do `SecurityFilterChain` com testes dedicados (AT-10.3)
+- ✅ Propagação W3C TraceContext em mensagens AMQP e enriquecimento de spans com `saga.correlation_id` e `order.id` (AT-14.1)
+- ✅ Exportação de spans via OTLP HTTP para Jaeger (`management.otlp.tracing.endpoint`) (AT-14.1)
 
 ## 🏗️ Estrutura
 
@@ -63,6 +65,8 @@ src/
 │       ├── SecurityUnauthorizedTest.java             # AT-10.1 — 401 sem token, 200 com token
 │       ├── WalletOwnershipTest.java                  # AT-10.2 — 403 acesso cruzado, 200 owner/admin
 │       └── WalletSecurityIntegrationTest.java        # AT-10.3 — 4 cenários: sem token, expirado, outro usuário, owner
+│   └── integration/
+│       └── WalletTracingPropagationIntegrationTest.java  # AT-14.1 RED→GREEN — W3C traceparent em AMQP
 
 docker/
 ├── Dockerfile                # Build production

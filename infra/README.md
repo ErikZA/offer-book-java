@@ -41,8 +41,11 @@ infra/
 docker compose -f infra/docker-compose.dev.yml up -d
 
 # Subir apenas infraestrutura (sem apps)
-docker compose -f infra/docker-compose.dev.yml up -d postgres redis rabbitmq mongodb keycloak-db keycloak kong
+docker compose -f infra/docker-compose.dev.yml up -d postgres redis rabbitmq mongodb keycloak-db keycloak kong jaeger
 ```
+
+> **Jaeger UI** disponível em `http://localhost:16686` após subir o ambiente dev.
+> Selecione o serviço `order-service` ou `wallet-service` para ver os traces end-to-end da Saga.
 
 ### Infra isolada (sem aplicações)
 ```bash
@@ -61,15 +64,18 @@ docker compose -f infra/docker-compose.staging.yml up -d
 
 ## 🐳 Portas expostas (dev)
 
-| Serviço     | Porta |
-|-------------|-------|
-| PostgreSQL  | 5432  |
-| MongoDB     | 27017 |
-| Redis       | 6379  |
-| RabbitMQ    | 5672 / 15672 (UI) |
-| Keycloak    | 8080  |
-| Kong Proxy  | 8000 / 8443 |
-| Kong Admin  | 8001 / 8444 |
+| Serviço          | Porta                        |
+|------------------|------------------------------|
+| PostgreSQL       | 5432                         |
+| MongoDB          | 27017                        |
+| Redis            | 6379                         |
+| RabbitMQ         | 5672 / 15672 (UI)            |
+| Keycloak         | 8080                         |
+| Kong Proxy       | 8000 / 8443                  |
+| Kong Admin       | 8001 / 8444                  |
+| Jaeger UI        | 16686                        |
+| Jaeger OTLP HTTP | 4318 (apps → Jaeger spans)   |
+| Jaeger OTLP gRPC | 4317                         |
 
 > **Redis-Kong** (`redis-kong` / `vibranium-redis-kong`) **não expõe porta pública**.
 > Acessível somente internamente via `vibranium-infra`. Serve exclusivamente ao plugin

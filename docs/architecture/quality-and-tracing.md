@@ -67,14 +67,98 @@ Em um monorepo com múltiplos microsserviços e bibliotecas compartilhadas, é f
 * **O Conceito**: O *ArchUnit* é uma biblioteca de teste que analisa a estrutura do código (o bytecode).
 * **A Aplicação**: Criamos "testes de arquitetura" que falham o build se alguém tentar, por exemplo, importar uma classe da pasta `command/` dentro da pasta `query/`. Isso garante que o padrão **CQRS** seja respeitado por todo o time para sempre.
 
-## 3. Rastreabilidade Distribuída (Micrometer Tracing)
+## 3. Rastreabilidade Distribuída (AT-14.1 — Micrometer Tracing + OpenTelemetry)
 
 Com ordens sendo enviadas freneticamente por robôs, entender por que uma transação falhou em um ecossistema de microsserviços é um desafio.
 
-* **O Conceito**: Cada requisição recebe um **Trace ID** único no momento em que entra pelo API Gateway (Kong).
-* **A Aplicação**: Esse ID viaja junto com a mensagem pelo RabbitMQ e por todos os bancos de dados. Se uma compra for concretizada na Wallet, mas a ordem não for atualizada no Mongo, podemos buscar pelo Trace ID e ver exatamente onde a cadeia de eventos quebrou.
+* **O Conceito**: Cada requisição recebe um **Trace ID** único no momento em que entra pelo API Gateway (Kong). Esse contexto é propagado automaticamente por todos os saltos — HTTP e AMQP — via o padrão **W3C TraceContext** (`traceparent` header).
+* **A Aplicação**: O trace viaja pelo RabbitMQ dentro do header `traceparent`. Se a liquidação falhar no wallet-service, o Jaeger exibe a árvore de spans completa: `placeOrder → ReserveFunds → FundsReserved → Match → Settlement`, localizando exatamente onde a cadeia quebrou.
 
+### 3.1 Implementação (AT-14.1)
 
+#### Dependências (sem versão explícita — gerenciadas pelo Spring Boot BOM 3.4.x)
+
+```xml
+<!-- Conecta Micrometer Observation API → OTel SDK. Ativa W3CPropagator automático. -->
+<dependency>
+    <groupId>io.micrometer</groupId>
+    <artifactId>micrometer-tracing-bridge-otel</artifactId>
+</dependency>
+
+<!-- Exporta spans via HTTP/protobuf para Jaeger (ou qualquer OTLP collector). -->
+<dependency>
+    <groupId>io.opentelemetry</groupId>
+    <artifactId>opentelemetry-exporter-otlp</artifactId>
+</dependency>
+```
+
+#### Configuração (`application.yaml`)
+
+```yaml
+management:
+  tracing:
+    sampling:
+      probability: 1.0       # dev: 100% dos spans; em prod reduzir para 0.1
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}/v1/traces
+
+logging:
+  pattern:
+    level: "%5p [${spring.application.name:},%X{traceId:-},%X{spanId:-}]"
+```
+
+O padrão de log injeta `traceId` e `spanId` via MDC em cada linha — permite `grep` direto por trace nos logs do container.
+
+#### Propagação W3C entre serviços
+
+O `RabbitTemplate` + `ObservationRegistry` criam um **span produtor** em cada `convertAndSend()` e injetam o header `traceparent` na mensagem AMQP:
+
+```
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+             └── version │ traceId (32 hex) │ spanId (16 hex) │ flags
+```
+
+O consumer (`@RabbitListener`) extrai o contexto via `W3CPropagator.extract()` e cria um **span filho** — o Jaeger exibe a relação `parent → child` dando visibilidade end-to-end.
+
+#### Enriquecimento de spans com atributos de domínio
+
+Os listeners da Saga adicionam atributos customizados ao span ativo via `Tracer.currentSpan()`:
+
+```java
+// FundsReservedEventConsumer, FundsReservationFailedEventConsumer, OrderCommandRabbitListener
+io.micrometer.tracing.Span currentSpan = tracer.currentSpan();
+if (currentSpan != null) {
+    currentSpan
+        .tag("saga.correlation_id", event.correlationId().toString())
+        .tag("order.id", order.getId().toString());
+}
+```
+
+No Jaeger, cada span exibe `saga.correlation_id` e `order.id` — facilitando correlação entre traces de serviços diferentes sem inspecionar logs.
+
+#### Jaeger no ambiente de desenvolvimento
+
+Jaeger `all-in-one:1.58` adicionado ao `docker-compose.dev.yml`:
+
+| Porta | Protocolo | Uso |
+|-------|-----------|-----|
+| `16686` | HTTP | UI do Jaeger — visualizar traces |
+| `4318`  | HTTP | OTLP receiver (apps → Jaeger) |
+| `4317`  | gRPC | OTLP receiver alternativo |
+
+Acesso: **`http://localhost:16686`** → selecionar serviço `order-service` ou `wallet-service`.
+
+#### Considerações de performance
+
+| Cenário | Overhead estimado |
+|---|---|
+| Sampling 1.0 em dev (500 spans/s × 5 µs/span) | ~2,5 ms total → ≤ 1% do SLA |
+| Produção recomendado: sampling 0.1 ou tail-based | ~0,25 ms |
+
+Em produção usar tail-based sampling via **OpenTelemetry Collector** (intermediário entre apps e backend) para amostrar apenas traces lentos ou com erro — sem reconfigurar os serviços.
+
+---
 
 ## 4. Tolerância a Falhas (Resilience4j)
 

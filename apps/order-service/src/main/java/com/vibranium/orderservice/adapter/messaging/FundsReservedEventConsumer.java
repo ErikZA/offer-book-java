@@ -17,6 +17,7 @@ import com.vibranium.orderservice.domain.model.ProcessedEvent;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
 import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
+import io.micrometer.tracing.Tracer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
@@ -74,17 +75,24 @@ public class FundsReservedEventConsumer {
     // ocorram na MESMA transação, eliminando o Dual Write.
     private final OrderOutboxRepository    outboxRepository;
     private final ObjectMapper             objectMapper;
+    // AT-14.1: Micrometer Tracing — enriquece o span ativo com atributos de domínio.
+    // O span é criado automaticamente pelo Spring AMQP (RabbitListenerObservation) ao
+    // receber a mensagem. Tracer.currentSpan() retorna null se não houver span ativo
+    // (ex.: execução fora de contexto AMQP observado), por isso a checagem isNotNull.
+    private final Tracer                   tracer;
 
     public FundsReservedEventConsumer(OrderRepository orderRepository,
                                       ProcessedEventRepository processedEventRepository,
                                       RedisMatchEngineAdapter matchEngine,
                                       OrderOutboxRepository outboxRepository,
-                                      ObjectMapper objectMapper) {
+                                      ObjectMapper objectMapper,
+                                      Tracer tracer) {
         this.orderRepository          = orderRepository;
         this.processedEventRepository = processedEventRepository;
         this.matchEngine              = matchEngine;
         this.outboxRepository         = outboxRepository;
         this.objectMapper             = objectMapper;
+        this.tracer                   = tracer;
     }
 
     /**
@@ -133,6 +141,18 @@ public class FundsReservedEventConsumer {
         }
 
         Order order = orderOpt.get();
+
+        // AT-14.1: Enriquece o span ativo com atributos de domínio da Saga.
+        // saga.correlation_id: vincula este span ao trace da Saga inteira no Jaeger.
+        // order.id:            identifica o agregado Order neste span.
+        // Spring AMQP cria um span produtor/consumidor por mensagem via RabbitListenerObservation.
+        // tracer.currentSpan() retorna o span do listener; pode ser null em testes a frio.
+        io.micrometer.tracing.Span currentSpan = tracer.currentSpan();
+        if (currentSpan != null) {
+            currentSpan
+                    .tag("saga.correlation_id", event.correlationId().toString())
+                    .tag("order.id",            order.getId().toString());
+        }
 
         // 3. Tenta executar o match no Redis via Lua atomico
         MatchResult result;

@@ -150,6 +150,12 @@ logging:
     level:
         root: INFO
         com.vibranium: DEBUG
+    # AT-14.1: Injeta traceId e spanId no padrão de log via MDC.
+    # Quando o Micrometer Tracing Bridge está ativo e há um span corrente,
+    # as variáveis %X{traceId} e %X{spanId} são resolvidas automaticamente.
+    # Permite correlacionar logs com traces no Jaeger por simples grep de traceId.
+    pattern:
+        level: "%5p [${spring.application.name:},%X{traceId:-},%X{spanId:-}]"
 
 management:
     endpoints:
@@ -159,3 +165,15 @@ management:
     endpoint:
         health:
             show-details: always
+    # AT-14.1: Configure Micrometer Tracing com sampling 100% no ambiente dev.
+    # Garante que todos os spans da Saga (placeOrder → FundsReserved → Match → Settlement)
+    # sejam exportados para o Jaeger sem amostragem.
+    tracing:
+        sampling:
+            probability: 1.0
+    # AT-14.1: OTLP exporter aponta para o Jaeger do docker-compose.dev.yml.
+    # OTEL_EXPORTER_OTLP_ENDPOINT: variável injetada pelo compose (http://jaeger:4318).
+    # Fallback: localhost:4318 para IDs rodando fora do Docker.
+    otlp:
+        tracing:
+            endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}/v1/traces

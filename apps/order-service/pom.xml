@@ -98,6 +98,30 @@
         </dependency>
 
         <!-- =====================================================================
+             AT-14.1 — Observabilidade Distribuída: Micrometer Tracing + OpenTelemetry
+        ====================================================================== -->
+
+        <!-- Micrometer Tracing Bridge para OpenTelemetry.
+             Conecta a API de observações do Micrometer (SpringBoot/AMQP auto-instrumentado)
+             ao SDK do OpenTelemetry, convertendo spans Micrometer em spans OTel.
+             Gerenciado pelo Spring Boot BOM 3.4.x (micrometer-tracing 1.4.x).
+             Ativa auto-configuração OtelTracer + W3CPropagator no Spring AMQP e Web. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+
+        <!-- Exportador OTLP (OpenTelemetry Protocol) para envio de spans ao Jaeger.
+             Usa HTTP/protobuf para transportar spans ao endpoint configurado:
+               management.otlp.tracing.endpoint=http://jaeger:4318/v1/traces
+             Sampling 1.0 = todos os spans exportados (ambiente dev).
+             Gerenciado pelo Spring Boot BOM (opentelemetry-bom 1.36.x). -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+
+        <!-- =====================================================================
              RUNTIME — Drivers e Infraestrutura
         ====================================================================== -->
 

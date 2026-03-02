@@ -14,6 +14,7 @@ import com.vibranium.orderservice.domain.model.ProcessedEvent;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
 import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
+import io.micrometer.tracing.Tracer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -99,6 +100,11 @@ class FundsReservedEventConsumerTest {
     @Mock
     private Channel channel;
 
+    // AT-14.1: Tracer mock necessário após adição da dependência no construtor.
+    // NoOpTracer: tracer.currentSpan() retorna null, o enriquecimento é ignorado nos unit tests.
+    @Mock
+    private Tracer tracer;
+
     @Captor
     private ArgumentCaptor<OrderOutboxMessage> outboxCaptor;
 
@@ -136,7 +142,8 @@ class FundsReservedEventConsumerTest {
                 processedEventRepository,
                 matchEngine,
                 outboxRepository,
-                objectMapper
+                objectMapper,
+                tracer   // AT-14.1: tracer injetado para enriquecimento de spans
         );
     }
 

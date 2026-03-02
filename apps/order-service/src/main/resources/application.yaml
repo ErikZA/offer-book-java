@@ -145,6 +145,13 @@ logging:
         com.vibranium: DEBUG
         org.springframework.amqp: INFO
         org.springframework.security: WARN
+    # AT-14.1: Inclui traceId e spanId no nível de cada log line.
+    # O MDC (Mapped Diagnostic Context) é populado automaticamente pelo
+    # Micrometer Tracing Bridge quando um span está ativo.
+    # Formato: LEVEL [app-name,traceId,spanId] package.Class - mensagem
+    # Exemplo: DEBUG [order-service,4bf92f3577b34da6a3ce929d0e0e4736,00f067aa0ba902b7] ...
+    pattern:
+        level: "%5p [${spring.application.name:},%X{traceId:-},%X{spanId:-}]"
 
 management:
     endpoints:
@@ -154,3 +161,17 @@ management:
     endpoint:
         health:
             show-details: always
+    # AT-14.1: Micrometer Tracing + OpenTelemetry
+    # sampling.probability: 1.0 = exporta 100% dos spans em dev.
+    # Em producão, reduzir para 0.1 (10%) ou usar tail-based sampling
+    # no OpenTelemetry Collector para evitar overhead de I/O excessivo.
+    tracing:
+        sampling:
+            probability: 1.0
+    # AT-14.1: Exportação OTLP para Jaeger.
+    # OTEL_EXPORTER_OTLP_ENDPOINT: variável de ambiente injetada pelo docker-compose.dev.yml
+    # Fallback: localhost:4318 para desenvolvimento local sem Docker.
+    # O endpoint /v1/traces é o path-padrão do OTLP HTTP receiver do Jaeger.
+    otlp:
+        tracing:
+            endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}/v1/traces

@@ -15,6 +15,7 @@ Implementa CQRS com PostgreSQL no Command Side (escrita) e MongoDB no Query Side
 - ✅ Executar o Motor de Match atômico via Script Lua no Redis Sorted Set
 - ✅ Consumir eventos `REGISTER` do Keycloak (plugin aznamier) via `amq.topic` e popular `tb_user_registry`
 - ✅ Rotear mensagens falhas para Dead Letter Queue (`order.dead-letter`) após retry esgotado
+- ✅ Propagação W3C TraceContext em mensagens AMQP (`traceparent` header) e enriquecimento de spans com `saga.correlation_id` e `order.id` (AT-14.1)
 
 ### Query Side — Read Model (US-003)
 - ✅ Projetar eventos da Saga em `OrderDocument` no MongoDB (consistência eventual)
@@ -213,6 +214,7 @@ mvn test -pl apps/order-service -Dtest=RoutingKeyLiteralTest
 | **`RedisClusterHashTagIT`** | **Integração (CRC16 + Testcontainers Cluster)** | **CRC16 slot equality; CROSSSLOT antes e sem erro após hash tags em cluster real** | **AT-11.1** |
 | `OrderQueryControllerTest` | Integração REST | Read Model MongoDB — paginação e detalhe | — |
 | **`RoutingKeyLiteralTest`** | **Guarda Arquitetural** | **Impede strings literais de routing key fora de `RabbitMQConfig`** | **AT-02.2** |
+| **`TracingW3CPropagationIntegrationTest`** | **Integração (Tracing)** | **RED→GREEN: header W3C `traceparent` injetado pelo `RabbitTemplate` após AT-14.1** | **AT-14.1** |
 
 ### AT-11.1 — Hash Tags Redis para Redis Cluster
 

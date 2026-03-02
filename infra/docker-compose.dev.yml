@@ -120,6 +120,47 @@ services:
             retries: 5
 
     # ================================================================================
+    # AT-14.1 — Jaeger v1.58 — Distributed Tracing (OTLP HTTP)
+    # ================================================================================
+    # UI:           http://localhost:16686  — visualizar traces end-to-end da Saga
+    # OTLP HTTP:    http://localhost:4318   — recebe spans dos serviços (via Spring OTLP exporter)
+    #
+    # Como funciona OTLP (OpenTelemetry Protocol):
+    #   1. Spring Boot (micrometer-tracing-bridge-otel) cria spans para cada request HTTP
+    #      e listener AMQP.
+    #   2. O opentelemetry-exporter-otlp empacota os spans em protobuf e faz POST para
+    #      http://jaeger:4318/v1/traces a cada ~10s (intervalo padrão do OTel SDK).
+    #   3. O Jaeger OTLP receiver aceita, armazena em memória e expõe na UI.
+    #   4. A UI exibe o trace completo: placeOrder → FundsReserved → Match → Settlement.
+    #
+    # Impacto de sampling 100% (probability: 1.0):
+    #   - Todos os spans são criados e exportados (sem descarte por amostragem).
+    #   - Em dev: aceitável (baixo volume). Em prod: usar 0.1 ou tail-based sampling.
+    #   - Com 500 ordens/s e span overhead ~5μs/span: ~2.5ms overhead total (≤1% do SLA).
+    # ================================================================================
+    jaeger:
+        image: jaegertracing/all-in-one:1.58
+        container_name: vibranium-jaeger-dev
+        ports:
+            - '16686:16686'  # Jaeger UI (traces end-to-end visíveis aqui)
+            - '4317:4317'    # OTLP gRPC (alternativo ao HTTP)
+            - '4318:4318'    # OTLP HTTP (endpoint configurado nos serviços)
+        environment:
+            # Habilita o OTLP receiver HTTP + gRPC no Jaeger
+            COLLECTOR_OTLP_ENABLED: 'true'
+            # Armazena spans em memória (dev only).
+            # Em produção, usar backend persistente: Elasticsearch, Cassandra ou OpenSearch.
+            SPAN_STORAGE_TYPE: memory
+        networks:
+            - vibranium-network-dev
+        healthcheck:
+            test: ['CMD-SHELL', 'wget --quiet --tries=1 --spider http://localhost:16686/ || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+            start_period: 10s
+
+    # ================================================================================
     # Keycloak Database — Banco dedicado para o Keycloak (separado dos bancos de app)
     # ================================================================================
     keycloak-db:
@@ -278,6 +319,12 @@ services:
             SPRING_RABBITMQ_PORT: '5672'
             SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
             SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS}
+            # AT-14.1: OpenTelemetry — envia spans ao Jaeger via OTLP HTTP
+            # OTEL_EXPORTER_OTLP_ENDPOINT sobrescreve o fallback 'localhost:4318' do application.yaml
+            # O path /v1/traces é concatenado no application.yaml (management.otlp.tracing.endpoint)
+            OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+            # Sampling 100%: todos os spans exportados em dev para visão completa no Jaeger
+            MANAGEMENT_TRACING_SAMPLING_PROBABILITY: '1.0'
         volumes:
             - ../apps/order-service:/app/apps/order-service
             - ../libs:/app/libs
@@ -296,6 +343,8 @@ services:
             rabbitmq:
                 condition: service_healthy
             keycloak:
+                condition: service_healthy
+            jaeger:
                 condition: service_healthy
         networks:
             - vibranium-network-dev
@@ -331,6 +380,9 @@ services:
             SPRING_RABBITMQ_PORT: '5672'
             SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
             SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS}
+            # AT-14.1: OpenTelemetry — envia spans ao Jaeger via OTLP HTTP
+            OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+            MANAGEMENT_TRACING_SAMPLING_PROBABILITY: '1.0'
         volumes:
             - ../apps/wallet-service:/app/apps/wallet-service
             - ../libs:/app/libs
@@ -344,6 +396,8 @@ services:
             rabbitmq:
                 condition: service_healthy
             keycloak:
+                condition: service_healthy
+            jaeger:
                 condition: service_healthy
         networks:
             - vibranium-network-dev

@@ -70,6 +70,28 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+
+        <!-- =====================================================================
+             AT-14.1 — Observabilidade Distribuída: Micrometer Tracing + OpenTelemetry
+        ====================================================================== -->
+
+        <!-- Micrometer Tracing Bridge para OpenTelemetry.
+             Converte spans Micrometer (auto-instrumentados pelo Spring AMQP/Web)
+             em spans OTel. Spring Boot BOM 3.4.x gerencia a versão (1.4.x).
+             Habilita W3C TraceContext propagation no RabbitTemplate e nos listeners. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+
+        <!-- Exportador OTLP para envio de spans ao Jaeger via HTTP/protobuf.
+             Endpoint: management.otlp.tracing.endpoint=http://jaeger:4318/v1/traces
+             Sampling 1.0 em dev para capturar todos os spans (placeOrder → Settlement). -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-devtools</artifactId>
