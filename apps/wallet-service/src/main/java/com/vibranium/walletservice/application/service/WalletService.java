@@ -42,6 +42,16 @@ import java.util.UUID;
  *   <li>Transactional Outbox gravado na mesma transação da alteração do saldo.</li>
  *   <li>Chave de idempotência gravada atomicamente, prevenindo double-processing.</li>
  * </ul>
+ *
+ * <h3>Prevenção de Deadlock ABBA (AT-03.1)</h3>
+ * <p>O método {@link #settleFunds} adquire locks pessimistas em <em>duas</em> carteiras
+ * por transação. Sem ordenação, dois settlements concorrentes sobre as mesmas carteiras
+ * poderiam adquirir locks em ordem inversa, criando espera circular (deadlock ABBA).</p>
+ *
+ * <p>Solução aplicada: os locks são sempre adquiridos em <b>ordem crescente de UUID</b>
+ * ({@link UUID#compareTo}), garantindo uma sequência global determinística. A semântica
+ * de buyer/seller é restaurada por mapeamento após a aquisição dos locks —
+ * sem alterar nenhum contrato público nem introduzir lock Java/synchronized.</p>
  */
 @Service
 public class WalletService {
@@ -171,7 +181,8 @@ public class WalletService {
      *
      * <p>Fluxo happy path:</p>
      * <ol>
-     *   <li>Adquire lock pessimista nas duas carteiras.</li>
+     *   <li>Adquire lock pessimista nas duas carteiras <b>em ordem crescente de UUID</b>
+     *       (prevenção de deadlock ABBA — AT-03.1).</li>
      *   <li>Comprador: brlLocked -= totalBrl, vibAvailable += matchAmount.</li>
      *   <li>Vendedor: vibLocked -= matchAmount, brlAvailable += totalBrl.</li>
      *   <li>Grava {@code FundsSettledEvent} no outbox.</li>
@@ -179,6 +190,11 @@ public class WalletService {
      *
      * <p>Em caso de falha (carteira não encontrada ou saldo insuficiente),
      * grava {@code FundsSettlementFailedEvent} no outbox sem alterar saldos.</p>
+     *
+     * <p><b>Lock Ordering (AT-03.1):</b> para evitar deadlock entre settlements
+     * concorrentes, os locks são sempre adquiridos na ordem {@code min(buyerWalletId,
+     * sellerWalletId)} primeiro, {@code max(...)} segundo — via {@link UUID#compareTo}.
+     * A semântica buyer/seller é restaurada por mapeamento após os locks.</p>
      *
      * @param cmd       Comando com IDs das carteiras, preço e quantidade do match.
      * @param messageId ID da mensagem AMQP para idempotência.
@@ -191,11 +207,39 @@ public class WalletService {
         idempotencyKeyRepository.save(new IdempotencyKey(messageId));
 
         try {
-            Wallet buyer = walletRepository.findByIdForUpdate(cmd.buyerWalletId())
-                    .orElseThrow(() -> WalletNotFoundException.forWalletId(cmd.buyerWalletId()));
+            /*
+             * Prevenção de deadlock ABBA (AT-03.1) — Lock Ordering determinístico.
+             *
+             * Problema: sem ordenação, dois settlements concorrentes sobre as mesmas
+             * carteiras podem adquirir locks em sentido oposto e criar espera circular:
+             *
+             *   Thread 1: lock(buyerA) → espera lock(sellerB)
+             *   Thread 2: lock(buyerB) → espera lock(sellerA)  ← deadlock
+             *
+             * Solução: adquirir SEMPRE o lock do menor UUID primeiro.
+             * UUID implementa Comparable<UUID> com comparação de long sinalizado nos
+             * 128 bits — a ordenação é determinística e global.
+             * Quaisquer dois threads processando as mesmas carteiras bloqueiam na mesma
+             * sequência, eliminando a possibilidade de espera circular.
+             *
+             * A semântica buyer/seller é restaurada pelo mapeamento após os locks.
+             */
+            boolean buyerIsFirst = cmd.buyerWalletId().compareTo(cmd.sellerWalletId()) < 0;
+            UUID firstId  = buyerIsFirst ? cmd.buyerWalletId() : cmd.sellerWalletId();
+            UUID secondId = buyerIsFirst ? cmd.sellerWalletId() : cmd.buyerWalletId();
 
-            Wallet seller = walletRepository.findByIdForUpdate(cmd.sellerWalletId())
-                    .orElseThrow(() -> WalletNotFoundException.forWalletId(cmd.sellerWalletId()));
+            // Adquire o lock do menor UUID primeiro — garante ordem global consistente
+            Wallet firstWallet = walletRepository.findByIdForUpdate(firstId)
+                    .orElseThrow(() -> WalletNotFoundException.forWalletId(firstId));
+
+            // Adquire o lock do maior UUID segundo — sem risco de espera circular
+            Wallet secondWallet = walletRepository.findByIdForUpdate(secondId)
+                    .orElseThrow(() -> WalletNotFoundException.forWalletId(secondId));
+
+            // Restaura a semântica original: buyer e seller apontam para as carteiras corretas
+            // independentemente da ordem em que os locks foram adquiridos.
+            Wallet buyer  = buyerIsFirst ? firstWallet  : secondWallet;
+            Wallet seller = buyerIsFirst ? secondWallet : firstWallet;
 
             BigDecimal totalBrl = cmd.matchPrice().multiply(cmd.matchAmount());
 
