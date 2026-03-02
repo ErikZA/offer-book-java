@@ -154,8 +154,13 @@ logging:
     # Quando o Micrometer Tracing Bridge está ativo e há um span corrente,
     # as variáveis %X{traceId} e %X{spanId} são resolvidas automaticamente.
     # Permite correlacionar logs com traces no Jaeger por simples grep de traceId.
+    #
+    # AT-14.2: Adiciona correlationId e orderId ao padrão de log.
+    # correlationId: propagado pelos listeners AMQP via MDC.putCloseable() — permite
+    #   fazer grep correlationId=<uuid> para rastrear toda a Saga no wallet-service.
+    # orderId: identifica o agregado (order ou match) na linha de log.
     pattern:
-        level: "%5p [${spring.application.name:},%X{traceId:-},%X{spanId:-}]"
+        level: '%5p [${spring.application.name:},%X{traceId:-},%X{spanId:-},%X{correlationId:-},%X{orderId:-}]'
 
 management:
     endpoints:

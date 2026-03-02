@@ -148,10 +148,16 @@ logging:
     # AT-14.1: Inclui traceId e spanId no nível de cada log line.
     # O MDC (Mapped Diagnostic Context) é populado automaticamente pelo
     # Micrometer Tracing Bridge quando um span está ativo.
-    # Formato: LEVEL [app-name,traceId,spanId] package.Class - mensagem
-    # Exemplo: DEBUG [order-service,4bf92f3577b34da6a3ce929d0e0e4736,00f067aa0ba902b7] ...
+    #
+    # AT-14.2: Adiciona correlationId e orderId ao padrão de log.
+    # correlationId: propagado pelos listeners AMQP via MDC.putCloseable() — agrupa
+    #   todas as linhas da Saga (placeOrder → FundsReserved → Match → Settlement).
+    # orderId: identifica o agregado Order na linha de log.
+    # Permite: grep correlationId=<uuid> → retorna toda a Saga nos logs.
+    # Formato: LEVEL [app-name,traceId,spanId,correlationId,orderId] Class - mensagem
+    # Exemplo: INFO [order-service,4bf92f3577b34da,00f067aa,-,corrId,ordId] ...
     pattern:
-        level: "%5p [${spring.application.name:},%X{traceId:-},%X{spanId:-}]"
+        level: '%5p [${spring.application.name:},%X{traceId:-},%X{spanId:-},%X{correlationId:-},%X{orderId:-}]'
 
 management:
     endpoints:

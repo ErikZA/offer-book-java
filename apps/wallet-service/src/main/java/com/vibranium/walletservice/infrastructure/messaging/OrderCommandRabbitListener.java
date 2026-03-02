@@ -9,6 +9,7 @@ import com.vibranium.walletservice.domain.repository.IdempotencyKeyRepository;
 import io.micrometer.tracing.Tracer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Component;
@@ -35,6 +36,12 @@ import java.nio.charset.StandardCharsets;
  *   <li>Sucesso — ACK após commit.</li>
  *   <li>Falha inesperada — NACK sem requeue (poison pill prevention).</li>
  * </ul>
+ *
+ * <p><strong>Rastreabilidade (AT-14.2):</strong> cada branch de comando envolve seu corpo em
+ * {@code try (MDC.putCloseable("correlationId", ...))} para que {@code correlationId}
+ * e {@code orderId} (ou {@code matchId} para {@link SettleFundsCommand}) apareçam em
+ * todas as linhas de log do processamento do comando. O MDC é limpo automaticamente
+ * ao final do try-with-resources, prevenindo vazamento em threads do pool AMQP.</p>
  */
 @Component
 public class OrderCommandRabbitListener {
@@ -101,22 +108,41 @@ public class OrderCommandRabbitListener {
 
             if (ReserveFundsCommand.class.getName().equals(commandType)) {
                 ReserveFundsCommand cmd = objectMapper.readValue(body, ReserveFundsCommand.class);
-                // AT-14.1: Enriquece o span do listener com atributos de domínio.
-                // O trace no Jaeger mostrará: order-service:placeOrder → wallet-service:ReserveFunds
-                // com saga.correlation_id permitindo correlacionar ao trace do order-service.
-                enrichSpan(cmd.correlationId(), cmd.orderId());
-                walletService.reserveFunds(cmd, messageId);
-                logger.info("ReserveFundsCommand processed: walletId={}, messageId={}",
-                        cmd.walletId(), messageId);
+                // AT-14.2: MDC popula correlationId e orderId para rastreabilidade em todos os
+                // logs desta execução. try-with-resources remove correlationId automaticamente;
+                // finally remove orderId — sem memory leak em threads do pool AMQP reutilizadas.
+                try (var ignoredCorr = MDC.putCloseable("correlationId", cmd.correlationId().toString())) {
+                    MDC.put("orderId", cmd.orderId().toString());
+                    try {
+                        // AT-14.1: Enriquece o span do listener com atributos de domínio.
+                        // O trace no Jaeger mostrará: order-service:placeOrder → wallet-service:ReserveFunds
+                        // com saga.correlation_id permitindo correlacionar ao trace do order-service.
+                        enrichSpan(cmd.correlationId(), cmd.orderId());
+                        walletService.reserveFunds(cmd, messageId);
+                        logger.info("ReserveFundsCommand processed: walletId={}, messageId={}",
+                                cmd.walletId(), messageId);
+                    } finally {
+                        MDC.remove("orderId");
+                    }
+                }
 
             } else if (SettleFundsCommand.class.getName().equals(commandType)) {
                 SettleFundsCommand cmd = objectMapper.readValue(body, SettleFundsCommand.class);
-                // AT-14.1: SettleFundsCommand também carrega correlationId da Saga
-                // (via matchId); mapeamos matchId como order.id para visível no Jaeger.
-                enrichSpanSettle(cmd.correlationId(), cmd.matchId());
-                walletService.settleFunds(cmd, messageId);
-                logger.info("SettleFundsCommand processed: matchId={}, messageId={}",
-                        cmd.matchId(), messageId);
+                // AT-14.2: para SettleFundsCommand, matchId identifica o trade em liquidação —
+                // usado como orderId no MDC para rastreabilidade do settlement no log.
+                try (var ignoredCorr = MDC.putCloseable("correlationId", cmd.correlationId().toString())) {
+                    MDC.put("orderId", cmd.matchId().toString());
+                    try {
+                        // AT-14.1: SettleFundsCommand também carrega correlationId da Saga
+                        // (via matchId); mapeamos matchId como order.id para visível no Jaeger.
+                        enrichSpanSettle(cmd.correlationId(), cmd.matchId());
+                        walletService.settleFunds(cmd, messageId);
+                        logger.info("SettleFundsCommand processed: matchId={}, messageId={}",
+                                cmd.matchId(), messageId);
+                    } finally {
+                        MDC.remove("orderId");
+                    }
+                }
 
             } else {
                 // Tipo não reconhecido: tenta inferir pelo conteúdo do JSON

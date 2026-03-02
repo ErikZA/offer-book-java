@@ -11,6 +11,7 @@ import com.vibranium.orderservice.query.service.OrderAtomicHistoryWriter;
 import org.bson.types.Decimal128;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -48,6 +49,14 @@ import java.math.BigDecimal;
  * mínimos disponíveis ({@code $setOnInsert}). Quando {@code ORDER_RECEIVED} chegar,
  * {@link OrderAtomicHistoryWriter#enrichOrderFieldsIfAbsent} preencherá os campos nulos
  * de forma idempotente sem sobrescrever dados já existentes.</p>
+ *
+ * <h3>Rastreabilidade — AT-14.2 MDC por listener</h3>
+ * <p>Cada método {@code @RabbitListener} envolve seu corpo em
+ * {@code try (MDC.putCloseable("correlationId", ...))} de modo que todas as linhas de log
+ * emitidas durante o processamento da projeção incluam automaticamente
+ * {@code correlationId} e {@code orderId} (ou {@code matchId} para
+ * {@link MatchExecutedEvent}, que afeta dois lados sem {@code orderId} único).
+ * O MDC é limpo ao final do bloco, sem memory leak em threads do pool AMQP reutilizadas.</p>
  */
 @Component
 // Criado apenas quando app.mongodb.enabled=true (ou quando a propriedade está ausente,
@@ -91,46 +100,55 @@ public class OrderEventProjectionConsumer {
         String orderId = event.orderId().toString();
         String userId  = event.userId().toString();
 
-        logger.debug("Projeção ORDER_RECEIVED: orderId={} userId={}", orderId, userId);
+        // AT-14.2: MDC garante correlationId e orderId em todos os logs desta projeção.
+        try (var ignoredCorr = MDC.putCloseable("correlationId", event.correlationId().toString())) {
+            MDC.put("orderId", orderId);
+            try {
+                logger.debug("Projeção ORDER_RECEIVED: orderId={} userId={}", orderId, userId);
 
-        OrderHistoryEntry entry = new OrderHistoryEntry(
-                event.eventId().toString(),
-                "ORDER_RECEIVED",
-                "type=%s price=%s amount=%s".formatted(
-                        event.orderType(), event.price(), event.amount()),
-                event.occurredOn()
-        );
+                OrderHistoryEntry entry = new OrderHistoryEntry(
+                        event.eventId().toString(),
+                        "ORDER_RECEIVED",
+                        "type=%s price=%s amount=%s".formatted(
+                                event.orderType(), event.price(), event.amount()),
+                        event.occurredOn()
+                );
 
-        // Upsert atômico: cria o documento com todos os campos de negócio via $setOnInsert
-        // se o documento não existir. Se existir (stub lazy do AT-05.1), apenas appenda
-        // ao histórico (os $setOnInsert não são aplicados a documentos existentes).
-        boolean appended = atomicWriter.upsertAndAppend(
-                orderId, entry, event.occurredOn(),
-                // $setOnInsert — somente na criação do documento (nunca sobrescreve).
-                // Decimal128 explícito: garante tipo BSON numérico (não String) para
-                // campos BigDecimal — necessário para $inc posterior sem TypeMismatch.
-                upsert -> upsert
-                        .setOnInsert("userId",       userId)
-                        .setOnInsert("orderType",    event.orderType().name())
-                        .setOnInsert("price",        new Decimal128(event.price()))
-                        .setOnInsert("originalQty",  new Decimal128(event.amount()))
-                        .setOnInsert("remainingQty", new Decimal128(event.amount()))
-                        .setOnInsert("status",       "PENDING"),
-                null  // sem extraUpdates: ORDER_RECEIVED não transiciona status em documentos existentes
-        );
+                // Upsert atômico: cria o documento com todos os campos de negócio via $setOnInsert
+                // se o documento não existir. Se existir (stub lazy do AT-05.1), apenas appenda
+                // ao histórico (os $setOnInsert não são aplicados a documentos existentes).
+                boolean appended = atomicWriter.upsertAndAppend(
+                        orderId, entry, event.occurredOn(),
+                        // $setOnInsert — somente na criação do documento (nunca sobrescreve).
+                        // Decimal128 explícito: garante tipo BSON numérico (não String) para
+                        // campos BigDecimal — necessário para $inc posterior sem TypeMismatch.
+                        upsert -> upsert
+                                .setOnInsert("userId",       userId)
+                                .setOnInsert("orderType",    event.orderType().name())
+                                .setOnInsert("price",        new Decimal128(event.price()))
+                                .setOnInsert("originalQty",  new Decimal128(event.amount()))
+                                .setOnInsert("remainingQty", new Decimal128(event.amount()))
+                                .setOnInsert("status",       "PENDING"),
+                        null  // sem extraUpdates: ORDER_RECEIVED não transiciona status em documentos existentes
+                );
 
-        if (!appended) {
-            logger.debug("Evento ORDER_RECEIVED duplicado ignorado: eventId={} orderId={}",
-                    event.eventId(), orderId);
-            return;
+                if (!appended) {
+                    logger.debug("Evento ORDER_RECEIVED duplicado ignorado: eventId={} orderId={}",
+                            event.eventId(), orderId);
+                    return;
+                }
+
+                // AT-05.1: enriquece campos nulos de stub lazy (criado por evento out-of-order anterior).
+                // Dois updateFirst condicionais — não afetam documentos já completos (campos não null).
+                atomicWriter.enrichOrderFieldsIfAbsent(
+                        orderId, userId, event.orderType().name(), event.price(), event.amount());
+
+                logger.info("Read Model criado/enriquecido atomicamente: orderId={} userId={}", orderId, userId);
+
+            } finally {
+                MDC.remove("orderId");
+            }
         }
-
-        // AT-05.1: enriquece campos nulos de stub lazy (criado por evento out-of-order anterior).
-        // Dois updateFirst condicionais — não afetam documentos já completos (campos não null).
-        atomicWriter.enrichOrderFieldsIfAbsent(
-                orderId, userId, event.orderType().name(), event.price(), event.amount());
-
-        logger.info("Read Model criado/enriquecido atomicamente: orderId={} userId={}", orderId, userId);
     }
 
     // =========================================================================
@@ -153,33 +171,42 @@ public class OrderEventProjectionConsumer {
     public void onFundsReserved(FundsReservedEvent event) {
         String orderId = event.orderId().toString();
 
-        logger.debug("Projeção FUNDS_RESERVED: orderId={} correlationId={}",
-                orderId, event.correlationId());
+        // AT-14.2: MDC popula correlationId e orderId para logs da projeção FUNDS_RESERVED.
+        try (var ignoredCorr = MDC.putCloseable("correlationId", event.correlationId().toString())) {
+            MDC.put("orderId", orderId);
+            try {
+                logger.debug("Projeção FUNDS_RESERVED: orderId={} correlationId={}",
+                        orderId, event.correlationId());
 
-        OrderHistoryEntry entry = new OrderHistoryEntry(
-                event.eventId().toString(),
-                "FUNDS_RESERVED",
-                "asset=%s amount=%s walletId=%s".formatted(
-                        event.asset(), event.reservedAmount(), event.walletId()),
-                event.occurredOn()
-        );
+                OrderHistoryEntry entry = new OrderHistoryEntry(
+                        event.eventId().toString(),
+                        "FUNDS_RESERVED",
+                        "asset=%s amount=%s walletId=%s".formatted(
+                                event.asset(), event.reservedAmount(), event.walletId()),
+                        event.occurredOn()
+                );
 
-        // AT-05.1 + AT-05.2: upsert atômico com idempotência por eventId.
-        // Se documento não existe (out-of-order), cria stub com status OPEN.
-        // FUNDS_RESERVED significa que os fundos foram reservados → status = OPEN é correto
-        // mesmo para stubs criados lazily.
-        boolean appended = atomicWriter.upsertAndAppend(
-                orderId, entry, event.occurredOn(),
-                null,   // sem $setOnInsert além de createdAt (já no upsertAndAppend base)
-                extra -> extra.set("status", "OPEN")  // sempre transiciona para OPEN
-        );
+                // AT-05.1 + AT-05.2: upsert atômico com idempotência por eventId.
+                // Se documento não existe (out-of-order), cria stub com status OPEN.
+                // FUNDS_RESERVED significa que os fundos foram reservados → status = OPEN é correto
+                // mesmo para stubs criados lazily.
+                boolean appended = atomicWriter.upsertAndAppend(
+                        orderId, entry, event.occurredOn(),
+                        null,   // sem $setOnInsert além de createdAt (já no upsertAndAppend base)
+                        extra -> extra.set("status", "OPEN")  // sempre transiciona para OPEN
+                );
 
-        if (!appended) {
-            logger.debug("Evento FUNDS_RESERVED duplicado ignorado: eventId={}", event.eventId());
-            return;
+                if (!appended) {
+                    logger.debug("Evento FUNDS_RESERVED duplicado ignorado: eventId={}", event.eventId());
+                    return;
+                }
+
+                logger.info("Read Model atualizado atomicamente: orderId={} status=OPEN", orderId);
+
+            } finally {
+                MDC.remove("orderId");
+            }
         }
-
-        logger.info("Read Model atualizado atomicamente: orderId={} status=OPEN", orderId);
     }
 
     // =========================================================================
@@ -209,15 +236,25 @@ public class OrderEventProjectionConsumer {
     // JpaTransactionManager do Command Side sem ambiguidade.
     @Transactional("mongoTransactionManager")
     public void onMatchExecuted(MatchExecutedEvent event) {
-        logger.debug("Projeção MATCH_EXECUTED: matchId={} buyOrderId={} sellOrderId={}",
-                event.matchId(), event.buyOrderId(), event.sellOrderId());
+        // AT-14.2: para MatchExecutedEvent não há um orderId único (afeta buyer e seller).
+        // Usamos matchId como orderId no MDC — identifica o match que está sendo projetado.
+        try (var ignoredCorr = MDC.putCloseable("correlationId", event.correlationId().toString())) {
+            MDC.put("orderId", event.matchId().toString());
+            try {
+                logger.debug("Projeção MATCH_EXECUTED: matchId={} buyOrderId={} sellOrderId={}",
+                        event.matchId(), event.buyOrderId(), event.sellOrderId());
 
-        // Atualiza ambos os lados do trade dentro da mesma transação MongoDB.
-        // Se updateDocumentWithMatch(seller) lançar exceção, o @Transactional
-        // instrui o MongoTransactionManager a fazer abortTransaction(),
-        // revertendo automaticamente a modificação do buyer — sem estado parcial.
-        updateDocumentWithMatch(event.buyOrderId().toString(), event);
-        updateDocumentWithMatch(event.sellOrderId().toString(), event);
+                // Atualiza ambos os lados do trade dentro da mesma transação MongoDB.
+                // Se updateDocumentWithMatch(seller) lançar exceção, o @Transactional
+                // instrui o MongoTransactionManager a fazer abortTransaction(),
+                // revertendo automaticamente a modificação do buyer — sem estado parcial.
+                updateDocumentWithMatch(event.buyOrderId().toString(), event);
+                updateDocumentWithMatch(event.sellOrderId().toString(), event);
+
+            } finally {
+                MDC.remove("orderId");
+            }
+        }
     }
 
     /**
@@ -281,30 +318,39 @@ public class OrderEventProjectionConsumer {
     public void onOrderCancelled(OrderCancelledEvent event) {
         String orderId = event.orderId().toString();
 
-        logger.debug("Projeção ORDER_CANCELLED: orderId={} reason={}", orderId, event.reason());
+        // AT-14.2: MDC popula correlationId e orderId para logs do cancelamento na projeção.
+        try (var ignoredCorr = MDC.putCloseable("correlationId", event.correlationId().toString())) {
+            MDC.put("orderId", orderId);
+            try {
+                logger.debug("Projeção ORDER_CANCELLED: orderId={} reason={}", orderId, event.reason());
 
-        OrderHistoryEntry entry = new OrderHistoryEntry(
-                event.eventId().toString(),
-                "ORDER_CANCELLED",
-                "reason=%s detail=%s".formatted(event.reason(), event.detail()),
-                event.occurredOn()
-        );
+                OrderHistoryEntry entry = new OrderHistoryEntry(
+                        event.eventId().toString(),
+                        "ORDER_CANCELLED",
+                        "reason=%s detail=%s".formatted(event.reason(), event.detail()),
+                        event.occurredOn()
+                );
 
-        // AT-05.1 + AT-05.2: upsert atômico. Cancelamentos são terminais —
-        // status CANCELLED mesmo em stubs criados lazily.
-        boolean appended = atomicWriter.upsertAndAppend(
-                orderId, entry, event.occurredOn(),
-                null,   // sem $setOnInsert adicional
-                extra -> extra.set("status", "CANCELLED")
-        );
+                // AT-05.1 + AT-05.2: upsert atômico. Cancelamentos são terminais —
+                // status CANCELLED mesmo em stubs criados lazily.
+                boolean appended = atomicWriter.upsertAndAppend(
+                        orderId, entry, event.occurredOn(),
+                        null,   // sem $setOnInsert adicional
+                        extra -> extra.set("status", "CANCELLED")
+                );
 
-        if (!appended) {
-            logger.debug("Evento ORDER_CANCELLED duplicado ignorado: eventId={}", event.eventId());
-            return;
+                if (!appended) {
+                    logger.debug("Evento ORDER_CANCELLED duplicado ignorado: eventId={}", event.eventId());
+                    return;
+                }
+
+                logger.info("Read Model atualizado atomicamente: orderId={} status=CANCELLED reason={}",
+                        orderId, event.reason());
+
+            } finally {
+                MDC.remove("orderId");
+            }
         }
-
-        logger.info("Read Model atualizado atomicamente: orderId={} status=CANCELLED reason={}",
-                orderId, event.reason());
     }
 }
 

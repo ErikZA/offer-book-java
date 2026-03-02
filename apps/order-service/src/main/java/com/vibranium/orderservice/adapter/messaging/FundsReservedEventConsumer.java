@@ -20,6 +20,7 @@ import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
 import io.micrometer.tracing.Tracer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.support.AmqpHeaders;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -57,6 +58,11 @@ import java.util.UUID;
  * a mensagem e duplicata e descartada com ACK sem reprocessar. Isso resolve a janela
  * de inconsistencia do check por status: a chave e gravada atomicamente com a mudanca
  * de estado, portanto mesmo uma retentativa apos rollback nao passa pelo check.</p>
+ *
+ * <p><strong>Rastreabilidade (AT-14.2):</strong> {@link org.slf4j.MDC} é populado com
+ * {@code correlationId} e {@code orderId} no início de {@code onFundsReserved} via
+ * {@code try-with-resources}, garantindo que todas as linhas de log — incluindo caminhos
+ * de duplicata, erro de Redis e compensação — incluam os campos de correlação da Saga.</p>
  *
  * <p><strong>Sequencia garantida:</strong>
  * {@code (1) INSERT idempotency_key -> (2) UPDATE Order -> (3) INSERT outbox -> (4) Commit -> (5) basicAck}</p>
@@ -104,6 +110,11 @@ public class FundsReservedEventConsumer {
      *
      * <p>Concurrency {@code 5} mantem o throughput para o cenario de 500 ordens simultaneas.</p>
      *
+     * <p><strong>Instrumentação MDC (AT-14.2):</strong> {@code correlationId} e {@code orderId}
+     * são colocados no MDC via {@code try(MDC.putCloseable(...))} antes do primeiro log.
+     * O par {@code try/finally} interno garante que {@code orderId} seja removido mesmo
+     * em excepções — o try-with-resources remove {@code correlationId} automaticamente.</p>
+     *
      * @param event       Evento publicado pelo wallet-service confirmando o bloqueio.
      * @param channel     Canal AMQP para envio do ACK/NACK manual.
      * @param deliveryTag Tag de entrega fornecida pelo broker.
@@ -118,73 +129,87 @@ public class FundsReservedEventConsumer {
                                 Channel channel,
                                 @Header(AmqpHeaders.DELIVERY_TAG) long deliveryTag) throws Exception {
         String eventId = event.eventId().toString();
-        logger.info("FundsReservedEvent recebido: eventId={} correlationId={} orderId={}",
-                eventId, event.correlationId(), event.orderId());
 
-        // 1. Idempotencia por tabela: INSERT com eventId como PK unica
-        //    DataIntegrityViolationException indica duplicata -> descarta com ACK
-        try {
-            processedEventRepository.saveAndFlush(new ProcessedEvent(event.eventId()));
-        } catch (DataIntegrityViolationException ex) {
-            logger.info("FundsReservedEvent duplicado (idempotente): eventId={}", eventId);
-            channel.basicAck(deliveryTag, false);
-            return;
+        // AT-14.2: MDC popula correlationId e orderId para que todas as linhas de log
+        // desta execução incluam os campos de rastreabilidade sem passá-los manualmente
+        // a cada chamada de logger. try-with-resources remove correlationId ao sair do bloco
+        // e o finally remove orderId — prevenindo memory leak em threads do pool AMQP.
+        try (var ignoredCorr = MDC.putCloseable("correlationId", event.correlationId().toString())) {
+            MDC.put("orderId", event.orderId().toString());
+            try {
+                logger.info("FundsReservedEvent recebido: eventId={} correlationId={} orderId={}",
+                        eventId, event.correlationId(), event.orderId());
+
+                // 1. Idempotencia por tabela: INSERT com eventId como PK unica
+                //    DataIntegrityViolationException indica duplicata -> descarta com ACK
+                try {
+                    processedEventRepository.saveAndFlush(new ProcessedEvent(event.eventId()));
+                } catch (DataIntegrityViolationException ex) {
+                    logger.info("FundsReservedEvent duplicado (idempotente): eventId={}", eventId);
+                    channel.basicAck(deliveryTag, false);
+                    return;
+                }
+
+                // 2. Localiza a ordem pelo correlationId da Saga
+                Optional<Order> orderOpt = orderRepository.findByCorrelationId(event.correlationId());
+                if (orderOpt.isEmpty()) {
+                    logger.warn("Ordem nao encontrada para correlationId={} -- descartando FundsReservedEvent",
+                            event.correlationId());
+                    channel.basicAck(deliveryTag, false);
+                    return;
+                }
+
+                Order order = orderOpt.get();
+
+                // AT-14.1: Enriquece o span ativo com atributos de domínio da Saga.
+                // saga.correlation_id: vincula este span ao trace da Saga inteira no Jaeger.
+                // order.id:            identifica o agregado Order neste span.
+                // Spring AMQP cria um span produtor/consumidor por mensagem via RabbitListenerObservation.
+                // tracer.currentSpan() retorna o span do listener; pode ser null em testes a frio.
+                io.micrometer.tracing.Span currentSpan = tracer.currentSpan();
+                if (currentSpan != null) {
+                    currentSpan
+                            .tag("saga.correlation_id", event.correlationId().toString())
+                            .tag("order.id",            order.getId().toString());
+                }
+
+                // 3. Tenta executar o match no Redis via Lua atomico
+                MatchResult result;
+                try {
+                    result = matchEngine.tryMatch(
+                            order.getId(),
+                            order.getUserId(),
+                            order.getWalletId(),
+                            order.getOrderType(),
+                            order.getPrice(),
+                            order.getRemainingAmount(),
+                            order.getCorrelationId()
+                    );
+                } catch (Exception e) {
+                    // Redis indisponivel ou timeout: cancela a ordem como compensacao
+                    logger.error("Falha no Redis match engine: orderId={} error={}",
+                            order.getId(), e.getMessage());
+                    cancelOrder(order, FailureReason.INTERNAL_ERROR, "REDIS_UNAVAILABLE: " + e.getMessage());
+                    // 4. ACK manual apos commit (mesmo em casos de erro tratado)
+                    channel.basicAck(deliveryTag, false);
+                    return;
+                }
+
+                // 4. Processa o resultado do match
+                if (result.matched()) {
+                    handleMatch(order, result, event);
+                } else {
+                    handleNoMatch(order);
+                }
+
+                // 5. ACK manual apos commit bem-sucedido do JPA
+                channel.basicAck(deliveryTag, false);
+
+            } finally {
+                // Remove orderId explicitamente; correlationId é removido pelo try-with-resources.
+                MDC.remove("orderId");
+            }
         }
-
-        // 2. Localiza a ordem pelo correlationId da Saga
-        Optional<Order> orderOpt = orderRepository.findByCorrelationId(event.correlationId());
-        if (orderOpt.isEmpty()) {
-            logger.warn("Ordem nao encontrada para correlationId={} -- descartando FundsReservedEvent",
-                    event.correlationId());
-            channel.basicAck(deliveryTag, false);
-            return;
-        }
-
-        Order order = orderOpt.get();
-
-        // AT-14.1: Enriquece o span ativo com atributos de domínio da Saga.
-        // saga.correlation_id: vincula este span ao trace da Saga inteira no Jaeger.
-        // order.id:            identifica o agregado Order neste span.
-        // Spring AMQP cria um span produtor/consumidor por mensagem via RabbitListenerObservation.
-        // tracer.currentSpan() retorna o span do listener; pode ser null em testes a frio.
-        io.micrometer.tracing.Span currentSpan = tracer.currentSpan();
-        if (currentSpan != null) {
-            currentSpan
-                    .tag("saga.correlation_id", event.correlationId().toString())
-                    .tag("order.id",            order.getId().toString());
-        }
-
-        // 3. Tenta executar o match no Redis via Lua atomico
-        MatchResult result;
-        try {
-            result = matchEngine.tryMatch(
-                    order.getId(),
-                    order.getUserId(),
-                    order.getWalletId(),
-                    order.getOrderType(),
-                    order.getPrice(),
-                    order.getRemainingAmount(),
-                    order.getCorrelationId()
-            );
-        } catch (Exception e) {
-            // Redis indisponivel ou timeout: cancela a ordem como compensacao
-            logger.error("Falha no Redis match engine: orderId={} error={}",
-                    order.getId(), e.getMessage());
-            cancelOrder(order, FailureReason.INTERNAL_ERROR, "REDIS_UNAVAILABLE: " + e.getMessage());
-            // 4. ACK manual apos commit (mesmo em casos de erro tratado)
-            channel.basicAck(deliveryTag, false);
-            return;
-        }
-
-        // 4. Processa o resultado do match
-        if (result.matched()) {
-            handleMatch(order, result, event);
-        } else {
-            handleNoMatch(order);
-        }
-
-        // 5. ACK manual apos commit bem-sucedido do JPA
-        channel.basicAck(deliveryTag, false);
     }
 
     // =========================================================================
