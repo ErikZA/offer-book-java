@@ -263,4 +263,5 @@ Ao juntar esses três padrões, criamos um sistema **robusto e escalável** para
 | Saga           | ✅     | Reserve Funds → Match Engine → FILLED/OPEN/CANCELLED                 |
 | Optimistic Lock| ✅     | `@Version` em `Order` detecta conflitos de escrita concorrente        |
 | DLQ Policy     | ✅     | `applyMatch` em status terminal → `IllegalStateException` → NACK → DLQ |
+| Lazy Projection (AT-05.1) | ✅ | `createMinimalPending()` + `enrichFields()`; zero `IllegalStateException` por evento out-of-order; zero descarte silencioso |
 | SLA 200ms p99  | ✅     | Virtual Threads + isolamento de containers em testes                  |

@@ -98,7 +98,11 @@ public class OrderDocument {
     // =========================================================================
 
     /**
-     * Cria um novo documento de ordem no estado inicial PENDING.
+     * Cria um novo documento de ordem no estado inicial PENDING com todos os dados financeiros.
+     *
+     * <p>Chamado por {@code onOrderReceived()} quando o documento ainda não existe no MongoDB.
+     * Se o documento já existir (criado lazily por evento out-of-order), o consumer deve
+     * chamar {@link #enrichFields} para preencher os campos financeiros faltantes.</p>
      *
      * @param orderId     ID da ordem.
      * @param userId      Keycloak ID do usuário.
@@ -113,16 +117,74 @@ public class OrderDocument {
                                                BigDecimal price, BigDecimal originalQty,
                                                Instant createdAt) {
         OrderDocument doc = new OrderDocument();
-        doc.orderId     = orderId;
-        doc.userId      = userId;
-        doc.orderType   = orderType;
-        doc.status      = "PENDING";
-        doc.price       = price;
-        doc.originalQty = originalQty;
+        doc.orderId      = orderId;
+        doc.userId       = userId;
+        doc.orderType    = orderType;
+        doc.status       = "PENDING";
+        doc.price        = price;
+        doc.originalQty  = originalQty;
         doc.remainingQty = originalQty;
-        doc.createdAt   = createdAt;
-        doc.updatedAt   = Instant.now();
+        doc.createdAt    = createdAt;
+        doc.updatedAt    = Instant.now();
         return doc;
+    }
+
+    /**
+     * Cria um documento mínimo (stub) com apenas {@code orderId}, {@code status=PENDING}
+     * e {@code createdAt}.
+     *
+     * <p><strong>Decisão de design — Criação Lazy Determinística (AT-05.1):</strong>
+     * Quando um evento chega fora de ordem (ex: {@code FUNDS_RESERVED} antes de
+     * {@code ORDER_RECEIVED}), o consumer não pode lançar exceção nem descartar o evento
+     * silenciosamente. Cria-se este stub para garantir que o evento seja registrado no
+     * histórico. Quando {@code ORDER_RECEIVED} chegar, {@link #enrichFields} preencherá
+     * os campos financeiros faltantes de forma idempotente.</p>
+     *
+     * <p><strong>Campos intencionalmente nulos:</strong> {@code userId}, {@code orderType},
+     * {@code price}, {@code originalQty}, {@code remainingQty}. Consumidores que dependem
+     * de {@code remainingQty} (ex: {@code MATCH_EXECUTED}) devem tratar o valor nulo
+     * explicitamente.</p>
+     *
+     * @param orderId   ID da ordem.
+     * @param createdAt Timestamp do evento que originou a criação lazy.
+     * @return Documento stub no estado PENDING com history vazia.
+     */
+    public static OrderDocument createMinimalPending(String orderId, Instant createdAt) {
+        OrderDocument doc = new OrderDocument();
+        doc.orderId   = orderId;
+        doc.status    = "PENDING";
+        doc.createdAt = createdAt;
+        doc.updatedAt = Instant.now();
+        // userId, orderType, price, originalQty, remainingQty: null intencionalmente.
+        // Serão preenchidos quando ORDER_RECEIVED chegar via enrichFields().
+        return doc;
+    }
+
+    /**
+     * Enriquece o documento com dados financeiros do {@code OrderReceivedEvent},
+     * preenchendo apenas os campos que ainda são {@code null}.
+     *
+     * <p><strong>Idempotente:</strong> se o campo já foi preenchido (documento criado
+     * normalmente pelo {@code ORDER_RECEIVED}), não sobrescreve. Garante que um
+     * {@code ORDER_RECEIVED} tardio (após criação lazy) preencha os dados corretamente
+     * sem risco de regressão nos demais fluxos.</p>
+     *
+     * @param userId      Keycloak ID do usuário.
+     * @param orderType   BUY ou SELL.
+     * @param price       Preço limite.
+     * @param originalQty Quantidade total da ordem.
+     */
+    public void enrichFields(String userId, String orderType,
+                              BigDecimal price, BigDecimal originalQty) {
+        // Preenche apenas campos ausentes — nunca sobrescreve dado já existente.
+        if (this.userId == null)        this.userId       = userId;
+        if (this.orderType == null)     this.orderType    = orderType;
+        if (this.price == null)         this.price        = price;
+        if (this.originalQty == null)   this.originalQty  = originalQty;
+        // remainingQty: somente preenche se nunca foi tocado por um MATCH_EXECUTED.
+        // Se já existe (foi decrementado), preservamos a quantidade parcialmente preenchida.
+        if (this.remainingQty == null)  this.remainingQty = originalQty;
+        this.updatedAt = Instant.now();
     }
 
     // =========================================================================
