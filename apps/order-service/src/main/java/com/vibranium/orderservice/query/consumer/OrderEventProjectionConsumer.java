@@ -114,7 +114,7 @@ public class OrderEventProjectionConsumer {
      * Atualiza o documento para OPEN quando os fundos são confirmados pelo wallet-service.
      *
      * <p>Fanout: esta fila recebe a mesma mensagem que a fila do Command Side
-     * ({@code order.events.funds-reserved}), mas de forma independente.</p>
+     * ({@link RabbitMQConfig#QUEUE_FUNDS_RESERVED}), mas de forma independente.</p>
      *
      * @param event Evento publicado pelo wallet-service.
      */

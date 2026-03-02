@@ -22,6 +22,7 @@ import java.math.BigDecimal;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
+import com.vibranium.orderservice.config.RabbitMQConfig;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
@@ -92,9 +93,9 @@ class OrderIdempotencyIntegrationTest extends AbstractIntegrationTest {
         FundsReservedEvent event = buildFundsReservedEvent(fixedEventId, correlationId);
 
         // Act — envia a mesma mensagem 2 vezes para a fila
-        sendEventToQueue("order.events.funds-reserved", event);
+        sendEventToQueue(RabbitMQConfig.QUEUE_FUNDS_RESERVED, event);
         waitForProcessing();
-        sendEventToQueue("order.events.funds-reserved", event);
+        sendEventToQueue(RabbitMQConfig.QUEUE_FUNDS_RESERVED, event);
         waitForProcessing();
 
         // Assert — chave de idempotência existe exatamente 1 vez
@@ -127,8 +128,8 @@ class OrderIdempotencyIntegrationTest extends AbstractIntegrationTest {
         FundsReservedEvent event2 = buildFundsReservedEvent(UUID.randomUUID(), correlationId2);
 
         // Act
-        sendEventToQueue("order.events.funds-reserved", event1);
-        sendEventToQueue("order.events.funds-reserved", event2);
+        sendEventToQueue(RabbitMQConfig.QUEUE_FUNDS_RESERVED, event1);
+        sendEventToQueue(RabbitMQConfig.QUEUE_FUNDS_RESERVED, event2);
 
         // Assert — ambas as chaves de idempotência registradas
         await()
@@ -155,9 +156,9 @@ class OrderIdempotencyIntegrationTest extends AbstractIntegrationTest {
         FundsReservationFailedEvent event = buildFundsReservationFailedEvent(fixedEventId, correlationId);
 
         // Act — entrega duplicada
-        sendEventToQueue("order.events.funds-failed", event);
+        sendEventToQueue(RabbitMQConfig.QUEUE_FUNDS_FAILED, event);
         waitForProcessing();
-        sendEventToQueue("order.events.funds-failed", event);
+        sendEventToQueue(RabbitMQConfig.QUEUE_FUNDS_FAILED, event);
         waitForProcessing();
 
         // Assert — chave de idempotência registrada apenas 1 vez
@@ -177,7 +178,7 @@ class OrderIdempotencyIntegrationTest extends AbstractIntegrationTest {
         FundsReservationFailedEvent event = buildFundsReservationFailedEvent(eventId, correlationId);
 
         // Act
-        sendEventToQueue("order.events.funds-failed", event);
+        sendEventToQueue(RabbitMQConfig.QUEUE_FUNDS_FAILED, event);
 
         // Assert — ambos visíveis no banco ao mesmo tempo (commit atômico)
         await()

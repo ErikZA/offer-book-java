@@ -436,7 +436,7 @@ class OrderOutboxResilienceIntegrationTest {
         //
         // OrderReceivedEvent:
         //   - Exchange: vibranium.events (topic)
-        //   - Routing key: order.events.order-received
+        //   - Routing key: RabbitMQConfig.RK_ORDER_RECEIVED
         //   - Destino: fila order.projection.received
         //   - @ConditionalOnProperty(app.mongodb.enabled) → listener DESABILITADO
         //     neste teste → mensagem acumula e pode ser recebida por receive()
