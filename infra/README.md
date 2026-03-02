@@ -7,22 +7,25 @@ Os arquivos Docker Compose foram reorganizados do diretório legado `docker/` pa
 
 ```
 infra/
-├── docker-compose.yml          # Infra-only (Kong + Keycloak + PostgreSQL + RabbitMQ + Redis-Kong)
+├── docker-compose.yml          # Infra-only (Kong + Keycloak + PostgreSQL + RabbitMQ + Redis-Kong + jwks-rotator)
 ├── docker-compose.dev.yml      # Dev completo (infra + order-service + wallet-service hot-reload)
 ├── docker-compose.staging.yml  # Staging com réplicas (3× MongoDB, PostgreSQL, Redis, RabbitMQ + Redis-Kong)
 ├── docker/
 │   ├── Dockerfile              # Imagem base para apps (build multi-stage Maven)
 │   ├── Dockerfile.keycloak     # Keycloak 22 + plugin keycloak-to-rabbit-3.0.5.jar
 │   │                           # Build com: --db=postgres --health-enabled=true
-│   └── Dockerfile.kong-init    # Kong-init: deck sync de configuração declarativa
+│   ├── Dockerfile.kong-init    # Kong-init: deck sync de configuração declarativa
+│   └── Dockerfile.jwks-rotator # ⭐ Sidecar JWKS rotator (AT-13.1): Alpine + curl + jq
 ├── keycloak/
 │   ├── realm-export.json       # Realm "vibranium" (clientes, roles, mappers)
 │   ├── keycloak-setup.sh       # Provisionamento pós-subida (usuários, grupos)
 │   └── keycloak-to-rabbit-3.0.5.jar  # Plugin: eventos Keycloak → RabbitMQ
 ├── kong/
-│   ├── kong-init.yml           # Configuração declarativa (services, routes, plugins)
-│   ├── kong-setup.sh           # Provisiona consumer JWT + credential Keycloak JWKS
-│   └── kong-config.md          # Documentação das rotas configuradas
+│   ├── kong-init.yml               # Configuração declarativa (services, routes, plugins)
+│   ├── kong-setup.sh               # Provisiona consumer JWT + credential Keycloak JWKS (one-shot)
+│   ├── jwks-rotation.sh            # ⭐ Script idempotente de rotação JWKS (AT-13.1)
+│   ├── jwks-rotator-entrypoint.sh  # ⭐ Entrypoint loop 6h do sidecar (AT-13.1)
+│   └── kong-config.md              # Documentação das rotas configuradas
 └── postgres/
     ├── init-app-databases.sh   # Cria vibranium_orders + vibranium_wallet no 1º boot
     ├── init-infra-db.sql       # Cria schemas kong + keycloak em vibranium_infra

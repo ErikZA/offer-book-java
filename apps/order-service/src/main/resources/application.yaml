@@ -135,9 +135,9 @@ app:
             # → CROSSSLOT em Redis Cluster ao executar script Lua multi-key com EVAL/EVALSHA.
             # Com hash tags: CRC16("vibranium") == CRC16("vibranium") → mesmo slot → OK.
             # Compatível com Redis standalone (hash tags são ignoradas em modo single-node).
-            asks: "{vibranium}:asks"
-            bids: "{vibranium}:bids"
-            order-index: "{vibranium}:order_index"
+            asks: '{vibranium}:asks'
+            bids: '{vibranium}:bids'
+            order-index: '{vibranium}:order_index'
 
 logging:
     level:

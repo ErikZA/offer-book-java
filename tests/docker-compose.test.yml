@@ -242,6 +242,69 @@ services:
                     cpus: '0.5'
 
     # ================================================================================
+    # kong-init-test — Provisiona Services, Routes e credencial JWT no Kong de teste
+    # Mesmo kong-setup.sh do ambiente prod, apontando para serviços -test.
+    # ================================================================================
+    kong-init-test:
+        build:
+            context: ../infra
+            dockerfile: docker/Dockerfile.kong-init
+        container_name: vibranium-kong-init-test
+        restart: 'no'
+        environment:
+            KONG_ADMIN_URL: http://kong-test:8001
+            KEYCLOAK_URL: http://keycloak-test:8080
+            KEYCLOAK_REALM: orderbook-realm
+            KONG_CONSUMER_NAME: keycloak-realm-consumer
+            # Em teste, o ISSUER usa a porta mapeada no host (8180) para que
+            # tokens obtidos via localhost:8180 casem com o claim iss registrado
+            KEYCLOAK_ISSUER: http://localhost:8180/realms/orderbook-realm
+        depends_on:
+            kong-test:
+                condition: service_healthy
+            keycloak-test:
+                condition: service_healthy
+        networks:
+            - vibranium-network-test
+
+    # ================================================================================
+    # jwks-rotator-test — Sidecar de rotação JWKS no ambiente de teste (AT-13.1)
+    # Verifica JWKS a cada 30s em teste (vs 6h em prod) para agilizar validação.
+    # ================================================================================
+    jwks-rotator-test:
+        build:
+            context: ../infra
+            dockerfile: docker/Dockerfile.jwks-rotator
+        image: vibranium-jwks-rotator:latest
+        container_name: vibranium-jwks-rotator-test
+        restart: unless-stopped
+        environment:
+            KONG_ADMIN_URL: http://kong-test:8001
+            KEYCLOAK_URL: http://keycloak-test:8080
+            KEYCLOAK_REALM: orderbook-realm
+            KONG_CONSUMER_NAME: keycloak-realm-consumer
+            KEYCLOAK_ISSUER: http://localhost:8180/realms/orderbook-realm
+            KID_STATE_FILE: /var/lib/jwks-rotator/last_kid
+            # Intervalo reduzido em teste (30s) para validação rápida do AT-13.1
+            ROTATION_INTERVAL: '30'
+        volumes:
+            - jwks_rotator_state_test:/var/lib/jwks-rotator
+        depends_on:
+            kong-test:
+                condition: service_healthy
+            keycloak-test:
+                condition: service_healthy
+            kong-init-test:
+                condition: service_completed_successfully
+        networks:
+            - vibranium-network-test
+        deploy:
+            resources:
+                limits:
+                    memory: 32M
+                    cpus: '0.10'
+
+    # ================================================================================
     # Test Runner — Executa mvn clean test e coleta relatórios Surefire
     # ================================================================================
     test-runner:
@@ -274,6 +337,8 @@ services:
                 condition: service_healthy
             keycloak-test:
                 condition: service_healthy
+            kong-init-test:
+                condition: service_completed_successfully
         networks:
             - vibranium-network-test
         command: /bin/sh -c "
@@ -301,3 +366,4 @@ volumes:
     redis_data_test:
     rabbitmq_data_test:
     m2_cache_test:
+    jwks_rotator_state_test:

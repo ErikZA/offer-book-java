@@ -1,0 +1,46 @@
+# ==============================================================================
+# Dockerfile.jwks-rotator — Sidecar de Rotação Automática de JWKS no Kong
+#
+# Responsabilidade:
+#   Container de longa duração que verifica periodicamente (a cada 6 horas)
+#   se o kid da chave de assinatura RSA do Keycloak mudou e, caso sim,
+#   atualiza a credencial JWT do consumer no Kong via Admin API.
+#
+# Estratégia de infraestrutura:
+#   - Docker Compose: container sidecar com loop sleep (este Dockerfile)
+#   - Kubernetes (equivalente): CronJob com schedule: "0 */6 * * *"
+#
+# Dependências:
+#   - curl: chamadas HTTP ao Kong Admin API e Keycloak JWKS endpoint
+#   - jq  : parsing JSON confiável para extrair kid, x5c e credential IDs
+#          (alpine gr usa busybox grep/sed que não suportam JSON complexo)
+#
+# Build context: infra/ (kong-setup.sh e scripts estão em infra/kong/)
+# ==============================================================================
+FROM alpine:3.19
+
+# curl: HTTP client para Kong Admin API e Keycloak JWKS
+# jq  : processamento JSON confiável (alternativa a grep/sed para JSON)
+# Sem bash: usa sh (busybox) para compatibilidade máxima e imagem mínima
+RUN apk add --no-cache curl jq
+
+# Diretório de estado persistente para armazenar o último kid sincronizado.
+# Montado como volume para persistência entre restarts do container.
+RUN mkdir -p /var/lib/jwks-rotator
+
+# Scripts copiados do build context (infra/)
+COPY kong/jwks-rotation.sh       /jwks-rotation.sh
+COPY kong/jwks-rotator-entrypoint.sh /entrypoint.sh
+
+RUN chmod +x /jwks-rotation.sh /entrypoint.sh
+
+# Variáveis padrão — sobrescrevíveis via environment no docker-compose
+ENV KONG_ADMIN_URL="http://kong:8001" \
+    KEYCLOAK_URL="http://keycloak:8080" \
+    KEYCLOAK_REALM="orderbook-realm" \
+    KONG_CONSUMER_NAME="keycloak-realm-consumer" \
+    KEYCLOAK_ISSUER="http://localhost:8080/realms/orderbook-realm" \
+    KID_STATE_FILE="/var/lib/jwks-rotator/last_kid" \
+    ROTATION_INTERVAL="21600"
+
+CMD ["/entrypoint.sh"]

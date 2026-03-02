@@ -317,7 +317,7 @@ services:
 
         # appendonly=no: contadores de rate-limiting não precisam de persistência.
         # Reinicialização zera contadores — aceitável para window-based rate limiting.
-        command: ["redis-server", "--appendonly", "no", "--save", ""]
+        command: ['redis-server', '--appendonly', 'no', '--save', '']
 
         # Porta NÃO exposta ao host intencionalmente.
         # Kong acessa via hostname redis-kong na rede Docker interna.
@@ -378,6 +378,90 @@ services:
                 max-file: '3'
                 labels: 'service=kong-init'
 
+    # ================================================================================
+    # jwks-rotator — Sidecar de rotação automática de JWKS (AT-13.1)
+    #
+    # Problema resolvido:
+    #   Quando o Keycloak rota a chave RSA (novo kid), o Kong ainda possui a chave
+    #   antiga → todos os tokens novos retornam 401. Incidente P1 em produção.
+    #
+    # Solução:
+    #   Container de longa duração que verifica o JWKS a cada 6 horas (ROTATION_INTERVAL).
+    #   Se o kid mudou, atualiza a credencial JWT do consumer via Kong Admin API.
+    #   Sem reinicialização do Kong, sem downtime, sem intervenção manual.
+    #
+    # Idempotência:
+    #   - Se kid não mudou → no-op (zero chamadas à Admin API)
+    #   - Se kid mudou → remove credencial antiga + registra nova
+    #   - State file em volume persistente: /var/lib/jwks-rotator/last_kid
+    #
+    # Em Kubernetes equivaleria a:
+    #   apiVersion: batch/v1
+    #   kind: CronJob
+    #   spec:
+    #     schedule: "0 */6 * * *"
+    # ================================================================================
+    jwks-rotator:
+        build:
+            # Build context = infra/ (Dockerfile.jwks-rotator está em infra/docker/)
+            context: .
+            dockerfile: docker/Dockerfile.jwks-rotator
+        image: vibranium-jwks-rotator:latest
+        container_name: vibranium-jwks-rotator
+        restart: unless-stopped
+
+        deploy:
+            resources:
+                limits:
+                    cpus: '0.10'
+                    memory: 32M
+                reservations:
+                    cpus: '0.05'
+                    memory: 16M
+
+        environment:
+            # URLs internas da rede Docker
+            KONG_ADMIN_URL: http://kong:8001
+            KEYCLOAK_URL: http://keycloak:8080
+            KEYCLOAK_REALM: orderbook-realm
+            KONG_CONSUMER_NAME: keycloak-realm-consumer
+            # KEYCLOAK_ISSUER deve corresponder ao claim `iss` dos tokens (URL do cliente)
+            KEYCLOAK_ISSUER: http://localhost:8080/realms/orderbook-realm
+            KID_STATE_FILE: /var/lib/jwks-rotator/last_kid
+            # Intervalo de verificação: 21600s = 6 horas
+            # Trade-off: menor intervalo = mais atualizado, mais chamadas API
+            # 6 horas: conservador, mantendo janela de vulnerabilidade aceitável
+            ROTATION_INTERVAL: '21600'
+
+        volumes:
+            # Volume persistente para o state file (kid do último sync)
+            # Sem este volume, cada restart forcça uma re-sincronização (aceitável mas desnecessario)
+            - jwks_rotator_state:/var/lib/jwks-rotator
+
+        depends_on:
+            kong:
+                condition: service_healthy
+            keycloak:
+                condition: service_healthy
+
+        networks:
+            - vibranium-infra
+
+        healthcheck:
+            # Verifica que o state file foi criado (indica que pelo menos um sync ocorreu)
+            test: ['CMD-SHELL', 'test -f /var/lib/jwks-rotator/last_kid || exit 1']
+            interval: 30s
+            timeout: 5s
+            retries: 10
+            start_period: 60s
+
+        logging:
+            driver: 'json-file'
+            options:
+                max-size: '50m'
+                max-file: '5'
+                labels: 'service=jwks-rotator'
+
 networks:
     vibranium-infra:
         driver: bridge
@@ -407,3 +491,7 @@ volumes:
         driver: local
         labels:
             description: 'Dados do RabbitMQ (filas, exchanges, mensagens)'
+    jwks_rotator_state:
+        driver: local
+        labels:
+            description: 'State file do jwks-rotator: persiste o kid do último sync JWKS→Kong'
