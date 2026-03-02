@@ -107,6 +107,16 @@ spring:
 # Application Queue/Exchange config (injetado via @ConfigurationProperties)
 # -----------------------------------------------------------------------
 app:
+    # -----------------------------------------------------------------------
+    # Saga — Controle de timeout da Saga de reserva de fundos (AT-09.1)
+    # pending-timeout-minutes: tempo máximo que uma ordem pode ficar em PENDING
+    #                          antes de ser cancelada automaticamente
+    # cleanup-delay-ms: intervalo de execução do SagaTimeoutCleanupJob (fixedDelay)
+    # -----------------------------------------------------------------------
+    saga:
+        pending-timeout-minutes: 5
+        cleanup-delay-ms: 60000
+
     rabbitmq:
         exchanges:
             commands: vibranium.commands

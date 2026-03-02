@@ -35,18 +35,27 @@ src/main/java/com/vibranium/orderservice/
 │   └── redis/
 │       └── RedisMatchEngineAdapter.java              # Script Lua atômico no Sorted Set
 ├── application/service/
-│   └── OrderCommandService.java                      # Orquestração do fluxo de ordem
+│   ├── IdempotencyKeyCleanupJob.java                  # Cleanup de tb_processed_events (7d retention)
+│   ├── OrderCommandService.java                      # Orquestração do fluxo de ordem
+│   ├── OrderOutboxPublisherService.java              # Relay outbox → RabbitMQ (scheduler)
+│   └── SagaTimeoutCleanupJob.java                    # ⭐ Cancela PENDING expirados (AT-09.1)
 ├── config/
 │   ├── JacksonConfig.java                            # ObjectMapper com JavaTimeModule
 │   ├── MongoIndexConfig.java                         # Index pre-creation + connection pool MongoDB
+│   ├── MongoTransactionConfig.java                   # TransactionManager MongoDB
 │   ├── RabbitMQConfig.java                           # Topologia: exchanges, filas, bindings, DLQ
-│   └── SecurityConfig.java                           # JWT Resource Server (Keycloak)
+│   ├── SecurityConfig.java                           # JWT Resource Server (Keycloak)
+│   └── TimeConfig.java                              # ⭐ Bean Clock.systemUTC() (AT-09.2)
 ├── domain/
 │   ├── model/
 │   │   ├── Order.java                                # Entidade com @Version (optimistic lock)
+│   │   ├── OrderOutboxMessage.java                   # Outbox Pattern — relay para RabbitMQ
+│   │   ├── ProcessedEvent.java                       # Idempotência por eventId
 │   │   └── UserRegistry.java                        # Registro local de usuários Keycloak
 │   └── repository/
-│       ├── OrderRepository.java
+│       ├── OrderOutboxRepository.java
+│       ├── OrderRepository.java                      # ⭐ +findByStatusAndCreatedAtBefore (AT-09.1)
+│       ├── ProcessedEventRepository.java
 │       └── UserRegistryRepository.java
 ├── query/                                            # ← Query Side (Read Model — US-003)
 │   ├── consumer/
@@ -196,6 +205,9 @@ mvn test -pl apps/order-service -Dtest=OrderOutboxResilienceIntegrationTest
 
 # Apenas o teste de guarda arquitetural (AT-02.2)
 mvn test -pl apps/order-service -Dtest=RoutingKeyLiteralTest
+
+# Apenas o SagaTimeoutCleanupJob (AT-09.1/AT-09.2)
+mvn test -pl apps/order-service -Dtest=SagaTimeoutCleanupJobTest
 ```
 
 ## 🧪 Cobertura de Testes de Integração
@@ -213,6 +225,7 @@ mvn test -pl apps/order-service -Dtest=RoutingKeyLiteralTest
 | **`RedisClusterHashTagIT`** | **Integração (CRC16 + Testcontainers Cluster)** | **CRC16 slot equality; CROSSSLOT antes e sem erro após hash tags em cluster real** | **AT-11.1** |
 | `OrderQueryControllerTest` | Integração REST | Read Model MongoDB — paginação e detalhe | — |
 | **`RoutingKeyLiteralTest`** | **Guarda Arquitetural** | **Impede strings literais de routing key fora de `RabbitMQConfig`** | **AT-02.2** |
+| **`SagaTimeoutCleanupJobTest`** | **Integração (Clock fixo)** | **PENDING expirado → CANCELLED; OPEN preservado; idempotência; lista vazia** | **AT-09.1/09.2** |
 
 ### AT-11.1 — Hash Tags Redis para Redis Cluster
 
@@ -281,7 +294,7 @@ O `GlobalExceptionHandler` retorna `ResponseEntity<Map<String, Object>>` com cam
 | Spring AMQP                       | RabbitMQ (producers + consumers + projection)   |
 | Spring Data Redis                 | StringRedisTemplate para script Lua             |
 | Spring Security OAuth2            | JWT Resource Server                             |
-| Flyway                            | Migrations (`V1__user_registry`, `V2__orders`, `V5__order_outbox`) |
+| Flyway                            | Migrations (`V1`–`V5` tabelas, `V6__add_index_orders_saga_timeout`) |
 | common-contracts                  | DTOs/Events compartilhados entre serviços       |
 | testcontainers:mongodb (test)     | `MongoDBContainer` para testes de integração    |
 | testcontainers:rabbitmq (test)    | `RabbitMQContainer` — AT-01.2 resiliência com `docker pause/unpause` |
@@ -318,6 +331,55 @@ Suporta `findByUserIdOrderByCreatedAtDesc(userId, Pageable)` em O(log n).
 O Read Model é **eventualmente consistente** com o Command Side (PostgreSQL).
 Após o `POST /api/v1/orders` retornar `202 Accepted`, o documento MongoDB pode
 levar alguns milissegundos para ser criado (tempo de propagação pelo RabbitMQ).
+
+---
+
+## ⏱️ Saga Timeout — Ciclo de Vida Finito (AT-09.1 + AT-09.2)
+
+### Problema
+Ordens podem ficar presas em `PENDING` indefinidamente se a wallet falhar, o broker perder a mensagem ou o serviço reiniciar. Sem cleanup, acumulam-se **ordens zumbi**.
+
+### Solução — `SagaTimeoutCleanupJob`
+Job `@Scheduled` (a cada 60s) que cancela ordens `PENDING` com `created_at < now() - threshold`:
+
+```
+A cada 60s:
+  cutoff = clock.instant() - app.saga.pending-timeout-minutes (padrão: 5min)
+  stale  = orderRepository.findByStatusAndCreatedAtBefore(PENDING, cutoff)
+  stale.forEach:
+    → order.cancel("SAGA_TIMEOUT")          // PENDING → CANCELLED
+    → orderRepository.save(order)           // persiste
+    → outboxRepository.save(OrderCancelledEvent)  // evento no outbox
+    → logger.warn(orderId, userId, age)     // log auditoria
+```
+
+### Configuração (`application.yaml`)
+```yaml
+app:
+  saga:
+    pending-timeout-minutes: 5    # threshold para cancelamento automático
+    cleanup-delay-ms: 60000       # intervalo de execução do job (fixedDelay)
+```
+
+### Abstração temporal — `TimeConfig` + `Clock` (AT-09.2)
+O `SagaTimeoutCleanupJob` usa `clock.instant()` em vez de `Instant.now()`. O bean `Clock` (definido em `TimeConfig`) é `Clock.systemUTC()` em produção e `Clock.fixed(...)` em testes:
+
+```java
+// Produção: TimeConfig.java
+@Bean public Clock clock() { return Clock.systemUTC(); }
+
+// Teste: @TestConfiguration com @Primary
+@Bean @Primary Clock testClock() {
+    return Clock.fixed(Instant.now().plusSeconds(3_600), ZoneOffset.UTC);
+}
+```
+
+### Migração Flyway V6
+Adicionado índice parcial para performance do job:
+```sql
+CREATE INDEX idx_orders_status_created_at ON tb_orders (created_at)
+    WHERE status = 'PENDING';  -- apenas linhas elegíveis → índice compacto
+```
 
 ---
 

@@ -22,7 +22,8 @@
 18. [Idempotência Atômica com MongoTemplate (AT-05.2)](#idempotência-atômica-com-mongotemplate-at-052)
 19. [Índice MongoDB history.eventId com sparse (AT-06.1)](#índice-mongodb-historyeventid-com-sparse-at-061)
 20. [Testes de Segurança Spring Security Test (AT-10.3)](#testes-de-segurança-spring-security-test-at-103)
-21. [Referências](#referências)
+21. [Saga Timeout + Bean Clock (AT-09.1 + AT-09.2)](#saga-timeout--bean-clock-at-091--at-092)
+22. [Referências](#referências)
 
 ---
 
@@ -2495,6 +2496,129 @@ void shouldReturn403WhenAccessingOtherUsersWallet() throws Exception {
 
 ---
 
+## Saga Timeout + Bean Clock (AT-09.1 + AT-09.2)
+
+### Contexto
+
+O `SagaTimeoutCleanupJob` cancela automaticamente ordens presas em `PENDING` além do threshold configurado (`app.saga.pending-timeout-minutes`). O bean `Clock` (AT-09.2) abstrai o tempo para garantir testes determinísticos sem `Thread.sleep`.
+
+### Artefatos
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `SagaTimeoutCleanupJob` | Novo | Job `@Scheduled` que cancela PENDING expirados + persiste `OrderCancelledEvent` no outbox |
+| `TimeConfig` | Novo | Bean `Clock.systemUTC()` — substitudo por `Clock.fixed` em testes |
+| `V6__add_index_orders_saga_timeout.sql` | Novo | Índice parcial `(created_at) WHERE status = 'PENDING'` |
+| `OrderRepository#findByStatusAndCreatedAtBefore` | Novo | Query derivada Spring Data para o job |
+| `SagaTimeoutCleanupJobTest` | Novo | 4 testes de integração com `Clock.fixed` (sem `Thread.sleep`) |
+
+### Estratégia do Relógio Fixo (AT-09.2)
+
+Em vez de forjar timestamps no banco ou usar `Thread.sleep`, injeta-se um `Clock.fixed` 1 hora à frente do instante real. Isso faz o `cutoff` calculado pelo job (`T+55min`) ser sempre posterior ao `createdAt` da ordem recente (`T`), sem qualquer manipulação de estado externo.
+
+```java
+// @TestConfiguration importado na classe de teste
+@TestConfiguration
+static class FixedClockConfig {
+
+    @Bean
+    @Primary  // sobrepõe Clock.systemUTC() definido em TimeConfig
+    Clock testClock() {
+        // T+1h: cutoff = T+55min > T ≈ order.createdAt → ordem elegível p/ cancelamento
+        return Clock.fixed(Instant.now().plusSeconds(3_600), ZoneOffset.UTC);
+    }
+}
+```
+
+### Padrão de Teste — `SagaTimeoutCleanupJobTest`
+
+```java
+@DisplayName("AT-09.1 — SagaTimeoutCleanupJob")
+@Import(SagaTimeoutCleanupJobTest.FixedClockConfig.class)
+class SagaTimeoutCleanupJobTest extends AbstractIntegrationTest {
+
+    @Autowired SagaTimeoutCleanupJob sagaTimeoutCleanupJob;
+    @Autowired OrderRepository       orderRepository;
+    @Autowired OrderOutboxRepository outboxRepository;
+
+    @BeforeEach
+    void setUp() {
+        outboxRepository.deleteAll();
+        orderRepository.deleteAll();
+    }
+
+    @Test
+    @DisplayName("PENDING expirado → CANCELLED + OrderCancelledEvent no outbox")
+    void cancelStalePendingOrders_shouldCancelPendingOrderWithFixedFutureClock() {
+        // Arrange: PENDING criado agora; clock fixo T+1h → job o trata como expirado
+        Order order = buildPendingOrder();
+        orderRepository.save(order);
+
+        // Act: executa job diretamente — sem Thread.sleep 
+        sagaTimeoutCleanupJob.cancelStalePendingOrders();
+
+        // Assert: estado da ordem
+        Order after = orderRepository.findById(order.getId()).orElseThrow();
+        assertThat(after.getStatus()).isEqualTo(OrderStatus.CANCELLED);
+        assertThat(after.getCancellationReason()).isEqualTo("SAGA_TIMEOUT");
+
+        // Assert: outbox
+        var msgs = outboxRepository.findAll();
+        assertThat(msgs).hasSize(1);
+        assertThat(msgs.get(0).getEventType()).isEqualTo("OrderCancelledEvent");
+        assertThat(msgs.get(0).getPublishedAt()).isNull();
+    }
+
+    @Test
+    @DisplayName("Ordem OPEN não é cancelada")
+    void cancelStalePendingOrders_shouldNotCancelOpenOrder() {
+        Order open = buildPendingOrder();
+        open.markAsOpen();
+        orderRepository.save(open);
+
+        sagaTimeoutCleanupJob.cancelStalePendingOrders();
+
+        assertThat(orderRepository.findById(open.getId())
+                .orElseThrow().getStatus()).isEqualTo(OrderStatus.OPEN);
+        assertThat(outboxRepository.findAll()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("Idempotência: segunda execução não duplica outbox")
+    void cancelStalePendingOrders_shouldBeIdempotent() {
+        Order order = buildPendingOrder();
+        orderRepository.save(order);
+
+        sagaTimeoutCleanupJob.cancelStalePendingOrders(); // cancela
+        sagaTimeoutCleanupJob.cancelStalePendingOrders(); // noop — já CANCELLED
+
+        assertThat(outboxRepository.findAll()).hasSize(1);
+    }
+}
+```
+
+### Por que `@Primary` funciona sem alterar o código de produção?
+
+| Contexto | Bean `Clock` ativo | Resolvído por |
+|---|---|---|
+| Produção | `Clock.systemUTC()` | `TimeConfig.clock()` |
+| Testes | `Clock.fixed(T+1h, UTC)` | `FixedClockConfig.testClock()` com `@Primary` |
+
+O Spring resolve a ambiguíade do bean pelo `@Primary` — nenhuma alteração em `TimeConfig` ou `SagaTimeoutCleanupJob` é necessária.
+
+### Artefatos gerados pelo AT-09.1 + AT-09.2
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `SagaTimeoutCleanupJob` | Novo | Job `@Scheduled(fixedDelayString)` + `@Transactional` |
+| `TimeConfig` | Novo | `@Configuration` com `Clock.systemUTC()` singleton |
+| `V6__add_index_orders_saga_timeout.sql` | Novo | Índice parcial PostgreSQL para performance do job |
+| `SagaTimeoutCleanupJobTest` | Novo | 4 cenários de integração com `Clock.fixed` |
+| `application.yaml` | Atualizado | Seção `app.saga` com `pending-timeout-minutes` e `cleanup-delay-ms` |
+| `application-test.yml` | Atualizado | `cleanup-delay-ms: 3600000` desabilita execução automática em testes |
+
+---
+
 ## Referências
 
 - [JUnit 5 Documentation](https://junit.org/junit5/docs/current/user-guide/)
@@ -2510,6 +2634,7 @@ void shouldReturn403WhenAccessingOtherUsersWallet() throws Exception {
 **Última atualização**: 2 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-09.1 + AT-09.2**: Saga Timeout Cleanup — `SagaTimeoutCleanupJob` (`@Scheduled`) cancela ordens `PENDING` expiradas com `SAGA_TIMEOUT` + `OrderCancelledEvent` no outbox. `TimeConfig` expondo `Clock.systemUTC()` como bean singleton; substituído por `Clock.fixed` em testes via `@Primary`. Flyway V6 com índice parcial `(created_at) WHERE status = 'PENDING'`. `OrderRepository#findByStatusAndCreatedAtBefore` adicionado. `SagaTimeoutCleanupJobTest` com 4 cenários de integração determinísticos. Adicionada seção 21 neste guia.
 > - **AT-10.3**: Testes de segurança com Spring Security Test — nova classe `WalletSecurityIntegrationTest` com 4 cenários TDD cobrindo o `SecurityFilterChain` real: sem token (401, `@WithAnonymousUser`), token expirado (401, `@MockBean JwtDecoder` + `JwtValidationException`), token de outro usuário (403, `jwt()` post-processor), token do owner (200). `@MockBean JwtDecoder` isola a simulação de autenticação sem depender de Keycloak no CI. Adicionada seção 20 neste guia.
 > - **AT-06.1**: Índice MongoDB `history.eventId` com `sparse: true` — evolução do `idx_history_eventId` criado em AT-05.2. Propriedade `sparse` adicionada em `MongoIndexConfig` para excluir `OrderDocument`s com `history[]` vazia do índice, reduzindo footprint e custo de write. Novo `MongoIndexConfigIntegrationTest` com 5 testes TDD (TC-IDX-1 a TC-IDX-5): existência do índice, propriedade sparse, direção ASC, idempotência de `ensureIndex` e performance < 50ms com 1000 entradas. Prepara AT-06.2 (deduplicação atômica via `updateFirst` + filtro `$ne`).
 > - **AT-02.2**: Routing Key Literal Guard — eliminadas todas as strings literais de routing key fora de `RabbitMQConfig`. Adicionado `RoutingKeyLiteralTest` (guarda arquitetural estático). 5 arquivos refatorados. Adicionada seção 18 neste guia.
