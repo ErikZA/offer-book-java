@@ -98,6 +98,7 @@ Os seguintes arquivos foram consolidados no documento principal, mas estão disp
 | **CDC Debezium** | 6 padrões (US-001) | COMPREHENSIVE_TESTING.md #testes-de-cdc |
 | **Partial Fill / Redis** | 4 padrões (US-002) | COMPREHENSIVE_TESTING.md #partial-fill |
 | **Idempotência eventId** | 1 padrão (US-002) | COMPREHENSIVE_TESTING.md #partial-fill |
+| **Segurança Spring Security Test** | 4 cenários (AT-10.3) | COMPREHENSIVE_TESTING.md #testes-de-segurança-spring-security-test-at-103 |
 | **Outbox Resiliência** | 1 cenário 6 fases (AT-01.2) | `OrderOutboxResilienceIntegrationTest` — broker pause/unpause + Awaitility |
 | **Domínio Wallet — Invariantes** | 4 padrões (US-005) | COMPREHENSIVE_TESTING.md #invariantes-de-domínio-wallet |
 | **Criação Lazy — out-of-order** | 3 padrões (AT-05.1) | COMPREHENSIVE_TESTING.md #criação-lazy-determinística-de-orderdocument-at-051 |

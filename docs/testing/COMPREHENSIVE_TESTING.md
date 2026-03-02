@@ -21,7 +21,8 @@
 17. [Criação Lazy Determinística de OrderDocument (AT-05.1)](#criação-lazy-determinística-de-orderdocument-at-051)
 18. [Idempotência Atômica com MongoTemplate (AT-05.2)](#idempotência-atômica-com-mongotemplate-at-052)
 19. [Índice MongoDB history.eventId com sparse (AT-06.1)](#índice-mongodb-historyeventid-com-sparse-at-061)
-20. [Referências](#referências)
+20. [Testes de Segurança Spring Security Test (AT-10.3)](#testes-de-segurança-spring-security-test-at-103)
+21. [Referências](#referências)
 
 ---
 
@@ -2414,6 +2415,86 @@ mongoTemplate.updateFirst(
 
 ---
 
+## Testes de Segurança Spring Security Test (AT-10.3)
+
+O `wallet-service` possui um `SecurityFilterChain` real que valida JWTs do Keycloak em produção.
+Sem cobertura explícita desse filtro, quebras de segurança (remoção acidental de `.authenticated()`,
+troca de `oauth2ResourceServer` por `formLogin`, `permitAll()` introduzido em perfil errado)
+percorrem CI sem detecção, pois testes funcionais não exercitam o filtro diretamente.
+
+### Classe: `WalletSecurityIntegrationTest`
+
+Estende `AbstractIntegrationTest` (PostgreSQL + RabbitMQ via Testcontainers). Usa `@AutoConfigureMockMvc`
+para que o `MockMvc` passe pelas cadeia completa de filtros sem mockar o `SecurityConfig`.
+
+### Dois mecanismos complementares
+
+| Mecanismo | Quando usar | O que simula |
+|-----------|-------------|-------------|
+| `jwt()` post-processor | Testar **autorização** (ownership, IDOR) | Injeta `JwtAuthenticationToken` direto no `SecurityContext` — bypassa `JwtDecoder` |
+| `@MockBean JwtDecoder` | Testar **autenticação** (token expirado/inválido) | Substitui o decoder; `BearerTokenAuthenticationFilter` invoca o mock ao receber `Authorization: Bearer <...>` |
+
+> **Regra de ouro:** `jwt()` e `@MockBean JwtDecoder` não interferem entre si.
+> O `jwt()` bypassa completamente o decoder; apenas requisitions com header `Authorization: Bearer` real
+> acionam o mock.
+
+### Quatro cenários TDD (FASE RED → GREEN)
+
+| # | Cenário | Mecanismo | HTTP esperado | FASE RED |
+|---|---------|-----------|--------------|----------|
+| 1 | Sem token | `@WithAnonymousUser` sobrepõe `@WithMockUser` herdado | **401** | Sem `SecurityConfig` → 200 |
+| 2 | Token expirado | `@MockBean JwtDecoder` lança `JwtValidationException` + header `Authorization: Bearer expired-...` | **401** | Sem validação JWT → 200 |
+| 3 | Token de outro usuário | `jwt().jwt(b -> b.subject(otherUserId))` | **403** | Sem ownership check → 200 |
+| 4 | Token do próprio owner | `jwt().jwt(b -> b.subject(ownerId))` | **200** | Regressão funcional inaceitável |
+
+### Padrão: simular token expirado
+
+```java
+// Substitui o JwtDecoder auto-configurado pelo Spring.
+// BearerTokenAuthenticationFilter invoca decode() ao receber Authorization: Bearer <token>.
+@MockBean
+private JwtDecoder jwtDecoder;
+
+@Test
+void shouldReturn401WhenTokenIsExpired() throws Exception {
+    when(jwtDecoder.decode(anyString()))
+            .thenThrow(new JwtValidationException(
+                    "JWT expirado",
+                    List.of(new OAuth2Error("invalid_token",
+                            "The JWT expired at 2020-01-01T00:00:00Z", null))));
+
+    mockMvc.perform(
+            patch("/api/v1/wallets/{id}/balance", walletId)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"brlAmount\": 10.00}")
+                    .header("Authorization", "Bearer expired-jwt-token")
+    ).andExpect(status().isUnauthorized());
+}
+```
+
+### Padrão: simular token de outro usuário (IDOR)
+
+```java
+@Test
+void shouldReturn403WhenAccessingOtherUsersWallet() throws Exception {
+    mockMvc.perform(
+            patch("/api/v1/wallets/{id}/balance", ownerWallet.getId())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"brlAmount\": 10.00}")
+                    // jwt.sub = otherUserId ≠ ownerWallet.userId → 403
+                    .with(jwt().jwt(builder -> builder.subject(otherUserId.toString())))
+    ).andExpect(status().isForbidden());
+}
+```
+
+### Artefatos gerados pelo AT-10.3
+
+| Artefato | Tipo | Descrição |
+|----------|------|-----------|
+| `WalletSecurityIntegrationTest` | Novo | 4 cenários TDD: sem token (401), expirado (401), outro usuário (403), owner (200) |
+
+---
+
 ## Referências
 
 - [JUnit 5 Documentation](https://junit.org/junit5/docs/current/user-guide/)
@@ -2429,6 +2510,7 @@ mongoTemplate.updateFirst(
 **Última atualização**: 2 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-10.3**: Testes de segurança com Spring Security Test — nova classe `WalletSecurityIntegrationTest` com 4 cenários TDD cobrindo o `SecurityFilterChain` real: sem token (401, `@WithAnonymousUser`), token expirado (401, `@MockBean JwtDecoder` + `JwtValidationException`), token de outro usuário (403, `jwt()` post-processor), token do owner (200). `@MockBean JwtDecoder` isola a simulação de autenticação sem depender de Keycloak no CI. Adicionada seção 20 neste guia.
 > - **AT-06.1**: Índice MongoDB `history.eventId` com `sparse: true` — evolução do `idx_history_eventId` criado em AT-05.2. Propriedade `sparse` adicionada em `MongoIndexConfig` para excluir `OrderDocument`s com `history[]` vazia do índice, reduzindo footprint e custo de write. Novo `MongoIndexConfigIntegrationTest` com 5 testes TDD (TC-IDX-1 a TC-IDX-5): existência do índice, propriedade sparse, direção ASC, idempotência de `ensureIndex` e performance < 50ms com 1000 entradas. Prepara AT-06.2 (deduplicação atômica via `updateFirst` + filtro `$ne`).
 > - **AT-02.2**: Routing Key Literal Guard — eliminadas todas as strings literais de routing key fora de `RabbitMQConfig`. Adicionado `RoutingKeyLiteralTest` (guarda arquitetural estático). 5 arquivos refatorados. Adicionada seção 18 neste guia.
 > - **AT-05.2**: Idempotência Atômica com MongoTemplate — eliminação do Lost Update em `OrderEventProjectionConsumer`. `findById+appendHistory+save` substituídos por `$push/$setOnInsert/$inc` via `MongoTemplate`. Novo `OrderAtomicHistoryWriter`, índice `idx_history_eventId` e testes `OrderAtomicIdempotencyTest` (TC-ATOMIC-1, TC-ATOMIC-2) com 100 Virtual Threads concorrentes.

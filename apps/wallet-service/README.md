@@ -13,6 +13,7 @@ Microsserviço responsável pela gestão de carteiras de usuários e transaçõe
 - ✅ Publicar eventos de transação
 - ✅ Validar autenticação JWT via OAuth2 Resource Server (AT-10.1)
 - ✅ Verificar propriedade de recurso (resource ownership) — `jwt.sub == wallet.userId` (AT-10.2)
+- ✅ Cobrir regressões silenciosas do `SecurityFilterChain` com testes dedicados (AT-10.3)
 
 ## 🏗️ Estrutura
 
@@ -60,7 +61,8 @@ src/
 │       └── DebeziumRestartIdempotencyTest.java       # AT-08.1 RED→GREEN — idempotência pós-restart
 │   └── security/
 │       ├── SecurityUnauthorizedTest.java             # AT-10.1 — 401 sem token, 200 com token
-│       └── WalletOwnershipTest.java                  # AT-10.2 — 403 acesso cruzado, 200 owner/admin
+│       ├── WalletOwnershipTest.java                  # AT-10.2 — 403 acesso cruzado, 200 owner/admin
+│       └── WalletSecurityIntegrationTest.java        # AT-10.3 — 4 cenários: sem token, expirado, outro usuário, owner
 
 docker/
 ├── Dockerfile                # Build production
@@ -351,6 +353,11 @@ Cliente → [Bearer Token] → BearerTokenAuthenticationFilter
 
 - `AbstractIntegrationTest` — `@WithMockUser` garante que testes existentes não quebrem após ativação do `SecurityConfig`
 - `SecurityUnauthorizedTest` — valida 401 para qualquer endpoint sem token (`@WithAnonymousUser`) e 200 com token
+- `WalletSecurityIntegrationTest` — 4 cenários de segurança focados no `SecurityFilterChain` (AT-10.3):
+  - Sem token → 401 (`@WithAnonymousUser`)
+  - Token expirado → 401 (`@MockBean JwtDecoder` + `JwtValidationException`)
+  - Token de outro usuário → 403 (`jwt()` post-processor com `sub` diferente do owner)
+  - Token do owner → 200 (acesso legítimo sem regressão)
 - Perfil `test` usa `jwk-set-uri` (lazy) em vez de `issuer-uri` para evitar OIDC Discovery no startup dos testes
 
 ---
