@@ -318,6 +318,24 @@ public class WalletService {
     // -------------------------------------------------------------------------
 
     /**
+     * Busca a carteira pelo walletId (chave primária).
+     *
+     * <p>Utilizado pelo {@code WalletController} para verificar ownership antes
+     * de operações de escrita — permite obter o {@code userId} do dono sem
+     * adquirir lock pessimista (operação somente-leitura).</p>
+     *
+     * @param walletId UUID da carteira.
+     * @return DTO com os saldos e o userId do dono da carteira.
+     * @throws WalletNotFoundException se a carteira não existir.
+     */
+    @Transactional(readOnly = true)
+    public WalletResponse findById(UUID walletId) {
+        Wallet wallet = walletRepository.findById(walletId)
+                .orElseThrow(() -> WalletNotFoundException.forWalletId(walletId));
+        return WalletResponse.from(wallet);
+    }
+
+    /**
      * Busca a carteira de um usuário pelo userId do Keycloak.
      *
      * @param userId UUID do usuário.

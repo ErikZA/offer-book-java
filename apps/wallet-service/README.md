@@ -12,6 +12,7 @@ Microsserviço responsável pela gestão de carteiras de usuários e transaçõe
 - ✅ Consumir eventos de ordem para débito/crédito
 - ✅ Publicar eventos de transação
 - ✅ Validar autenticação JWT via OAuth2 Resource Server (AT-10.1)
+- ✅ Verificar propriedade de recurso (resource ownership) — `jwt.sub == wallet.userId` (AT-10.2)
 
 ## 🏗️ Estrutura
 
@@ -58,7 +59,8 @@ src/
 │       ├── DebeziumJdbcOffsetMigrationTest.java      # AT-08.1 RED — tabela wallet_outbox_offset
 │       └── DebeziumRestartIdempotencyTest.java       # AT-08.1 RED→GREEN — idempotência pós-restart
 │   └── security/
-│       └── SecurityUnauthorizedTest.java             # AT-10.1 — 401 sem token, 200 com token
+│       ├── SecurityUnauthorizedTest.java             # AT-10.1 — 401 sem token, 200 com token
+│       └── WalletOwnershipTest.java                  # AT-10.2 — 403 acesso cruzado, 200 owner/admin
 
 docker/
 ├── Dockerfile                # Build production
@@ -366,7 +368,50 @@ Cliente → [Bearer Token] → BearerTokenAuthenticationFilter
 | JUnit 5 | Por Spring | Testes |
 | AssertJ | 3.x | Assertions |
 | REST Assured | 5.x | Testes de API |
-| Spring Security Test | Por Spring | `@WithMockUser`, `@WithAnonymousUser` (AT-10.1) |
+| Spring Security Test | Por Spring | `@WithMockUser`, `@WithAnonymousUser`, `.jwt()` PostProcessor (AT-10.1, AT-10.2) |
+
+### Autorização de Recurso — Resource Ownership (AT-10.2)
+
+Além da autenticação (valida *quem* acessa), o `WalletController` aplica **autorização horizontal**:
+valida *qual recurso* o usuário autenticado pode acessar, prevenindo IDOR (Insecure Direct Object Reference).
+
+#### Regra de ownership
+
+```
+jwt.sub == wallet.userId  →  200 OK
+jwt.sub != wallet.userId  e  sem ROLE_ADMIN  →  403 Forbidden
+jwt.sub != wallet.userId  e  com ROLE_ADMIN  →  200 OK
+```
+
+#### Endpoints protegidos
+
+| Endpoint | Verificação |  Claim JWT consultado |
+|----------|-------------|----------------------|
+| `GET /api/v1/wallets/{userId}` | `userId` (path) == `jwt.sub` | `sub` |
+| `PATCH /api/v1/wallets/{walletId}/balance` | `wallet.userId` (banco) == `jwt.sub` | `sub`, `roles` |
+| `GET /api/v1/wallets` | Nenhuma (admin/debug) | — |
+
+> **Por que PATCH precisa buscar o banco antes da verificação?**
+> O path `/{walletId}` identifica a carteira (PK), não o usuário. É necessário
+> buscar `wallet.userId` para comparar com `jwt.sub`. A busca usa `findById` (read-only,
+> sem lock pessimista) — separada da mutação `adjustBalance` (que usa `findByIdForUpdate`).
+
+#### Estratégia de testes — `WalletOwnershipTest`
+
+Usa `SecurityMockMvcRequestPostProcessors.jwt()` para injetar `JwtAuthenticationToken` real
+no `SecurityContext`, permitindo que o controller receba `@AuthenticationPrincipal Jwt jwt`
+corretamente populado (diferente de `@WithMockUser`, que injeta `UsernamePasswordAuthenticationToken`).
+
+| Teste | Cenário | Resultado esperado |
+|-------|---------|-------------------|
+| `adjustBalance_jwtDeOutroUsuario_deveRetornar403` | User A acessa wallet de B via PATCH | **403** |
+| `getByUserId_jwtDeOutroUsuario_deveRetornar403` | User A consulta wallet de B via GET | **403** |
+| `adjustBalance_jwtDoOwner_deveRetornar200` | Owner acessa sua própria wallet via PATCH | **200** |
+| `getByUserId_jwtDoOwner_deveRetornar200` | Owner consulta sua própria wallet via GET | **200** |
+| `adjustBalance_jwtAdmin_deveRetornar200` | Admin acessa wallet de qualquer usuário via PATCH | **200** |
+| `getByUserId_jwtAdmin_deveRetornar200` | Admin consulta wallet de qualquer usuário via GET | **200** |
+
+---
 
 ## 🔍 Debugging
 

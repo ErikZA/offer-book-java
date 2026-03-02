@@ -4,8 +4,12 @@ import com.vibranium.walletservice.application.dto.BalanceUpdateRequest;
 import com.vibranium.walletservice.application.dto.WalletResponse;
 import com.vibranium.walletservice.application.service.WalletService;
 import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 import java.util.UUID;
@@ -20,8 +24,11 @@ import java.util.UUID;
  *   <li>{@code PATCH /api/v1/wallets/{walletId}/balance} — ajusta saldo (crédito ou débito).</li>
  * </ul>
  *
- * <p>O JWT do Keycloak é validado pelo Kong antes de chegar neste controller —
- * internamente não há autenticação adicional.</p>
+ * <p>O JWT do Keycloak é validado pelo Kong (camada externa) e pelo {@link
+ * com.vibranium.walletservice.config.SecurityConfig} (defense-in-depth interna).
+ * Além da autenticação, este controller aplica <b>autorização horizontal</b>:
+ * cada usuário só acessa sua própria carteira ({@code jwt.sub == wallet.userId}),
+ * exceto usuários com {@code ROLE_ADMIN}, que podem acessar qualquer carteira.</p>
  *
  * <p>O controller mantém-se thin: toda lógica de negócio está no {@link WalletService}.</p>
  */
@@ -42,11 +49,31 @@ public class WalletController {
     /**
      * Retorna a carteira de um usuário específico com todos os saldos.
      *
+     * <p><b>Autorização horizontal (AT-10.2):</b> o {@code userId} do path é comparado
+     * com {@code jwt.sub}. Se divergirem e o usuário não for admin → {@code 403 Forbidden}.
+     * Isso previne que Usuário A consulte a carteira de Usuário B (IDOR).</p>
+     *
      * @param userId UUID do usuário no Keycloak (path variable).
-     * @return 200 com {@link WalletResponse} ou 404 se não encontrada.
+     * @param jwt    token JWT injetado pelo Spring Security; {@code null} apenas em testes
+     *               com {@code @WithMockUser} (não ocorre em produção).
+     * @return 200 com {@link WalletResponse} ou 404 se não encontrada, 403 se não autorizado.
      */
     @GetMapping("/{userId}")
-    public ResponseEntity<WalletResponse> getByUserId(@PathVariable UUID userId) {
+    public ResponseEntity<WalletResponse> getByUserId(
+            @PathVariable UUID userId,
+            @AuthenticationPrincipal Jwt jwt) {
+
+        // AT-10.2: verificação de ownership — jwt.sub deve ser igual ao userId do path.
+        // Guard jwt != null: em testes com @WithMockUser o principal não é Jwt; em produção
+        // o BearerTokenAuthenticationFilter garante que jwt nunca é null ao chegar aqui.
+        if (jwt != null) {
+            boolean isAdmin = hasAdminRole(jwt);
+            if (!isAdmin && !userId.toString().equals(jwt.getSubject())) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Acesso negado: carteira não pertence ao usuário autenticado");
+            }
+        }
+
         return ResponseEntity.ok(walletService.findByUserId(userId));
     }
 
@@ -72,18 +99,59 @@ public class WalletController {
      * Valores positivos creditam; valores negativos debitam (desde que o saldo não fique negativo).
      * A operação é protegida por lock pessimista — segura para chamadas concorrentes.</p>
      *
-     * @param walletId UUID da carteira (path variable — identifica a carteira, não o usuário).
+     * <p><b>Autorização horizontal (AT-10.2):</b> antes de aplicar o delta, busca a carteira
+     * para obter o {@code userId} do dono e compara com {@code jwt.sub}. Se divergirem e o
+     * usuário não for admin → {@code 403 Forbidden}. Isso previne privilege escalation via IDOR:
+     * Usuário A não pode modificar o saldo da carteira de Usuário B.</p>
+     *
+     * @param walletId UUID da carteira (identifica a carteira, não o usuário).
      * @param request  Corpo JSON com os deltas de saldo.
+     * @param jwt      token JWT injetado pelo Spring Security; {@code null} apenas em testes
+     *                 com {@code @WithMockUser} (não ocorre em produção).
      * @return 200 com {@link WalletResponse} atualizado, 422 se saldo ficaria negativo,
-     *         404 se carteira não encontrada, 400 se request inválido.
+     *         404 se carteira não encontrada, 400 se request inválido, 403 se não autorizado.
      */
     @PatchMapping("/{walletId}/balance")
     public ResponseEntity<WalletResponse> updateBalance(
             @PathVariable UUID walletId,
-            @Valid @RequestBody BalanceUpdateRequest request) {
+            @Valid @RequestBody BalanceUpdateRequest request,
+            @AuthenticationPrincipal Jwt jwt) {
+
+        // AT-10.2: verificação de ownership — busca a carteira para obter o userId do dono
+        // e compara com jwt.sub antes de aplicar qualquer mutação.
+        // Guard jwt != null: em testes com @WithMockUser o principal não é Jwt; em produção
+        // o BearerTokenAuthenticationFilter garante que jwt nunca é null ao chegar aqui.
+        if (jwt != null) {
+            WalletResponse owned = walletService.findById(walletId);
+            boolean isAdmin = hasAdminRole(jwt);
+            if (!isAdmin && !owned.userId().toString().equals(jwt.getSubject())) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Acesso negado: carteira não pertence ao usuário autenticado");
+            }
+        }
 
         return ResponseEntity.ok(
                 walletService.adjustBalance(walletId, request.brlAmount(), request.vibAmount())
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers privados
+    // -------------------------------------------------------------------------
+
+    /**
+     * Verifica se o JWT contém {@code ROLE_ADMIN} no claim {@code roles}.
+     *
+     * <p>Admins podem acessar a carteira de qualquer usuário sem restrição de ownership.
+     * O claim {@code roles} é um array de strings populado pelo Keycloak via
+     * mapeamento de realm roles no client scope.</p>
+     *
+     * @param jwt token JWT do usuário autenticado.
+     * @return {@code true} se o token contiver {@code ROLE_ADMIN}.
+     */
+    private boolean hasAdminRole(Jwt jwt) {
+        // getClaimAsStringList retorna null se o claim não existir — usamos List.of() como fallback
+        java.util.List<String> roles = jwt.getClaimAsStringList("roles");
+        return roles != null && roles.contains("ROLE_ADMIN");
     }
 }
