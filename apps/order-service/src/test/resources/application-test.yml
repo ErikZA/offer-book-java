@@ -86,7 +86,7 @@ app:
     # -----------------------------------------------------------------------
     saga:
         pending-timeout-minutes: 5
-        cleanup-delay-ms: 3600000  # 1h — efetivamente desabilita execução automática em testes
+        cleanup-delay-ms: 3600000 # 1h — efetivamente desabilita execução automática em testes
 
 logging:
     level:

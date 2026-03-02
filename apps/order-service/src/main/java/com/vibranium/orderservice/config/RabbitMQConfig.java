@@ -90,7 +90,11 @@ public class RabbitMQConfig {
     /** Routing key do {@code OrderAddedToBookEvent} — publicado em {@code FundsReservedEventConsumer}. */
     public static final String RK_ORDER_ADDED_TO_BOOK   = "order.events.order-added-to-book";
     /** Routing key do {@code OrderCancelledEvent} — publicado em {@code FundsReservedEventConsumer}. */
-    public static final String RK_ORDER_CANCELLED       = "order.events.order-cancelled";
+    public static final String RK_ORDER_CANCELLED           = "order.events.order-cancelled";
+    /** Routing key do {@code OrderFilledEvent} — publicado em {@code FundsReservedEventConsumer} quando match total. */
+    public static final String RK_ORDER_FILLED              = "order.events.order-filled";
+    /** Routing key do {@code OrderPartiallyFilledEvent} — publicado em {@code FundsReservedEventConsumer} quando match parcial. */
+    public static final String RK_ORDER_PARTIALLY_FILLED    = "order.events.order-partially-filled";
 
     // -------------------------------------------------------------------------
     // Exchanges
