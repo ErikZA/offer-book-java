@@ -746,6 +746,125 @@ void shouldHandleConcurrentRequests() {
 }
 ```
 
+### Deadlock ABBA — Prova de ausência com PostgreSQL real (AT-03.2)
+
+#### Problema — Deadlock ABBA
+
+Sem ordenação global de locks, dois settlements concorrentes sobre as mesmas carteiras em
+ordens opostas criam uma espera circular que nunca se resolve (deadlock ABBA):
+
+```
+Thread 1: lock(A) → aguarda lock(B)  ← mantido por Thread 2
+Thread 2: lock(B) → aguarda lock(A)  ← mantido por Thread 1
+          ↑ DEADLOCK — PostgreSQL detecta e cancela uma transação (SQLState 40P01)
+```
+
+#### Solução — Lock Ordering Determinístico
+
+`WalletService.settleFunds()` adquire locks sempre em **ordem crescente de UUID** (`UUID.compareTo`).
+Qualquer par de threads processando as mesmas carteiras bloqueia na mesma sequência —
+eliminando a possibilidade de espera circular. Prova formal: o grafo de espera é acíclico
+por construção (Teorema de Coffman, condição de ordenação de recursos).
+
+#### FASE RED — Provocar o deadlock deliberadamente
+
+Usa `TransactionTemplate` **sem** lock ordering para forçar a ordem ABBA de forma
+100% determinística via dois `CountDownLatch`, sem `Thread.sleep()`:
+
+```java
+// Dois CountDownLatches garantem a sequência ABBA sem Thread.sleep()
+CountDownLatch thread1HasLockA = new CountDownLatch(1);
+CountDownLatch thread2HasLockB = new CountDownLatch(1);
+
+// Thread 1: lock(A) → sinaliza → aguarda Thread 2 ter lock(B) → tenta lock(B)
+executor.submit(() -> transactionTemplate.execute(status -> {
+    walletRepository.findByIdForUpdate(idA);   // adquire A
+    thread1HasLockA.countDown();                // sinaliza
+    thread2HasLockB.await();                    // espera B estar preso
+    walletRepository.findByIdForUpdate(idB);   // BLOQUEADO ← deadlock
+    return null;
+}));
+
+// Thread 2: lock(B) → sinaliza → aguarda Thread 1 ter lock(A) → tenta lock(A)
+executor.submit(() -> transactionTemplate.execute(status -> {
+    walletRepository.findByIdForUpdate(idB);   // adquire B
+    thread2HasLockB.countDown();                // sinaliza
+    thread1HasLockA.await();                    // espera A estar preso
+    walletRepository.findByIdForUpdate(idA);   // BLOQUEADO ← deadlock
+    return null;
+}));
+
+// O PostgreSQL detecta em ~1s (deadlock_timeout) e cancela uma das transações
+// → Spring lança CannotAcquireLockException (PSQLException SQLState 40P01)
+assertThat(errors).isNotEmpty();
+assertThat(errors).anySatisfy(e ->
+    assertThat(buildFullExceptionMessage(e)).containsIgnoringCase("deadlock")
+);
+```
+
+#### FASE GREEN — Ausência de deadlock com lock ordering (20 iterações)
+
+```java
+@Test
+@Timeout(300)
+void invertedConcurrentSettlements_neverDeadlock_20Iterations() throws Exception {
+    for (int iteration = 0; iteration < 20; iteration++) {
+        Wallet walletA = createWalletWithLockedFunds(TOTAL_BRL, MATCH_AMOUNT);
+        Wallet walletB = createWalletWithLockedFunds(TOTAL_BRL, MATCH_AMOUNT);
+
+        // Disparo simultâneo via readyLatch(2) + startLatch(1)
+        CountDownLatch readyLatch = new CountDownLatch(2);
+        CountDownLatch startLatch = new CountDownLatch(1);
+
+        executor.submit(() -> {
+            readyLatch.countDown();
+            startLatch.await();
+            // Thread 1: buyer=A, seller=B → lock ordering: min(A,B) primeiro
+            walletService.settleFunds(buildCmd(walletA.getId(), walletB.getId()), msgId);
+        });
+        executor.submit(() -> {
+            readyLatch.countDown();
+            startLatch.await();
+            // Thread 2: buyer=B, seller=A (INVERTIDO) → lock ordering: min(A,B) primeiro
+            walletService.settleFunds(buildCmd(walletB.getId(), walletA.getId()), msgId);
+        });
+
+        readyLatch.await(10, TimeUnit.SECONDS);
+        startLatch.countDown(); // start simultâneo
+        executor.awaitTermination(30, TimeUnit.SECONDS);
+
+        // Validações por iteração
+        assertThat(errors).isEmpty();                                          // zero rollbacks
+        assertThat(outbox).filteredOn("FundsSettlementFailedEvent").isEmpty(); // zero falhas
+        assertThat(outbox).filteredOn("FundsSettledEvent").hasSize(2);         // 2 commits
+        assertThat(totalBrl(A) + totalBrl(B)).isEqualTo(totalBrlBefore);       // conservação
+        assertThat(totalVib(A) + totalVib(B)).isEqualTo(totalVibBefore);
+    }
+}
+```
+
+#### Alta Contenção — 10 carteiras × 50 settlements concorrentes
+
+Stress-test com pares aleatórios de semente fixa (`Random(42L)`) para reprodutibilidade em CI:
+
+| Configuração | Valor |
+|---|---|
+| Carteiras | 10 (cada com `brlLocked=500`, `vibLocked=50` — cobre pior caso) |
+| Settlements | 50 concorrentes com pares aleatórios (semente 42L) |
+| Pool de threads | `newFixedThreadPool(50)` |
+| Timeout absoluto | 120s |
+
+Validações ao final:
+- Zero exceções em qualquer thread
+- `completedCount == 50`
+- Zero `FundsSettlementFailedEvent`
+- Exatamente 50 `FundsSettledEvent`
+- $\sum_i \text{BRL}_i^{\text{antes}} = \sum_i \text{BRL}_i^{\text{depois}}$ (idem VIB)
+
+**Classe:** `WalletConcurrentDeadlockTest` (wallet-service, pacote `integration`)
+
+---
+
 ### SLA de Latência com Virtual Threads
 
 O teste `whenFiftyConcurrentOrdersFromSameUser_thenAllAcceptedWithinSLA` valida que
@@ -1149,6 +1268,7 @@ Adicionar à `.vscode/launch.json`:
 - [ ] Tempo de execução < 100ms para testes unitários
 - [ ] Documentação de casos complexos
 - [ ] Sem dados hardcoded que não sejam necessários
+- [ ] **Routing keys de RabbitMQ referenciadas exclusivamente via `RabbitMQConfig.RK_*` ou `RabbitMQConfig.QUEUE_*`** (guard AT-02.2)
 
 ### Pontos de Entrada para Novo Desenvolvedor
 
@@ -1903,6 +2023,86 @@ Os setters foram removidos (US-005). Além disso, usar `reserveFunds()` no setup
 
 ---
 
+## Routing Key Literal Guard — Padronização Arquitetural (AT-02.2)
+
+### Contexto
+
+Strings literais de routing key (ex: `"order.events.order-received"`) espalhadas pelo código
+introduzem risco silencioso de **drift de configuração**: uma alteração em `RabbitMQConfig`
+não será propagada para os locais que usam strings hardcoded, causando falhas em runtime
+invisíveis em tempo de compilação.
+
+### Regra Arquitetural
+
+> **Nenhum arquivo `.java` fora de `RabbitMQConfig.java` pode conter a substring
+> `"order.events."`** como string literal. Toda referência a routing key deve usar as
+> constantes estáticas declaradas em `RabbitMQConfig`.
+
+### Constantes Autorizadas
+
+| Constante | Valor | Uso |
+|---|---|---|
+| `RabbitMQConfig.RK_ORDER_RECEIVED` | `order.events.order-received` | Publicação do `OrderReceivedEvent` |
+| `RabbitMQConfig.RK_MATCH_EXECUTED` | `order.events.match-executed` | Publicação do `MatchExecutedEvent` |
+| `RabbitMQConfig.RK_ORDER_ADDED_TO_BOOK` | `order.events.order-added-to-book` | Publicação do `OrderAddedToBookEvent` |
+| `RabbitMQConfig.RK_ORDER_CANCELLED` | `order.events.order-cancelled` | Publicação do `OrderCancelledEvent` |
+| `RabbitMQConfig.QUEUE_FUNDS_RESERVED` | `order.events.funds-reserved` | Fila consumida pelo Command Side |
+| `RabbitMQConfig.QUEUE_FUNDS_FAILED` | `order.events.funds-failed` | Fila consumida pelo Command Side |
+
+### Teste de Guarda: `RoutingKeyLiteralTest`
+
+Localização: `apps/order-service/src/test/java/.../architecture/RoutingKeyLiteralTest.java`
+
+O teste percorre todos os arquivos `.java` sob `src/` e falha se qualquer arquivo
+**(exceto `RabbitMQConfig.java` e ele próprio)** contiver a substring `"order.events."`.
+
+```java
+@Test
+@DisplayName("Nenhum arquivo .java fora de RabbitMQConfig deve conter literal 'order.events.'")
+void noRoutingKeyLiteralsOutsideRabbitMQConfig() throws IOException {
+    Path srcRoot = Paths.get("src"); // relativo ao diretório Maven
+    List<String> violations = Files.walk(srcRoot)
+            .filter(p -> p.toString().endsWith(".java"))
+            .filter(p -> EXCLUDED_FILES.stream()
+                    .noneMatch(e -> p.getFileName().toString().equals(e)))
+            .filter(p -> Files.readString(p).contains("order.events."))
+            .map(Path::toString)
+            .collect(toList());
+
+    assertThat(violations).isEmpty();
+}
+```
+
+### TDD: Ciclo RED → GREEN
+
+| Fase | Ação | Resultado |
+|---|---|---|
+| **RED** | Criar `RoutingKeyLiteralTest` com 5 arquivos em violação | Teste falha, listando os arquivos |
+| **GREEN** | Substituir todas as strings por constantes `RabbitMQConfig.*` | Teste passa, `BUILD SUCCESS` |
+
+### Arquivos Corrigidos (AT-02.2)
+
+| Arquivo | Violações | Substituição |
+|---|---|---|
+| `OrderQueryControllerTest` | 10 | `RK_ORDER_RECEIVED`, `RK_MATCH_EXECUTED`, `RK_ORDER_CANCELLED` |
+| `OrderIdempotencyIntegrationTest` | 7 | `QUEUE_FUNDS_RESERVED`, `QUEUE_FUNDS_FAILED` |
+| `OrderEventProjectionConsumer` | 1 (Javadoc) | `{@link RabbitMQConfig#QUEUE_FUNDS_RESERVED}` |
+| `MatchEngineRedisIntegrationTest` | 1 (comentário) | `RabbitMQConfig.QUEUE_FUNDS_RESERVED` |
+| `OrderOutboxResilienceIntegrationTest` | 1 (comentário) | `RabbitMQConfig.RK_ORDER_RECEIVED` |
+
+### Como Executar
+
+```bash
+# Executa apenas o guard (rápido — sem infraestrutura)
+mvn test -pl apps/order-service -Dtest=RoutingKeyLiteralTest
+
+# Valida manualmente (deve retornar zero resultados)
+grep -r "order.events." apps/order-service/src \\
+  --include="*.java" \\
+  | grep -v "RabbitMQConfig.java" \\
+  | grep -v "RoutingKeyLiteralTest.java"
+```
+
 ## Criação Lazy Determinística de OrderDocument (AT-05.1)
 
 Esta seção documenta a estratégia de tolerância a **eventos out-of-order** no Read Model MongoDB, implementada em `OrderEventProjectionConsumer` como parte do AT-05.1.
@@ -2145,6 +2345,7 @@ assertThat(result.getHistory())
 **Última atualização**: 1 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-02.2**: Routing Key Literal Guard — eliminadas todas as strings literais de routing key fora de `RabbitMQConfig`. Adicionado `RoutingKeyLiteralTest` (guarda arquitetural estático). 5 arquivos refatorados. Adicionada seção 18 neste guia.
 > - **AT-05.2**: Idempotência Atômica com MongoTemplate — eliminação do Lost Update em `OrderEventProjectionConsumer`. `findById+appendHistory+save` substituídos por `$push/$setOnInsert/$inc` via `MongoTemplate`. Novo `OrderAtomicHistoryWriter`, índice `idx_history_eventId` e testes `OrderAtomicIdempotencyTest` (TC-ATOMIC-1, TC-ATOMIC-2) com 100 Virtual Threads concorrentes.
 > - **AT-05.1**: Criação Lazy Determinística de `OrderDocument` — eliminação de `IllegalStateException` e `return` silencioso em `OrderEventProjectionConsumer`. Adicionados `createMinimalPending()` e `enrichFields()` em `OrderDocument`. Novos testes `OrderOutOfOrderEventsIntegrationTest` (TC-LAZY-1, TC-LAZY-2, TC-LAZY-3).
 > - **AT-01.1**: Refatoração de Transacionalidade — eliminação do Dual Write (`Thread.ofVirtual` + `RabbitTemplate`) em `OrderCommandService.placeOrder()`. `OrderReceivedEvent` agora persiste via Outbox na mesma transação. Adicionado `OrderCommandServiceTest` (6 testes unitários TDD) e atualizado `OrderOutboxIntegrationTest` (2 entradas por `placeOrder`).

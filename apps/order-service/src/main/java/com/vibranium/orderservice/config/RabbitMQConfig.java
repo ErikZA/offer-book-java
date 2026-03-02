@@ -86,9 +86,11 @@ public class RabbitMQConfig {
     /** Routing key do {@code OrderReceivedEvent} — publicado em {@code OrderCommandService.placeOrder()}. */
     public static final String RK_ORDER_RECEIVED    = "order.events.order-received";
     /** Routing key do {@code MatchExecutedEvent} — publicado em {@code FundsReservedEventConsumer}. */
-    public static final String RK_MATCH_EXECUTED    = "order.events.match-executed";
+    public static final String RK_MATCH_EXECUTED        = "order.events.match-executed";
+    /** Routing key do {@code OrderAddedToBookEvent} — publicado em {@code FundsReservedEventConsumer}. */
+    public static final String RK_ORDER_ADDED_TO_BOOK   = "order.events.order-added-to-book";
     /** Routing key do {@code OrderCancelledEvent} — publicado em {@code FundsReservedEventConsumer}. */
-    public static final String RK_ORDER_CANCELLED   = "order.events.order-cancelled";
+    public static final String RK_ORDER_CANCELLED       = "order.events.order-cancelled";
 
     // -------------------------------------------------------------------------
     // Exchanges

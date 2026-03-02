@@ -33,7 +33,7 @@ import static org.awaitility.Awaitility.await;
  *
  * <p>Fluxo testado:</p>
  * <pre>
- *   FundsReservedEvent → [queue: order.events.funds-reserved, RK: wallet.events.funds-reserved]
+ *   FundsReservedEvent → [queue: RabbitMQConfig.QUEUE_FUNDS_RESERVED, RK: wallet.events.funds-reserved]
  *       → FundsReservedEventConsumer
  *           → RedisMatchEngineAdapter (Script Lua atômico)
  *               → match:    Order → FILLED/PARTIAL

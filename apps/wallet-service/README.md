@@ -42,9 +42,14 @@ src/
     │   ├── unit/
     │   │   ├── WalletDomainTest.java                     # Testes de domínio puro (US-005)
     │   │   └── EventRouteTest.java
+    │   ├── unit/
+    │   │   ├── WalletDomainTest.java                     # Testes de domínio puro (US-005)
+    │   │   ├── WalletServiceLockOrderTest.java           # TDD lock ordering ABBA (AT-03.1)
+    │   │   └── EventRouteTest.java
     │   └── integration/
     │       ├── WalletReserveFundsIntegrationTest.java
     │       ├── WalletSettleFundsIntegrationTest.java
+    │       ├── WalletConcurrentDeadlockTest.java         # AT-03.2 — Ausência de deadlock ABBA (PostgreSQL real)
     │       ├── WalletIdempotencyIntegrationTest.java
     │       ├── WalletBalanceUpdateIntegrationTest.java
     │       └── OutboxPublisherIntegrationTest.java
@@ -174,7 +179,30 @@ O `Wallet` é o **Aggregate Root** do contexto de carteira. Toda mutação de sa
 - Wallet é aggregate root e controla seu próprio estado
 - Optimistic locking via @Version (coluna: version — migration V4)
 ```
+### Prevenção de Deadlock ABBA — `settleFunds` (AT-03.1)
 
+O método `WalletService.settleFunds()` adquire locks pessimistas em **duas** carteiras por
+transação. Sem ordenação, dois settlements concorrentes sobre as mesmas carteiras em ordens
+opostas criam uma espera circular (**deadlock ABBA**).
+
+**Solução — Lock Ordering Determinístico:** locks são sempre adquiridos em **ordem crescente
+de UUID** (`UUID.compareTo`), garantindo sequência global única. A semântica buyer/seller é
+restaurada por mapeamento após a aquisição dos locks, sem alterar contratos públicos.
+
+```
+  Thread 1: settleFunds(buyer=A, seller=B) → lock min(A,B) → lock max(A,B) → commit
+  Thread 2: settleFunds(buyer=B, seller=A) → lock min(A,B) → espera → lock max(A,B) → commit
+  ↑ Serialização correta — zero espera circular
+```
+
+#### Cobertura de testes (AT-03.1 / AT-03.2)
+
+| Classe | Tipo | O que prova |
+|--------|------|-------------|
+| `WalletServiceLockOrderTest` | Unitário (Mockito) | Captura a ordem real de calls a `findByIdForUpdate` e asserta que menor UUID é sempre primeiro |
+| `WalletConcurrentDeadlockTest.FaseRed` | Integração (PostgreSQL) | Usa `TransactionTemplate` sem lock ordering para **provocar** um deadlock real (SQLState 40P01) |
+| `WalletConcurrentDeadlockTest.FaseGreen` | Integração (PostgreSQL) | 20 iterações × 2 threads com buyer/seller invertidos via `WalletService` — zero deadlocks |
+| `WalletConcurrentDeadlockTest.AltaContencao` | Integração (PostgreSQL) | 10 carteiras × 50 settlements simultâneos (pool fixo) — zero deadlocks, conservação global de valor |
 ### Schema Flyway
 
 | Migration | Descrição |
