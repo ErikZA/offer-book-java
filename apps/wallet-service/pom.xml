@@ -197,6 +197,18 @@
             <artifactId>debezium-connector-postgres</artifactId>
             <version>2.7.4.Final</version>
         </dependency>
+
+        <!-- AT-08.1: JdbcOffsetBackingStore — persistência de offset no banco.
+             Substitui FileOffsetBackingStore (/tmp efêmero) por armazenamento JDBC
+             na tabela wallet_outbox_offset (criada pela migration V5).
+             Garante que o offset do WAL sobrevive ao restart do container,
+             eliminando reprocessamento de eventos (duplicatas no RabbitMQ).
+             Compatível com Debezium 2.7.4.Final — mesma versão dos demais módulos. -->
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-storage-jdbc</artifactId>
+            <version>2.7.4.Final</version>
+        </dependency>
     </dependencies>
 
     <build>

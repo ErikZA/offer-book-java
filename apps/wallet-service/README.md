@@ -36,7 +36,7 @@ src/
 │   │   └── exception/                                    # InsufficientFundsException, etc.
 │   └── resources/
 │       ├── application.yaml
-│       └── db/migration/                                 # V1…V4 (Flyway)
+│       └── db/migration/                                 # V1…V5 (Flyway)
 └── test/
     ├── java/com/vibranium/walletservice/
     │   ├── unit/
@@ -53,8 +53,9 @@ src/
     │       ├── WalletIdempotencyIntegrationTest.java
     │       ├── WalletBalanceUpdateIntegrationTest.java
     │       ├── OutboxPublisherIntegrationTest.java
-    │       └── ReserveFundsDlqIntegrationTest.java       # AT-07.1 — DLQ routing para reserve-funds
-    └── resources/application-test.yaml
+│       ├── ReserveFundsDlqIntegrationTest.java       # AT-07.1 — DLQ routing para reserve-funds
+│       ├── DebeziumJdbcOffsetMigrationTest.java      # AT-08.1 RED — tabela wallet_outbox_offset
+│       └── DebeziumRestartIdempotencyTest.java       # AT-08.1 RED→GREEN — idempotência pós-restart
 
 docker/
 ├── Dockerfile                # Build production
@@ -229,6 +230,23 @@ restaurada por mapeamento após a aquisição dos locks, sem alterar contratos p
 |--------|------|-------------|
 | `ReserveFundsDlqIntegrationTest` (Teste 1) | Integração (RabbitMQ) | Consulta Management API e valida que `wallet.commands.reserve-funds` possui `x-dead-letter-exchange=vibranium.dlq` e `x-dead-letter-routing-key` configurados |
 | `ReserveFundsDlqIntegrationTest` (Teste 2) | Integração (RabbitMQ) | Simula poison pill via `@MockBean`, verifica que mensagem NACKed não fica na fila principal e aparece em `wallet.commands.reserve-funds.dlq` com header `x-death` |
+
+### Persistência de Offset Debezium — JdbcOffsetBackingStore (AT-08.1)
+
+O `FileOffsetBackingStore` armazenava o offset do WAL em `/tmp/wallet-outbox-offset.dat`, um caminho efêmero em containers Docker. Após restart, o Debezium perdia o LSN confirmado e podia reprocessar eventos já publicados no RabbitMQ (duplicatas).
+
+**Solução — `JdbcOffsetBackingStore`:** o offset é persistido na tabela `wallet_outbox_offset` do próprio PostgreSQL (migration V5). O banco sobrevive ao restart do container, garantindo continuidade exata do WAL.
+
+Benefícios:
+- Offset sobrevive ao restart do container
+- Nenhuma duplicata por perda de offset
+- `FileSchemaHistory` em `/tmp` também eliminado — schema reconstruído do WAL no startup
+- Alinha o sistema com exactly-once semantics (combinado com `claimAndPublish` atômico)
+
+| Classe | Tipo | O que prova |
+|--------|------|-------------|
+| `DebeziumJdbcOffsetMigrationTest` | Integração (RED→GREEN) | Valida existência, estrutura e PK da tabela `wallet_outbox_offset` após migration V5 |
+| `DebeziumRestartIdempotencyTest` | Integração (RED→GREEN) | Confirma que offset persiste no banco e que restart controlado não republica eventos já processados |
 ### Schema Flyway
 
 | Migration | Descrição |
@@ -236,8 +254,7 @@ restaurada por mapeamento após a aquisição dos locks, sem alterar contratos p
 | `V1__create_wallet.sql` | Tabela `tb_wallet` com constraints CHECK de saldo ≥ 0 |
 | `V2__create_outbox.sql` | Tabela `outbox_message` para Transactional Outbox |
 | `V3__create_idempotency_key.sql` | Tabela `idempotency_key` para deduplicação de mensagens |
-| `V4__add_wallet_version.sql` | Coluna `version BIGINT` para optimistic locking (US-005) |
-
+| `V4__add_wallet_version.sql` | Coluna `version BIGINT` para optimistic locking (US-005) || `V5__create_wallet_outbox_offset.sql` | Tabela `wallet_outbox_offset` para `JdbcOffsetBackingStore` (AT-08.1) |
 ## 📦 Dependências
 
 | Biblioteca | Versão | Uso |

@@ -36,8 +36,9 @@ import java.util.concurrent.TimeUnit;
  *       sem I/O periódico desnecessário.</li>
  *   <li><b>Sem 2-phase commit:</b> o WAL é escrito atomicamente com a transação
  *       de negócio — a posição do WAL é o próprio offset de durabilidade.</li>
- *   <li><b>Fault tolerance:</b> o offset ({@code FileOffsetBackingStore} em produção)
- *       garante que nenhum evento seja perdido no restart da aplicação.</li>
+ *   <li><b>Fault tolerance (AT-08.1):</b> o offset ({@code JdbcOffsetBackingStore} em produção)
+ *       persiste o LSN do WAL na tabela {@code wallet_outbox_offset} do PostgreSQL,
+ *       garantindo que nenhum evento seja perdido ou duplicado no restart do container.</li>
  * </ul>
  *
  * <h2>Concorrência multi-instância</h2>
@@ -292,9 +293,9 @@ public class DebeziumOutboxEngine implements SmartLifecycle {
      *
      * <p>Usa o overload sem paginação por ser chamado apenas UMA vez na inicialização.
      * Em produção, com {@code MemoryOffsetBackingStore}, cada restart replaya
-     * os eventos do WAL, tornando este método secundário. Com {@code FileOffsetBackingStore},
-     * ele cobre a janela entre o último offset salvo e registros inseridos
-     * antes do engine ser reiniciado.</p>
+     * os eventos do WAL, tornando este método secundário. Com {@code JdbcOffsetBackingStore},
+     * o offset persiste no banco — este método cobre a janela de registros inseridos
+     * antes do engine ser habilitado pela primeira vez (ex: com debezium.enabled=false).</p>
      */
     private void processExistingPendingMessages() {
         List<OutboxMessage> pending = outboxRepository.findByProcessedFalseOrderByCreatedAtAsc();
@@ -409,6 +410,10 @@ public class DebeziumOutboxEngine implements SmartLifecycle {
      *       minimizando o volume de eventos Debezium processados.</li>
      *   <li>{@code decimal.handling.mode = string}: evita problemas de precisão
      *       ao serializar NUMERIC/DECIMAL do PostgreSQL.</li>
+     *   <li><b>AT-08.1</b> {@code offset.storage = JdbcOffsetBackingStore}: persiste
+     *       o LSN do WAL na tabela {@code wallet_outbox_offset} (migration V5).
+     *       Garante continuidade exata após restart do container sem duplicatas.
+     *       Para testes, usa {@code MemoryOffsetBackingStore} via {@code application-test.yaml}.</li>
      * </ul>
      *
      * @return {@link Properties} prontas para uso pelo {@link DebeziumEngine}.
@@ -446,28 +451,55 @@ public class DebeziumOutboxEngine implements SmartLifecycle {
         //     são tratadas pelo método processExistingPendingMessages() ---
         props.setProperty("snapshot.mode", "never");
 
-        // --- Offset Storage ---
-        // Produção: FileOffsetBackingStore persiste a posição do WAL entre restarts
-        // Testes: MemoryOffsetBackingStore descarta offset ao parar (simplicidade)
-        props.setProperty("offset.storage",       cfg.offsetStorage());
-        props.setProperty("offset.storage.file.filename", cfg.offsetStorageFile());
+        // --- Offset Storage (AT-08.1) ---
+        // Produção: JdbcOffsetBackingStore — persiste LSN do WAL na tabela
+        //           wallet_outbox_offset (migration V5). Sobrevive ao restart do container,
+        //           eliminando risco de duplicatas por perda do offset em /tmp.
+        // Testes:   MemoryOffsetBackingStore — descarta offset ao parar (sem persistência).
+        //           Combinado com snapshot.mode=never, cada restart começa do LSN atual.
+        boolean isMemoryStorage = cfg.offsetStorage().contains("MemoryOffsetBackingStore");
+        boolean isJdbcStorage   = cfg.offsetStorage().contains("JdbcOffsetBackingStore");
+
+        props.setProperty("offset.storage", cfg.offsetStorage());
         props.setProperty("offset.flush.interval.ms", "1000");
+
+        // Propriedades específicas do JdbcOffsetBackingStore —
+        // mapeadas para os campos de configuração internos do Debezium 2.7.x:
+        //   offset.storage.jdbc.url      → URL de conexão JDBC
+        //   offset.storage.jdbc.user     → usuário do banco
+        //   offset.storage.jdbc.password → senha do banco
+        //   offset.storage.jdbc.offset.table.name → tabela criada pela migration V5
+        if (isJdbcStorage) {
+            props.setProperty("offset.storage.jdbc.url",
+                    cfg.offsetStorageJdbcUrl());
+            props.setProperty("offset.storage.jdbc.user",
+                    cfg.offsetStorageJdbcUsername());
+            props.setProperty("offset.storage.jdbc.password",
+                    cfg.offsetStorageJdbcPassword());
+            props.setProperty("offset.storage.jdbc.offset.table.name",
+                    cfg.offsetStorageJdbcTableName());
+        }
 
         // --- Serialização ---
         props.setProperty("decimal.handling.mode", "string");
 
         // --- Schema history ---
-        // Usa MemorySchemaHistory quando offset é em memória (testes).
-        // FileSchemaHistory em produção para persistir o schema histórico do conector.
-        boolean isMemoryStorage = cfg.offsetStorage().contains("MemoryOffsetBackingStore");
-        if (isMemoryStorage) {
+        // Para PostgreSQL + pgoutput, o schema pode ser mantido em memória mesmo
+        // em produção pois é reconstruído do WAL no restart (diferente do MySQL).
+        // Isso resolve o problema secundário de FileSchemaHistory também armazenar
+        // em /tmp — com JdbcOffsetBackingStore, usar MemorySchemaHistory é seguro.
+        //
+        // MemoryOffsetBackingStore (testes):  sempre usa MemorySchemaHistory.
+        // JdbcOffsetBackingStore (produção):  usa MemorySchemaHistory — schema
+        //   reconstruído do WAL no startup; nenhuma dependência de arquivo em /tmp.
+        if (isMemoryStorage || isJdbcStorage) {
             props.setProperty("schema.history.internal",
                     "io.debezium.relational.history.MemorySchemaHistory");
         } else {
+            // Fallback para implementações customizadas que não sejam JDBC ou Memory.
+            // Em uso normal não deve ser atingido após AT-08.1.
             props.setProperty("schema.history.internal",
-                    "io.debezium.storage.file.history.FileSchemaHistory");
-            props.setProperty("schema.history.internal.file.filename",
-                    cfg.offsetStorageFile().replace("offset", "schema"));
+                    "io.debezium.relational.history.MemorySchemaHistory");
         }
 
         return props;

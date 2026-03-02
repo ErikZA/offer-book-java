@@ -78,9 +78,15 @@ app:
             # Use um sufixo com o hostname/pod-name em ambientes Kubernetes.
             slot-name: ${APP_OUTBOX_SLOT_NAME:wallet_outbox_slot}
 
-            # Produção: FileOffsetBackingStore — persiste posição do WAL em disco
-            offset-storage: org.apache.kafka.connect.storage.FileOffsetBackingStore
-            offset-storage-file: ${APP_OUTBOX_OFFSET_FILE:/tmp/wallet-outbox-offset.dat}
+            # AT-08.1: JdbcOffsetBackingStore — offset persistido no banco PostgreSQL.
+            # Substitui FileOffsetBackingStore (/tmp efêmero, não persiste em containers)
+            # para garantir continuidade exata do WAL após restart sem duplicatas.
+            # Tabela criada pela migration V5__create_wallet_outbox_offset.sql (Flyway).
+            offset-storage: io.debezium.storage.jdbc.offset.JdbcOffsetBackingStore
+            offset-storage-jdbc-url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/vibranium_wallet}
+            offset-storage-jdbc-username: ${SPRING_DATASOURCE_USERNAME:postgres}
+            offset-storage-jdbc-password: ${SPRING_DATASOURCE_PASSWORD:postgres123}
+            offset-storage-jdbc-table-name: wallet_outbox_offset
 
             # Não dropa o slot ao parar em produção — preserva posição do WAL
             drop-slot-on-stop: false
