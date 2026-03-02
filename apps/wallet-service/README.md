@@ -247,6 +247,64 @@ Benefícios:
 |--------|------|-------------|
 | `DebeziumJdbcOffsetMigrationTest` | Integração (RED→GREEN) | Valida existência, estrutura e PK da tabela `wallet_outbox_offset` após migration V5 |
 | `DebeziumRestartIdempotencyTest` | Integração (RED→GREEN) | Confirma que offset persiste no banco e que restart controlado não republica eventos já processados |
+
+---
+
+## ⚠️ Debezium Embedded Limitation
+
+> **O `wallet-service` com Debezium Embedded suporta apenas deployment single-instance.**
+> Escalonar horizontalmente este serviço sem remover o `DebeziumOutboxEngine` causa
+> falha imediata ou WAL bloat no PostgreSQL.
+
+### Por que a limitação existe
+
+O Debezium Embedded cria **um replication slot por instância** no PostgreSQL e não
+possui coordenação distribuída. Com múltiplas instâncias:
+
+| Cenário                          | Resultado                                                                 |
+|----------------------------------|---------------------------------------------------------------------------|
+| Mesmo slot (`APP_OUTBOX_SLOT_NAME` igual) | PostgreSQL rejeita a 2ª conexão: `slot already active` (SQLState 55006) |
+| Slots distintos por instância    | Todas as instâncias recebem os mesmos eventos (fan-out). **WAL bloat:** o banco retém WAL até que *todos* os slots confirmem o LSN. Uma instância lenta pode esgotar o disco. |
+
+### Configuração atual
+
+```yaml
+# application.yaml
+app.outbox.debezium.slot-name: ${APP_OUTBOX_SLOT_NAME:wallet_outbox_slot}
+```
+
+O nome é **fixo por padrão**. Nenhum mecanismo gera automaticamente um sufixo único
+por pod/hostname.
+
+### Caminhos evolutivos para alta disponibilidade
+
+| Fase | Estratégia | Trade-off |
+|------|-----------|-----------|
+| **Imediato** | Single-instance (status quo) | Sem escala horizontal do publisher |
+| **Curto prazo** | Desabilitar Debezium; usar Polling Scheduler com `SELECT FOR UPDATE SKIP LOCKED` | Latência maior (~polling interval); sem WAL bloat |
+| **Médio prazo** | Migrar para Debezium Server dedicado + Kafka | Kafka como dependência; CDC desacoplado da JVM da app |
+
+### Monitoramento de WAL bloat
+
+```sql
+-- Verificar lag de cada replication slot (bytes retidos no WAL)
+SELECT slot_name, active,
+       pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) AS lag_bytes
+FROM pg_replication_slots;
+```
+
+> Slot com `active = false` e `lag_bytes` crescente indica instância travada.
+> Ação: `SELECT pg_drop_replication_slot('wallet_outbox_slot');` (IRREVERSÍVEL — Debezium
+> reiniciará do LSN corrente).
+
+### Documentação arquitetural
+
+Decisão versionada em: [`docs/architecture/adr-001-debezium-single-instance.md`](../../docs/architecture/adr-001-debezium-single-instance.md)
+
+Teste de garantia: [`DebeziumSingleInstanceConstraintTest`](src/test/java/com/vibranium/walletservice/architecture/DebeziumSingleInstanceConstraintTest.java) (AT-08.2)
+
+---
+
 ### Schema Flyway
 
 | Migration | Descrição |
