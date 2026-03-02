@@ -18,7 +18,9 @@
 14. [Testes de CDC — Debezium Outbox](#testes-de-cdc--debezium-outbox)
 15. [Partial Fill — Requeue Atômico e Idempotência por eventId (US-002)](#partial-fill--requeue-atômico-e-idempotência-por-eventid-us-002)
 16. [Invariantes de Domínio Wallet — Encapsulamento de Agregado (US-005)](#invariantes-de-domínio-wallet--encapsulamento-de-agregado-us-005)
-17. [Referências](#referências)
+17. [Criação Lazy Determinística de OrderDocument (AT-05.1)](#criação-lazy-determinística-de-orderdocument-at-051)
+18. [Idempotência Atômica com MongoTemplate (AT-05.2)](#idempotência-atômica-com-mongotemplate-at-052)
+19. [Referências](#referências)
 
 ---
 
@@ -1496,6 +1498,48 @@ jobs:
 
 ## Testes de CDC — Debezium Outbox
 
+Esta seção cobre dois padrões complementares do Outbox Pattern no `order-service`:
+
+### AT-01.1 — Refatoração de Transacionalidade (Eliminação de Dual Write)
+
+O `OrderCommandServiceTest` valida, em camada unitária pura (Mockito, sem containers), que
+`placeOrder()` persiste **duas entradas atomicamente** em `tb_order_outbox` dentro da mesma
+`@Transactional`, eliminando o anti-pattern de `Thread.ofVirtual()` + `RabbitTemplate` fora da transação:
+
+| Cenário | Resultado esperado |
+|---------|-------------------|
+| Happy path BUY/SELL | `orderRepository.save` × 1, `outboxRepository.save` × 2 |
+| Jackson falha no `ReserveFundsCommand` | `IllegalStateException`, nenhum `outboxRepository.save` |
+| Jackson falha no `OrderReceivedEvent` | `IllegalStateException`, `outboxRepository.save` × 1 (antes da falha) |
+| Construtor sem `RabbitTemplate` | Instanciável com 4 parâmetros; `parameterCount == 4` por reflexão |
+| `keycloakId` não registrado | `UserNotRegisteredException`, nenhum save |
+
+Schema das duas entradas no outbox (conforme [Debezium Outbox Event Router](https://debezium.io/documentation/reference/3.5/transformations/outbox-event-router)):
+
+```
+aggregate_type = "Order"
+aggregate_id   = orderId
+event_type     = "ReserveFundsCommand"  |  "OrderReceivedEvent"
+exchange       = vibranium.commands     |  vibranium.events
+routing_key    = wallet.commands.reserve-funds  |  order.events.order-received
+payload        = JSON serializado do comando/evento
+```
+
+### Outbox Publisher — Relay por Scheduler
+
+O `OrderOutboxIntegrationTest` (Testcontainers — PostgreSQL + RabbitMQ) valida o relay pelo
+`OrderOutboxPublisherService` (`@Scheduled`). Após a refatoração AT-01.1, cada `placeOrder()`
+gera **2 entradas** no outbox, e os testes de integração foram atualizados para refletir isso:
+
+```java
+// placeOrder() único → 2 mensagens no outbox
+assertThat(outboxRepository.findAll()).hasSize(2);
+assertThat(eventTypes).containsExactlyInAnyOrder("ReserveFundsCommand", "OrderReceivedEvent");
+
+// 2 usuários distintos → 4 mensagens no outbox
+assertThat(outboxRepository.findAll()).hasSize(4);
+```
+
 O `OutboxPublisherIntegrationTest` valida o caminho completo do evento desde a inserção na tabela `outbox_message` até a chegada na fila RabbitMQ via Debezium CDC. Esta seção documenta os padrões e armadilhas encontrados.
 
 ### Por que um contexto Spring separado
@@ -1978,6 +2022,233 @@ Os setters foram removidos (US-005). Além disso, usar `reserveFunds()` no setup
 
 ---
 
+## Criação Lazy Determinística de OrderDocument (AT-05.1)
+
+Esta seção documenta a estratégia de tolerância a **eventos out-of-order** no Read Model MongoDB, implementada em `OrderEventProjectionConsumer` como parte do AT-05.1.
+
+### Contexto do problema
+
+Eventos de domínio podem chegar às filas de projeção em ordem diferente da ordem causal real:
+
+| Cenário out-of-order | Comportamento antigo | Impacto |
+|---|---|---|
+| `FUNDS_RESERVED` antes de `ORDER_RECEIVED` | `IllegalStateException` → retry → DLQ | Documento nunca criado; estado inconsistente permanente |
+| `MATCH_EXECUTED` antes de `ORDER_RECEIVED` | `return` silencioso | Evento descartado; histórico auditável incompleto |
+| `ORDER_CANCELLED` antes de `ORDER_RECEIVED` | `return` silencioso | Cancelamento perdido no histórico |
+
+### Solução: Criação Lazy com `createMinimalPending()`
+
+Quando qualquer evento chegar sem documento pai, o consumer cria um **stub mínimo** em vez de lançar exceção ou descartar:
+
+```java
+// AT-05.1 — Consumer onFundsReserved (antes: IllegalStateException)
+OrderDocument doc = orderHistoryRepository.findById(orderId)
+        .orElseGet(() -> {
+            logger.warn("FUNDS_RESERVED sem documento pai: orderId={} — criando stub lazy (AT-05.1)", orderId);
+            return OrderDocument.createMinimalPending(orderId, event.occurredOn());
+        });
+```
+
+O stub contém apenas `orderId`, `status=PENDING` e `createdAt`. Quando `ORDER_RECEIVED` chegar posteriormente, `enrichFields()` preenche os dados financeiros de forma **idempotente**:
+
+```java
+// AT-05.1 — onOrderReceived enriquece stub sem sobrescrever dados já existentes
+doc.enrichFields(userId, event.orderType().name(), event.price(), event.amount());
+```
+
+**`enrichFields()` é idempotente:** se o campo já está preenchido (doc criado normalmente via `ORDER_RECEIVED`), o valor existente não é sobrescrito.
+
+### Cuidado: `remainingQty = null` em documentos lazy
+
+Documentos criados por `createMinimalPending()` têm `remainingQty = null`. Consumidores que calculam qty residual devem tratar isso explicitamente:
+
+```java
+// AT-05.1: remainingQty pode ser null em doc lazy (sem ORDER_RECEIVED prévio)
+BigDecimal currentQty = doc.getRemainingQty() != null
+        ? doc.getRemainingQty()
+        : BigDecimal.ZERO;
+BigDecimal newRemaining = currentQty.subtract(event.matchAmount()).max(BigDecimal.ZERO);
+```
+
+### Testes: `OrderOutOfOrderEventsIntegrationTest`
+
+Arquivo: `apps/order-service/src/test/java/.../integration/OrderOutOfOrderEventsIntegrationTest.java`
+
+| Teste | `@DisplayName` | Cenário |
+|---|---|---|
+| `TC-LAZY-1` | FUNDS_RESERVED antes de ORDER_RECEIVED | Stub criado → doc enriquecido → history com ambos eventos |
+| `TC-LAZY-2` | MATCH_EXECUTED antes de qualquer evento | Stub criado → MATCH_EXECUTED no history |
+| `TC-LAZY-3` | ORDER_RECEIVED após match lazy | Enriquecimento sem duplicar história |
+
+**Padrão de publicação nos testes:**
+
+```java
+// TC-LAZY-1: Fase 1 — publica FUNDS_RESERVED sem ORDER_RECEIVED prévio
+FundsReservedEvent fundsEvent = FundsReservedEvent.of(
+        correlationId, orderId, walletId, AssetType.BRL, new BigDecimal("25000.00"));
+
+rabbitTemplate.convertAndSend(
+        RabbitMQConfig.EVENTS_EXCHANGE,
+        RabbitMQConfig.RK_FUNDS_RESERVED,   // "wallet.events.funds-reserved"
+        fundsEvent
+);
+
+await().atMost(10, TimeUnit.SECONDS)
+       .untilAsserted(() -> {
+           Optional<OrderDocument> doc = orderHistoryRepository.findById(orderId.toString());
+           assertThat(doc).isPresent();
+           assertThat(doc.get().getHistory())
+                   .anyMatch(h -> h.eventType().equals("FUNDS_RESERVED"));
+       });
+```
+
+> **Por que `RK_FUNDS_RESERVED` e não a routing key da fila de projeção?**
+> O `FundsReservedEvent` é publicado na exchange `vibranium.events` com a routing key
+> `wallet.events.funds-reserved`. A fila de projeção `order.projection.funds-reserved`
+> está vinculada a essa mesma routing key — o fanout pattern garante que
+> ambas as filas (Command Side e projection) recebam o evento automaticamente.
+
+### Propriedades de Consistência Eventual Garantidas (AT-05.1)
+
+| Propriedade | Garantia |
+|---|---|
+| Zero `IllegalStateException` por ausência de doc | ✅ Todos os consumers usam `orElseGet()` com stub lazy |
+| Zero `return` silencioso — e evento nunca descartado | ✅ Todos os `return` silenciosos removidos |
+| Documento sempre existente após qualquer evento | ✅ `createMinimalPending()` garante existência |
+| Idempotência preservada | ✅ `appendHistory()` e `enrichFields()` são idempotentes |
+| Testes anteriores não regridem | ✅ `OrderQueryControllerTest` TC-1 a TC-7 continuam passando |
+
+### Artefatos gerados pelo AT-05.1
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `OrderDocument.createMinimalPending()` | Novo | Factory para stub lazy com `orderId`, `status=PENDING`, `createdAt` |
+| `OrderDocument.enrichFields()` | Novo | Preenchimento idempotente de campos financeiros no stub |
+| `OrderEventProjectionConsumer.onFundsReserved()` | Refatorado | `IllegalStateException` → criação lazy |
+| `OrderEventProjectionConsumer.updateDocumentWithMatch()` | Refatorado | `return` silencioso → criação lazy + tratamento de `remainingQty=null` |
+| `OrderEventProjectionConsumer.onOrderCancelled()` | Refatorado | `return` silencioso → criação lazy |
+| `OrderEventProjectionConsumer.onOrderReceived()` | Refatorado | + chamada a `enrichFields()` após `orElseGet()` |
+| `OrderOutOfOrderEventsIntegrationTest` | Novo | 3 testes de integração: TC-LAZY-1, TC-LAZY-2, TC-LAZY-3 |
+
+---
+
+## Idempotência Atômica com MongoTemplate (AT-05.2)
+
+Esta seção documenta a eliminação do padrão de **Lost Update** no Read Model MongoDB, substituindo `findById + appendHistory + save()` por operações atômicas via `MongoTemplate`, implementada como AT-05.2.
+
+### Contexto do problema — Lost Update
+
+O padrão `MongoRepository.save()` realiza **substituição total do documento** (replace). Em cenários de alta concorrência, duas threads que leram o mesmo documento e empurram entradas à sua cópia local acabam sobrescrevendo uma à outra:
+
+| Passo | Thread A | Thread B | Resultado |
+|---|---|---|---|
+| 1 | `findById(orderId)` → doc v1 | `findById(orderId)` → doc v1 | Ambas com cópia desatualizada |
+| 2 | `doc.appendHistory(matchA)` | `doc.appendHistory(matchB)` | Mutações em cópias isoladas |
+| 3 | `save(doc)` → persiste v2 com matchA | `save(doc)` → persiste **v2** com apenas matchB | ❌ matchA **perdido** |
+
+Além disso, a verificação de idempotência `history.contains(eventId)` em memória não era atômica perante outras réplicas da aplicação.
+
+### Solução: Operações Atômicas via `MongoTemplate`
+
+O `OrderAtomicHistoryWriter` encapsula todas as escritas no Read Model usando **operações server-side atômicas**:
+
+| Operação | Método | Semântica |
+|---|---|---|
+| `$push` com filtro `{$ne: eventId}` | `updateFirst` | Append idempotente — nunca duplica uma entrada de histórico |
+| `$setOnInsert` | `upsert` | Cria o documento na primeira escrita; ignora nos upserts subsequentes |
+| `$init` com `$inc` | `findAndModify` | Decrementa `remainingQty` e retorna o novo documento atomicamente |
+| `$set` condicional com `$exists: false` | `updateFirst` | Preenche campos nulos sem sobrescrever valores já existentes |
+
+**Filtro de idempotência — núcleo da solução:**
+
+```java
+// AT-05.2 — filtro atômico: só aplica o $push se eventId ainda não está no array
+private Query idempotencyQuery(String orderId, String eventId) {
+    return new Query(
+        Criteria.where("_id").is(orderId)
+                .and("history.eventId").ne(eventId)   // $ne: nunca duplica
+    );
+}
+```
+
+**Append atômico típico (`upsertAndAppend`):**
+
+```java
+// AT-05.2 — upsert com $setOnInsert para criação atômica + $push idempotente
+Update update = baseUpdate(entry)
+    .setOnInsert("_id",       orderId)
+    .setOnInsert("occurredOn", occurredOn)
+    /* campos extras (status, userId, etc.) via consumer */;
+
+mongoTemplate.upsert(idempotencyQuery(orderId, eventId), update, OrderDocument.class);
+```
+
+O `baseUpdate()` aplica `$push history` e `$set updatedAt` — nenhuma leitura prévia é necessária.
+
+### Índice `idx_history_eventId`
+
+Sem índice, o filtro `"history.eventId": {$ne: eventId}` percorre o array inteiro a cada operação — **O(n)** onde n é o tamanho do histórico. O índice multikey criado em `MongoIndexConfig` resolve isso para **O(log n)**:
+
+```java
+// MongoIndexConfig — AT-05.2
+indexOps.ensureIndex(
+    new Index("history.eventId", Sort.Direction.ASC)
+        .named("idx_history_eventId")
+);
+```
+
+### Testes: `OrderAtomicIdempotencyTest`
+
+Arquivo: `apps/order-service/src/test/java/.../integration/OrderAtomicIdempotencyTest.java`
+
+**Estratégia:** O teste injeta `OrderEventProjectionConsumer` diretamente (bypass do broker RabbitMQ), expondo a condição de corrida no MongoDB com **100 Virtual Threads concorrentes**.
+
+| Teste | `@DisplayName` | Cenário | Assertion |
+|---|---|---|---|
+| `TC-ATOMIC-1` | 100 threads — eventIds únicos | 100 `MatchExecutedEvent` distintos enviados em paralelo | `history.size() == 100` — nenhum lost update |
+| `TC-ATOMIC-2` | 100 threads — mesmo eventId | Mesmo `MatchExecutedEvent` enviado 100 vezes em paralelo | `history.size() == 1` — idempotência DB-level |
+
+**Padrão de concorrência com Virtual Threads:**
+
+```java
+// TC-ATOMIC-1: 100 threads concorrentes, cada uma com eventId único
+try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    for (int i = 0; i < 100; i++) {
+        final int idx = i;
+        executor.submit(() ->
+            consumer.onMatchExecuted(buildMatchEvent(orderId, UUID.randomUUID().toString(), idx))
+        );
+    }
+}  // AutoCloseable: bloqueia até todas as threads concluírem
+
+OrderDocument result = orderHistoryRepository.findById(orderId.toString()).orElseThrow();
+assertThat(result.getHistory())
+    .filteredOn(h -> "MATCH_EXECUTED".equals(h.eventType()))
+    .hasSize(100);
+```
+
+### Propriedades de Consistência Garantidas (AT-05.2)
+
+| Propriedade | Garantia |
+|---|---|
+| Zero lost updates em alta concorrência | ✅ `$push` server-side elimina o padrão replace |
+| Idempotência no nível do banco de dados | ✅ Filtro `history.eventId: {$ne: eventId}` atômico |
+| Criação concorrente sem duplicatas | ✅ `$setOnInsert` + retry em `DuplicateKeyException` |
+| Decremento de `remainingQty` sem leitura prévia | ✅ `$inc` em `findAndModify` |
+| Compatibilidade com AT-05.1 (docs lazy) | ✅ `upsertAndAppend` preserva semântica out-of-order |
+| Performance do filtro de idempotência | ✅ `idx_history_eventId` — O(log n) em vez de O(n) |
+
+### Artefatos gerados pelo AT-05.2
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `OrderAtomicHistoryWriter` | Novo | `@Service` encapsulando todas as escritas atômicas no Read Model |
+| `MongoIndexConfig` | Modificado | Adicionado `idx_history_eventId` para filtro de idempotência eficiente |
+| `OrderEventProjectionConsumer` | Refatorado | `findById+save` → `atomicWriter.*` em todos os handlers de eventos |
+| `OrderAtomicIdempotencyTest` | Novo | TDD RED→GREEN: `TC-ATOMIC-1` (100 lost updates) e `TC-ATOMIC-2` (100 duplicatas) |
+
+---
+
 ## Referências
 
 - [JUnit 5 Documentation](https://junit.org/junit5/docs/current/user-guide/)
@@ -1990,9 +2261,12 @@ Os setters foram removidos (US-005). Além disso, usar `reserveFunds()` no setup
 ---
 
 **Status**: ✅ Consolidado e Completo  
-**Última atualização**: 28 de fevereiro de 2026
+**Última atualização**: 1 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-05.2**: Idempotência Atômica com MongoTemplate — eliminação do Lost Update em `OrderEventProjectionConsumer`. `findById+appendHistory+save` substituídos por `$push/$setOnInsert/$inc` via `MongoTemplate`. Novo `OrderAtomicHistoryWriter`, índice `idx_history_eventId` e testes `OrderAtomicIdempotencyTest` (TC-ATOMIC-1, TC-ATOMIC-2) com 100 Virtual Threads concorrentes.
+> - **AT-05.1**: Criação Lazy Determinística de `OrderDocument` — eliminação de `IllegalStateException` e `return` silencioso em `OrderEventProjectionConsumer`. Adicionados `createMinimalPending()` e `enrichFields()` em `OrderDocument`. Novos testes `OrderOutOfOrderEventsIntegrationTest` (TC-LAZY-1, TC-LAZY-2, TC-LAZY-3).
+> - **AT-01.1**: Refatoração de Transacionalidade — eliminação do Dual Write (`Thread.ofVirtual` + `RabbitTemplate`) em `OrderCommandService.placeOrder()`. `OrderReceivedEvent` agora persiste via Outbox na mesma transação. Adicionado `OrderCommandServiceTest` (6 testes unitários TDD) e atualizado `OrderOutboxIntegrationTest` (2 entradas por `placeOrder`).
 > - **US-005**: Adicionada seção 16 — Invariantes de Domínio Wallet (encapsulamento de agregado, remoção de setters, `applyBuySettlement`, `applySellSettlement`, `@Version`)
 > - **US-005**: Documentados 4 padrões de teste unitário de domínio puro (`WalletDomainTest`) e padrão de setup de integração sem setters
 > - Adicionada hierarquia `AbstractMongoIntegrationTest` (Query Side) separada de `AbstractIntegrationTest` (Command Side) — US-003
@@ -2001,3 +2275,4 @@ Os setters foram removidos (US-005). Além disso, usar `reserveFunds()` no setup
 > - Adicionado padrão de pre-criação de índices e connection pool MongoDB
 > - Adicionados padrões de testes de CDC Debezium (seção [Testes de CDC — Debezium Outbox](#testes-de-cdc--debezium-outbox))
 > - Adicionados padrões de Partial Fill e Idempotência por eventId (seção 15 — US-002)
+

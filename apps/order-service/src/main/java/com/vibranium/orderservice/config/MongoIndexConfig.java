@@ -10,7 +10,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.index.CompoundIndexDefinition;
+import org.springframework.data.mongodb.core.index.Index;
 import org.springframework.data.mongodb.core.index.IndexOperations;
+import org.springframework.data.domain.Sort;
 
 /**
  * Configuração que garante a criação de índices MongoDB no startup da aplicação.
@@ -69,6 +71,11 @@ public class MongoIndexConfig {
      * <ul>
      *   <li>{@code idx_userId_createdAt}: composto {@code {userId: 1, createdAt: -1}} —
      *       suporta a query paginada {@code findByUserIdOrderByCreatedAtDesc} em O(log n).</li>
+     *   <li>{@code idx_history_eventId}: {@code {"history.eventId": 1}} —
+     *       suporta o filtro de idempotência atômica (AT-05.2):
+     *       {@code {"history.eventId": {$ne: eventId}}} em O(log n) em vez de O(n).
+     *       Sem este índice, cada {@code updateFirst} com o filtro {@code $ne} faria
+     *       um scan linear em todos os elementos do array {@code history} para cada write.</li>
      * </ul>
      *
      * @param mongoTemplate Template MongoDB auto-configurado pelo Spring Boot.
@@ -89,15 +96,26 @@ public class MongoIndexConfig {
                 logger.debug("Coleção 'orders' criada.");
             }
 
-            // Garante o índice composto para consultas paginadas por usuário
             IndexOperations indexOps = mongoTemplate.indexOps("orders");
+
+            // Índice 1: suporta findByUserIdOrderByCreatedAtDesc — query paginada do Read Model
             indexOps.ensureIndex(
                     new CompoundIndexDefinition(
                             new Document("userId", 1).append("createdAt", -1))
                             .named("idx_userId_createdAt")
             );
 
-            logger.info("Índices MongoDB para 'orders' prontos.");
+            // Índice 2 (AT-05.2): suporta filtro de idempotência atômica
+            // updateFirst({_id: X, "history.eventId": {$ne: eventId}}, {$push: ...})
+            // Sem este índice, o filtro $ne em "history.eventId" faz scan O(n) no array
+            // para cada write — inaceitável em documentos com histórico extenso.
+            // O índice multikey em array torna o filtro O(log n).
+            indexOps.ensureIndex(
+                    new Index("history.eventId", Sort.Direction.ASC)
+                            .named("idx_history_eventId")
+            );
+
+            logger.info("Índices MongoDB para 'orders' prontos: idx_userId_createdAt, idx_history_eventId.");
         };
     }
 }

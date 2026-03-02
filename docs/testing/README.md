@@ -98,7 +98,10 @@ Os seguintes arquivos foram consolidados no documento principal, mas estão disp
 | **CDC Debezium** | 6 padrões (US-001) | COMPREHENSIVE_TESTING.md #testes-de-cdc |
 | **Partial Fill / Redis** | 4 padrões (US-002) | COMPREHENSIVE_TESTING.md #partial-fill |
 | **Idempotência eventId** | 1 padrão (US-002) | COMPREHENSIVE_TESTING.md #partial-fill |
+| **Outbox Resiliência** | 1 cenário 6 fases (AT-01.2) | `OrderOutboxResilienceIntegrationTest` — broker pause/unpause + Awaitility |
 | **Domínio Wallet — Invariantes** | 4 padrões (US-005) | COMPREHENSIVE_TESTING.md #invariantes-de-domínio-wallet |
+| **Criação Lazy — out-of-order** | 3 padrões (AT-05.1) | COMPREHENSIVE_TESTING.md #criação-lazy-determinística-de-orderdocument-at-051 |
+| **Idempotência Atômica MongoDB** | 2 padrões (AT-05.2) | COMPREHENSIVE_TESTING.md #idempotência-atômica-com-mongotemplate-at-052 |
 
 ---
 
@@ -150,5 +153,5 @@ Veja COMPREHENSIVE_TESTING.md para exemplos de cada ferramenta.
 
 ---
 
-**Última atualização**: 28 de fevereiro de 2026 — US-002 (Partial Fill + Idempotência eventId)  
+**Última atualização**: 1 de março de 2026 — AT-05.2 (Idempotência Atômica com MongoTemplate)  
 **Status**: ✅ 85 testes GREEN (order-service 28 + wallet-service 57)

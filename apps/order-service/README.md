@@ -8,7 +8,9 @@ Implementa CQRS com PostgreSQL no Command Side (escrita) e MongoDB no Query Side
 ### Command Side
 - ✅ Aceitar ordens (`POST /api/v1/orders`) com autenticação JWT (Keycloak)
 - ✅ Verificar registro local do usuário (`tb_user_registry`) antes de aceitar a ordem
-- ✅ Persistir a ordem em estado `PENDING` e publicar `ReserveFundsCommand` no RabbitMQ
+- ✅ Persistir a ordem em estado `PENDING` e gravar `ReserveFundsCommand` **e** `OrderReceivedEvent`
+  em `tb_order_outbox` dentro da **mesma transação** (Outbox Pattern — AT-01.1)
+- ✅ `OrderOutboxPublisherService` (scheduler) faz o relay atômico para o RabbitMQ de forma eventual
 - ✅ Consumir eventos `FundsReservedEvent` / `FundsReservationFailedEvent` do wallet-service
 - ✅ Executar o Motor de Match atômico via Script Lua no Redis Sorted Set
 - ✅ Consumir eventos `REGISTER` do Keycloak (plugin aznamier) via `amq.topic` e popular `tb_user_registry`
@@ -89,8 +91,8 @@ src/main/java/com/vibranium/orderservice/
 
 | Fila / Exchange               | Exchange              | Routing Key                        | Propósito                 |
 |-------------------------------|-----------------------|------------------------------------|---------------------------|
-| `wallet.commands.reserve-funds` | `vibranium.commands`  | `wallet.commands.reserve-funds`  | Saga: reserva de fundos   |
-| — (event)                     | `vibranium.events`    | `order.events.order-received`      | Projeção Read Model       |
+| `wallet.commands.reserve-funds` | `vibranium.commands`  | `wallet.commands.reserve-funds`  | Saga: reserva de fundos (via outbox)   |
+| — (event)                     | `vibranium.events`    | `order.events.order-received`      | Projeção Read Model (via outbox — AT-01.1) |
 
 ### Filas de projeção (Query Side — US-003)
 
@@ -132,19 +134,32 @@ spring.rabbitmq.listener.simple:
 POST /api/v1/orders
    → verifica tb_user_registry (403 se ausente)
    → persiste Order{PENDING} em tb_orders (PostgreSQL)
-   → publica ReserveFundsCommand em wallet.commands.reserve-funds
-   → publica OrderReceivedEvent em vibranium.events (Virtual Thread — não bloqueia a tx)
-      │                                                        │
-      │    (Command Side)                                      │ (Query Side — MongoDB)
-      ↓                                               ┌────────┘
-   wallet-service                             OrderEventProjectionConsumer
-      ├── Fundos OK → FundsReservedEvent      │  onOrderReceived   → OrderDocument{PENDING}
-      │      → FundsReservedEventConsumer     │  onFundsReserved   → status → OPEN
-      │            → Lua no Redis             │  onMatchExecuted   → FILLED ou PARTIAL
-      │                ├── match → FILLED     │  onOrderCancelled  → status → CANCELLED
-      │                └── no match → OPEN   │
-      └── Insuficiente → FundsReservationFailed
-             → FundsReservationFailedEventConsumer → Order{CANCELLED}
+   ╔══════════════════════════════════════════════════════╗
+   ║  MESMA TRANSAÇÃO @Transactional — Outbox Pattern     ║
+   ║  (AT-01.1: elimina Dual Write / Virtual Thread)      ║
+   ║  → INSERT tb_order_outbox: ReserveFundsCommand       ║
+   ║  → INSERT tb_order_outbox: OrderReceivedEvent        ║
+   ╚══════════════════════════════════════════════════════╝
+       ↓ (scheduler OrderOutboxPublisherService — relay assíncrono)
+   RabbitMQ
+      ├── wallet.commands.reserve-funds (ReserveFundsCommand)
+      │       ↓
+      │   wallet-service
+      │      ├── Fundos OK → FundsReservedEvent
+      │      │      → FundsReservedEventConsumer
+      │      │            → Lua no Redis
+      │      │                ├── match → FILLED
+      │      │                └── no match → OPEN
+      │      └── Insuficiente → FundsReservationFailed
+      │             → FundsReservationFailedEventConsumer → Order{CANCELLED}
+      │
+      └── vibranium.events / order.events.order-received (OrderReceivedEvent)
+              ↓ (Query Side — MongoDB)
+          OrderEventProjectionConsumer
+             onOrderReceived   → OrderDocument{PENDING}
+             onFundsReserved   → status → OPEN
+             onMatchExecuted   → FILLED ou PARTIAL
+             onOrderCancelled  → status → CANCELLED
 
 GET /api/v1/orders          → OrderQueryController → MongoDB (Read Model — consistência eventual)
 GET /api/v1/orders/{id}     → OrderQueryController → MongoDB (history[] completo)
@@ -175,7 +190,34 @@ mvn test -pl apps/order-service
 
 # Suite completa
 mvn clean test
+
+# Apenas o teste de resiliência do Outbox (AT-01.2)
+mvn test -pl apps/order-service -Dtest=OrderOutboxResilienceIntegrationTest
 ```
+
+## 🧪 Cobertura de Testes de Integração
+
+| Classe de Teste | Tipo | Cenário Principal | Acceptance Tag |
+|---|---|---|---|
+| `OrderCommandControllerTest` | Integração REST | Fluxo HTTP completo: 202, 400, 403 | — |
+| `OrderIdempotencyIntegrationTest` | Integração | Reentrega idempotente de eventos via `eventId` | — |
+| `OrderOutboxIntegrationTest` | Integração | Persistência atômica do Outbox (Fase RED → GREEN) | AT-01.1 |
+| **`OrderOutboxResilienceIntegrationTest`** | **Integração (Resiliência)** | **Broker pausado → atomicidade → sem processamento indevido → recovery → não duplicidade** | **AT-01.2** |
+| `OrderSagaConcurrencyTest` | Integração (Concorrência) | Optimistic lock + retry em ordens concorrentes | — |
+| `KeycloakUserRegistryIntegrationTest` | Integração | Registro de usuário via evento Keycloak | — |
+| `MatchEngineRedisIntegrationTest` | Integração | Script Lua atômico no Sorted Set Redis | — |
+| `OrderQueryControllerTest` | Integração REST | Read Model MongoDB — paginação e detalhe | — |
+
+### AT-01.2 — Estratégia de Resiliência
+
+O teste `OrderOutboxResilienceIntegrationTest` valida o Outbox Pattern em condição de falha real do broker:
+
+- **Falha determinística**: combina `docker pause` (cgroups freezer) + `CachingConnectionFactory.resetConnection()` para forçar `AmqpConnectException` em ≤ 1 s por ciclo.
+- **Sem sleeps fixos**: usa `Awaitility.during()` (invariant poll) e `Awaitility.until(isBrokerAmqpReachable)` para todas as esperas.
+- **Containers isolados**: `@Container` sem `withReuse()`, `waitingFor(Wait.forListeningPort())`. Não herda `AbstractIntegrationTest` para garantir que `pause/unpause` não afete demais testes.
+- **Override de properties**:
+  - `app.outbox.delay-ms=1000` — reduz o poll de 5 s para 1 s (3 ciclos confirmados em 4 s).
+  - `spring.rabbitmq.connection-timeout=1000` — AMQP handshake expira em 1 s (não 120 s TCP).
 
 ## 🔗 Endpoints
 
@@ -215,9 +257,11 @@ O `GlobalExceptionHandler` retorna `ResponseEntity<Map<String, Object>>` com cam
 | Spring AMQP                       | RabbitMQ (producers + consumers + projection)   |
 | Spring Data Redis                 | StringRedisTemplate para script Lua             |
 | Spring Security OAuth2            | JWT Resource Server                             |
-| Flyway                            | Migrations (`V1__user_registry`, `V2__orders`)  |
+| Flyway                            | Migrations (`V1__user_registry`, `V2__orders`, `V5__order_outbox`) |
 | common-contracts                  | DTOs/Events compartilhados entre serviços       |
 | testcontainers:mongodb (test)     | `MongoDBContainer` para testes de integração    |
+| testcontainers:rabbitmq (test)    | `RabbitMQContainer` — AT-01.2 resiliência com `docker pause/unpause` |
+| awaitility (test)                 | Esperas determinísticas sem `Thread.sleep()` nos testes de resiliência |
 
 ## 🍃 Read Model — MongoDB
 
