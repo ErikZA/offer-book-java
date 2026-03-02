@@ -27,8 +27,8 @@ Sobe toda a infra de dependência em modo isolado (sufixo `-test` em todos os co
 | `mongodb-test` | mongo:7.0 | 27018 |
 | `kong-migration-test` | kong:3.4 | — |
 | `kong-test` | kong:3.4 | 8101 / 8102 |
-| `keycloak-test` | vibranium-keycloak:22.0.5 | 8180 |
-| `test-runner` | (build do projeto) | — |
+| `keycloak-test` | vibranium-keycloak:22.0.5 | 8180 || `kong-init-test` | (build Dockerfile.kong-init) | — |
+| `jwks-rotator-test` | vibranium-jwks-rotator:latest | — | ⭐ AT-13.1: sidecar JWKS 30s || `test-runner` | (build do projeto) | — |
 
 **Uso:**
 ```bash
@@ -55,6 +55,26 @@ docker compose -f tests/docker-compose-test.yml up -d
 docker exec vibranium-postgresql-test psql -U postgres -d vibranium_infra_test \
   -c "\dn"
 docker compose -f tests/docker-compose-test.yml down -v
+```
+
+## 📝 Scripts de validação manuais
+
+Alternativa ao test-runner Maven para validações de infra:
+
+| Script | Descrição |
+|--------|-----------|
+| `AT-12.1-rate-limiting-redis-validation.sh` | Valida `policy=redis` em todos os plugins rate-limiting |
+| `AT-13.1-jwks-rotation-validation.sh` | ⭐ Valida rotação automática JWKS: artefatos, 401→200, idempotência (10 testes) |
+
+```bash
+# Executar validação JWKS rotation (requer infra de teste ativa)
+chmod +x tests/AT-13.1-jwks-rotation-validation.sh
+./tests/AT-13.1-jwks-rotation-validation.sh
+
+# Override de variáveis caso necessário:
+KONG_ADMIN_URL=http://localhost:8001 \
+KEYCLOAK_URL=http://localhost:8180 \
+./tests/AT-13.1-jwks-rotation-validation.sh
 ```
 
 ## ⚠️ Observações técnicas

@@ -6,7 +6,7 @@
 
 ---
 
-## 📊 Status Atual (28/02/2026)
+## 📊 Status Atual (02/03/2026)
 
 ```
 ✅ wallet-service  —  57/57 testes GREEN  (BUILD SUCCESS)
@@ -16,6 +16,7 @@
 ✅ US-002 — Partial Fill: Requeue atômico + Idempotência por eventId
 ✅ US-007 — Docker Compose Completo com Microsserviços + common-utils
 ✅ US-008 — Máquina de Estados Segura no Agregado Order
+✅ AT-13.1 — Rotação automática de JWKS no Kong via sidecar (zero downtime)
 ```
 
 ### Implementações recentes
@@ -44,8 +45,12 @@
 | **`AmqpHeaderExtractor`** (US-007) | ✅ | Extração de correlation-ID de headers AMQP (`libs/common-utils`) |
 | **`common-utils` test suite** (US-007) | ✅ 21/21 GREEN | 21 testes unitários (Jackson, CorrelationId, AMQP) |
 | **`docker-compose.dev.yml`** (US-007) | ✅ | Credenciais externalizadas via `.env`; order-service + wallet-service com healthcheck |
-| **`.env.example`** (US-007) | ✅ | Template de variáveis de ambiente commitado (`.env` nunca commitado) |
-
+| **`.env.example`** (US-007) | ✅ | Template de variáveis de ambiente commitado (`.env` nunca commitado) || **`jwks-rotation.sh`** (AT-13.1) | ✅ | Script idempotente: busca JWKS, compara kid, atualiza credencial RS256 no Kong |
+| **`jwks-rotator-entrypoint.sh`** (AT-13.1) | ✅ | Loop sidecar a cada 6h com wait de dependências e log NDJSON estruturado |
+| **`Dockerfile.jwks-rotator`** (AT-13.1) | ✅ | Imagem Alpine + curl + jq; volume persistente para state file |
+| **`jwks-rotator`** service (AT-13.1) | ✅ | Serviço `docker-compose.yml`; healthcheck via state file; `unless-stopped` |
+| **`jwks-rotator-test`** service (AT-13.1) | ✅ | Serviço de teste com `ROTATION_INTERVAL=30s` para validação rápida |
+| **`AT-13.1-jwks-rotation-validation.sh`** | ✅ | 10 testes TDD FASE RED→GREEN: artefatos, rotação forçada KC, 401→200, idempotência |
 ---
 
 ## 🎯 O Que Foi Realizado

@@ -605,7 +605,7 @@ services:
         container_name: vibranium-redis-kong-staging
         restart: unless-stopped
         # appendonly=no: contadores de rate-limiting são voláteis por design.
-        command: ["redis-server", "--appendonly", "no", "--save", ""]
+        command: ['redis-server', '--appendonly', 'no', '--save', '']
         networks:
             - vibranium-staging-network
         deploy:

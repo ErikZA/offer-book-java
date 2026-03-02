@@ -76,9 +76,9 @@ app:
         keys:
             # Espelha o formato de produção com hash tags {vibranium}.
             # Veja application.yaml para explicação completa sobre Redis Cluster e hash slots.
-            asks: "{vibranium}:asks"
-            bids: "{vibranium}:bids"
-            order-index: "{vibranium}:order_index"
+            asks: '{vibranium}:asks'
+            bids: '{vibranium}:bids'
+            order-index: '{vibranium}:order_index'
 
 logging:
     level:
