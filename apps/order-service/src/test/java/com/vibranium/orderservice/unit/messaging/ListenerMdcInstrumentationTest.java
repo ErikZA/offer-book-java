@@ -9,6 +9,7 @@ import com.vibranium.contracts.enums.FailureReason;
 import com.vibranium.contracts.enums.OrderStatus;
 import com.vibranium.contracts.events.wallet.FundsReservationFailedEvent;
 import com.vibranium.orderservice.adapter.messaging.FundsReservationFailedEventConsumer;
+import com.vibranium.orderservice.adapter.redis.RedisMatchEngineAdapter;
 import com.vibranium.orderservice.domain.model.Order;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
 import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
@@ -92,6 +93,9 @@ class ListenerMdcInstrumentationTest {
     private Tracer tracer;
 
     @Mock
+    private RedisMatchEngineAdapter redisAdapter;
+
+    @Mock
     private Channel channel;
 
     private FundsReservationFailedEventConsumer consumer;
@@ -101,7 +105,7 @@ class ListenerMdcInstrumentationTest {
     @BeforeEach
     void setUp() {
         consumer = new FundsReservationFailedEventConsumer(
-                orderRepository, processedEventRepository, tracer);
+                orderRepository, processedEventRepository, tracer, redisAdapter);
 
         // Configura ListAppender para capturar eventos de log do listener,
         // incluindo o mapas MDC gravado no momento de cada logger.info/warn/debug.

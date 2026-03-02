@@ -143,7 +143,7 @@ public class FundsReservationFailedEventConsumer {
                     return;
                 }
 
-                Order order = orderOpt.get()
+                Order order = orderOpt.get();
 
                 // AT-14.1: Enriquece o span ativo com atributos de domínio.
                 // Permite ao Jaeger exibir o trecho de cancelação da Saga com o contexto correto.
