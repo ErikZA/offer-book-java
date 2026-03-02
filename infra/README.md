@@ -7,9 +7,9 @@ Os arquivos Docker Compose foram reorganizados do diretório legado `docker/` pa
 
 ```
 infra/
-├── docker-compose.yml          # Infra-only (Kong + Keycloak + PostgreSQL + RabbitMQ)
+├── docker-compose.yml          # Infra-only (Kong + Keycloak + PostgreSQL + RabbitMQ + Redis-Kong)
 ├── docker-compose.dev.yml      # Dev completo (infra + order-service + wallet-service hot-reload)
-├── docker-compose.staging.yml  # Staging com réplicas (3× MongoDB, PostgreSQL, Redis, RabbitMQ)
+├── docker-compose.staging.yml  # Staging com réplicas (3× MongoDB, PostgreSQL, Redis, RabbitMQ + Redis-Kong)
 ├── docker/
 │   ├── Dockerfile              # Imagem base para apps (build multi-stage Maven)
 │   ├── Dockerfile.keycloak     # Keycloak 22 + plugin keycloak-to-rabbit-3.0.5.jar
@@ -50,7 +50,7 @@ docker compose -f infra/docker-compose.yml up -d
 ```bash
 # Apenas infra base (recomendado para validação)
 docker compose -f infra/docker-compose.staging.yml up -d \
-  mongodb-1 postgres-primary redis-1 rabbitmq-1 keycloak-db keycloak kong-database kong-migration kong
+  mongodb-1 postgres-primary redis-1 rabbitmq-1 keycloak-db keycloak kong-database kong-migration redis-kong kong
 
 # Stack completo (requer imagens pré-buildadas: order-service:latest, wallet-service:latest)
 docker compose -f infra/docker-compose.staging.yml up -d
@@ -68,10 +68,36 @@ docker compose -f infra/docker-compose.staging.yml up -d
 | Kong Proxy  | 8000 / 8443 |
 | Kong Admin  | 8001 / 8444 |
 
+> **Redis-Kong** (`redis-kong` / `vibranium-redis-kong`) **não expõe porta pública**.
+> Acessível somente internamente via `vibranium-infra`. Serve exclusivamente ao plugin
+> `rate-limiting` do Kong com `policy: redis` — contadores de rate-limiting globais (db=1).
+
+## ⚙️ Rate Limiting Distribuído (Kong + Redis)
+
+O plugin `rate-limiting` do Kong está configurado com `policy: redis` em todas as rotas.
+Isso garante que, em cluster Kong com múltiplos nós, o contador de requisições seja
+**compartilhado globalmente** — sem isso, cada nó manteria contador independente,
+multiplicando o limite efetivo pelo número de nós.
+
+| Configuração | Valor | Motivo |
+|---|---|---|
+| `policy` | `redis` | contador global entre todos os nós Kong |
+| `redis_host` | `redis-kong` | Redis dedicado (não o Redis de aplicação) |
+| `redis_port` | `6379` | porta padrão Redis |
+| `redis_database` | `1` | namespace isolado (app usa db=0) |
+| `fault_tolerant` | `true` | Kong não bloqueia se Redis cair |
+
+Script de validação: `tests/AT-12.1-rate-limiting-redis-validation.sh`
+
+```bash
+KONG_ADMIN_URL=http://localhost:8001 ./tests/AT-12.1-rate-limiting-redis-validation.sh
+```
+
 ## ⚠️ Observações técnicas
 
 - **Keycloak**: imagem customizada com `keycloak-to-rabbit-3.0.5.jar` compilada via `kc.sh build --db=postgres --health-enabled=true`. O modo `start --optimized` (staging) exige essas flags no build-time.
 - **Kong 3.4**: não possui `curl` na imagem — healthcheck usa `kong health`.
+- **Redis-Kong**: Redis standalone dedicado ao Kong rate-limiting. Os redis de aplicação (`redis-1/2/3`) usam cluster mode — incompatível com o plugin rate-limiting do Kong 3.x (requer standalone ou Sentinel). Dados efêmeros por design (`appendonly no`).
 - **MongoDB 7.0**: requer mínimo 512M de memória; healthcheck deve incluir `authSource=admin`.
 - **init-app-databases.sh**: usa heredoc para passar `\gexec` ao `psql` (metacomando não funciona com `--command`).
 

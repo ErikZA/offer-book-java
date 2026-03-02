@@ -294,6 +294,51 @@ services:
                 labels: 'service=keycloak'
 
     # ================================================================================
+    # Redis-Kong — Redis dedicado para rate-limiting distribuído do Kong
+    #
+    # Isolado do Redis de aplicação: usa db=1 para namespacing.
+    # Sem porta pública: acessível apenas internamente via vibranium-infra.
+    # appendonly=no: contadores de rate-limiting são voláteis por design —
+    #   uma reinicialização zera os contadores (comportamento aceitável e seguro).
+    # ================================================================================
+    redis-kong:
+        image: redis:7-alpine
+        container_name: vibranium-redis-kong
+        restart: unless-stopped
+
+        deploy:
+            resources:
+                limits:
+                    cpus: '0.25'
+                    memory: 64M
+                reservations:
+                    cpus: '0.10'
+                    memory: 32M
+
+        # appendonly=no: contadores de rate-limiting não precisam de persistência.
+        # Reinicialização zera contadores — aceitável para window-based rate limiting.
+        command: ["redis-server", "--appendonly", "no", "--save", ""]
+
+        # Porta NÃO exposta ao host intencionalmente.
+        # Kong acessa via hostname redis-kong na rede Docker interna.
+        networks:
+            - vibranium-infra
+
+        healthcheck:
+            test: ['CMD', 'redis-cli', 'ping']
+            interval: 10s
+            timeout: 3s
+            retries: 5
+            start_period: 10s
+
+        logging:
+            driver: 'json-file'
+            options:
+                max-size: '10m'
+                max-file: '3'
+                labels: 'service=redis-kong'
+
+    # ================================================================================
     # Kong-init — Provisiona Service, Route e Plugins no Kong via Admin API
     # Script kong-setup.sh:
     #   1. Cria services order-service e wallet-service
@@ -319,6 +364,8 @@ services:
             kong:
                 condition: service_healthy
             keycloak:
+                condition: service_healthy
+            redis-kong:
                 condition: service_healthy
 
         networks:

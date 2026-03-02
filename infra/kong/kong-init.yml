@@ -5,12 +5,14 @@
 # Topologia:
 #   order-service (upstream) → route POST /api/v1/orders
 #     - Plugin jwt       : valida assinatura RS256 do Keycloak; key_claim_name=iss
-#     - Plugin rate-limiting: 100 req/s por IP (policy=local para single-node)
+#     - Plugin rate-limiting: 100 req/s por IP (policy=redis — global em cluster Kong)
 #     - Plugin cors       : headers permissivos para dev
 #
-# NOTA DE SEGURANÇA:
-#   Em produção, substituir `policy: local` por `policy: redis` no rate-limiting
-#   e configurar `anonymous` consumer nulo para rejeitar tokens inválidos.
+# RATE LIMITING DISTRIBUÍDO:
+#   policy=redis garante que todos os nós Kong compartilhem o mesmo contador.
+#   Sem isso, em cluster de 3 nós com limite=100 req/s, na prática seriam
+#   300 req/s efetivos (cada nó manteria contador independente).
+#   redis_database=1 isola contadores de rate-limiting dos dados da aplicação (db=0).
 #
 # A credencial RSA do plugin JWT (chave pública do Keycloak) é provisionada
 # dinamicamente pelo script `kong-setup.sh` após o Keycloak estar disponível.
@@ -79,14 +81,19 @@ services:
           #   second: 100 req/s — limite de burst por IP
           #   minute: 5000      — janela de 1 minuto para uso sustentado
           #
-          # Em produção com múltiplos nós Kong, usar `policy: redis` com o
-          # cluster Redis compartilhado para contagem centralizada.
+          # policy=redis: contadores compartilhados via Redis (redis-kong, db=1).
+          # Em cluster Kong com N nós, todos compartilham o mesmo contador
+          # garantindo que o limite seja global, não multiplicado por nó.
+          # fault_tolerant=true: Kong não bloqueia tráfego se Redis cair.
           # -----------------------------------------------------------------------
           - name: rate-limiting
             config:
                 second: 100
                 minute: 5000
-                policy: local # single-node; use redis em produção
+                policy: redis # global: contadores compartilhados entre todos os nós Kong
+                redis_host: redis-kong # Redis dedicado ao rate-limiting (não da aplicação)
+                redis_port: 6379
+                redis_database: 1 # db=1 para isolar de dados de aplicação (db=0)
                 limit_by: ip
                 hide_client_headers: false # expõe X-RateLimit-* headers ao cliente
                 fault_tolerant: true # não bloqueia requisições se o rate-limiter falhar
@@ -177,12 +184,16 @@ services:
           # -----------------------------------------------------------------------
           # Rate-Limiting: mais permissivo que orders (operação de leitura + atualização
           # administrativa). Em produção ajustar por consumer (não só por IP).
+          # policy=redis: mesmo Redis compartilhado (redis-kong, db=1).
           # -----------------------------------------------------------------------
           - name: rate-limiting
             config:
                 second: 200
                 minute: 10000
-                policy: local
+                policy: redis # global: contador compartilhado entre todos os nós Kong
+                redis_host: redis-kong
+                redis_port: 6379
+                redis_database: 1
                 limit_by: ip
                 hide_client_headers: false
                 fault_tolerant: true

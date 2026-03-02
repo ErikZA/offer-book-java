@@ -123,10 +123,11 @@ http_call POST "${KONG_ADMIN_URL}/routes/${ROUTE_ID}/plugins" \
     '{"name":"jwt","config":{"uri_param_names":[],"cookie_names":[],"header_names":["Authorization"],"claims_to_verify":["exp"],"key_claim_name":"iss","maximum_expiration":3600,"secret_is_base64":false,"run_on_preflight":false}}' \
     "Plugin jwt"
 
-# Plugin Rate-Limiting: 100 req/s por IP, single-node (policy=local).
-# Em produção multi-nó, usar policy=redis com cluster Redis compartilhado.
+# Plugin Rate-Limiting: 100 req/s por IP.
+# policy=redis: contador global compartilhado via Redis (redis-kong, db=1).
+# Em cluster Kong, garante que o limite seja efetivo independente do nó que recebe a req.
 http_call POST "${KONG_ADMIN_URL}/routes/${ROUTE_ID}/plugins" \
-    '{"name":"rate-limiting","config":{"second":100,"minute":5000,"policy":"local","limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
+    '{"name":"rate-limiting","config":{"second":100,"minute":5000,"policy":"redis","redis_host":"redis-kong","redis_port":6379,"redis_database":1,"limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
     "Plugin rate-limiting"
 
 # Plugin CORS — permissivo em dev; restringir origins em produção
@@ -177,7 +178,7 @@ http_call POST "${KONG_ADMIN_URL}/routes/${GET_ROUTE_ID}/plugins" \
     "Plugin jwt (get-wallet)"
 
 http_call POST "${KONG_ADMIN_URL}/routes/${GET_ROUTE_ID}/plugins" \
-    '{"name":"rate-limiting","config":{"second":200,"minute":10000,"policy":"local","limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
+    '{"name":"rate-limiting","config":{"second":200,"minute":10000,"policy":"redis","redis_host":"redis-kong","redis_port":6379,"redis_database":1,"limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
     "Plugin rate-limiting (get-wallet)"
 
 http_call POST "${KONG_ADMIN_URL}/routes/${GET_ROUTE_ID}/plugins" \
@@ -202,7 +203,7 @@ http_call POST "${KONG_ADMIN_URL}/routes/${PATCH_ROUTE_ID}/plugins" \
     "Plugin jwt (update-balance)"
 
 http_call POST "${KONG_ADMIN_URL}/routes/${PATCH_ROUTE_ID}/plugins" \
-    '{"name":"rate-limiting","config":{"second":50,"minute":2000,"policy":"local","limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
+    '{"name":"rate-limiting","config":{"second":50,"minute":2000,"policy":"redis","redis_host":"redis-kong","redis_port":6379,"redis_database":1,"limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
     "Plugin rate-limiting (update-balance)"
 
 http_call POST "${KONG_ADMIN_URL}/routes/${PATCH_ROUTE_ID}/plugins" \
