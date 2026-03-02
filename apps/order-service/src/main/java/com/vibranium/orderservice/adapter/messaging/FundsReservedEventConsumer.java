@@ -1,5 +1,7 @@
 package com.vibranium.orderservice.adapter.messaging;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rabbitmq.client.Channel;
 import com.vibranium.contracts.enums.FailureReason;
 import com.vibranium.contracts.events.order.MatchExecutedEvent;
@@ -10,13 +12,14 @@ import com.vibranium.orderservice.adapter.redis.RedisMatchEngineAdapter;
 import com.vibranium.orderservice.adapter.redis.RedisMatchEngineAdapter.MatchResult;
 import com.vibranium.orderservice.config.RabbitMQConfig;
 import com.vibranium.orderservice.domain.model.Order;
+import com.vibranium.orderservice.domain.model.OrderOutboxMessage;
 import com.vibranium.orderservice.domain.model.ProcessedEvent;
-import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
+import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
+import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.support.AmqpHeaders;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.messaging.handler.annotation.Header;
@@ -31,16 +34,22 @@ import java.util.UUID;
  *
  * <p>Quando o wallet-service bloqueia os fundos com sucesso, publica um
  * {@link FundsReservedEvent}. Este consumidor recebe esse evento e
- * executa o Motor de Match no Redis:</p>
+ * executa o Motor de Match no Redis e persiste os eventos no {@code tb_order_outbox}:</p>
  * <ol>
  *   <li>Insere o {@code eventId} em {@code tb_order_idempotency_keys} (idempotencia por tabela).</li>
  *   <li>Localiza a ordem pelo {@code correlationId}.</li>
  *   <li>Executa o Script Lua atomicamente no Redis Sorted Set.</li>
- *   <li>Se houver match - publica {@link MatchExecutedEvent} e atualiza a ordem.</li>
- *   <li>Se nao houver match - publica {@link OrderAddedToBookEvent} (ordem entra no livro).</li>
- *   <li>Se Redis falhar - publica {@link OrderCancelledEvent} (resiliencia).</li>
+ *   <li>Se houver match - grava {@link MatchExecutedEvent} no Outbox e atualiza a ordem.</li>
+ *   <li>Se nao houver match - grava {@link OrderAddedToBookEvent} no Outbox (ordem entra no livro).</li>
+ *   <li>Se Redis falhar - grava {@link OrderCancelledEvent} no Outbox (resiliencia).</li>
  *   <li>Apos commit JPA - envia {@code basicAck} manual ao RabbitMQ.</li>
  * </ol>
+ *
+ * <p><strong>Outbox Pattern (AT-02.1):</strong> Nenhum evento e publicado diretamente no broker
+ * dentro desta classe. Todos os eventos sao gravados em {@code tb_order_outbox} na mesma
+ * transacao JPA que atualiza a {@link Order}, eliminando o Dual Write e garantindo atomicidade
+ * financeira. O relay assincrono e feito pelo
+ * {@link com.vibranium.orderservice.application.service.OrderOutboxPublisherService}.</p>
  *
  * <p><strong>Estrategia de idempotencia:</strong> INSERT na tabela {@code tb_order_idempotency_keys}
  * com {@code eventId} como PK. Se ja existir ({@link DataIntegrityViolationException}),
@@ -49,26 +58,33 @@ import java.util.UUID;
  * de estado, portanto mesmo uma retentativa apos rollback nao passa pelo check.</p>
  *
  * <p><strong>Sequencia garantida:</strong>
- * {@code (1) INSERT idempotency_key -> (2) UPDATE Order -> (3) Commit -> (4) basicAck}</p>
+ * {@code (1) INSERT idempotency_key -> (2) UPDATE Order -> (3) INSERT outbox -> (4) Commit -> (5) basicAck}</p>
  */
 @Component
 public class FundsReservedEventConsumer {
 
     private static final Logger logger = LoggerFactory.getLogger(FundsReservedEventConsumer.class);
 
-    private final OrderRepository            orderRepository;
-    private final ProcessedEventRepository   processedEventRepository;
-    private final RedisMatchEngineAdapter    matchEngine;
-    private final RabbitTemplate             rabbitTemplate;
+    private final OrderRepository          orderRepository;
+    private final ProcessedEventRepository processedEventRepository;
+    private final RedisMatchEngineAdapter  matchEngine;
+    // Outbox Pattern: publicação indireta via tabela tb_order_outbox.
+    // O OrderOutboxPublisherService (scheduler) faz o relay assíncrono.
+    // Isso garante que a atualização da Order e a gravação do evento
+    // ocorram na MESMA transação, eliminando o Dual Write.
+    private final OrderOutboxRepository    outboxRepository;
+    private final ObjectMapper             objectMapper;
 
     public FundsReservedEventConsumer(OrderRepository orderRepository,
                                       ProcessedEventRepository processedEventRepository,
                                       RedisMatchEngineAdapter matchEngine,
-                                      RabbitTemplate rabbitTemplate) {
-        this.orderRepository         = orderRepository;
+                                      OrderOutboxRepository outboxRepository,
+                                      ObjectMapper objectMapper) {
+        this.orderRepository          = orderRepository;
         this.processedEventRepository = processedEventRepository;
-        this.matchEngine             = matchEngine;
-        this.rabbitTemplate          = rabbitTemplate;
+        this.matchEngine              = matchEngine;
+        this.outboxRepository         = outboxRepository;
+        this.objectMapper             = objectMapper;
     }
 
     /**
@@ -156,14 +172,23 @@ public class FundsReservedEventConsumer {
     // =========================================================================
 
     /**
-     * Processa um match executado: atualiza estado da ordem e publica evento.
+     * Processa um match executado: atualiza estado da ordem e grava {@link MatchExecutedEvent}
+     * no Outbox dentro da mesma transação.
      *
-     * <p>Determina os papeis (comprador/vendedor) baseado no tipo da ordem
-     * ingressante e publica o {@link MatchExecutedEvent} para que o
-     * wallet-service execute a liquidacao.</p>
+     * <p>Determina os papeis (comprador/vendedor) baseado no tipo da ordem ingressante.
+     * A publicação real ao broker é feita de forma assíncrona pelo
+     * {@link com.vibranium.orderservice.application.service.OrderOutboxPublisherService},
+     * garantindo atomicidade entre a atualização do estado da ordem e o registro do evento.</p>
      */
     private void handleMatch(Order order, MatchResult result, FundsReservedEvent event) {
+        // 1. Um match imediato significa que a ordem foi a mercado e encontrou contraparte.
+        //    A ordem ingressante ainda está em PENDING (FundsReserved acabou de chegar).
+        //    Transitamos para OPEN antes de applyMatch(), que exige OPEN ou PARTIAL.
+        //    Semanticamente: a ordem ficou OPEN por um instante e imediatamente executou.
+        order.markAsOpen();
+        // 2. Aplica o match — transiciona para FILLED ou PARTIAL conforme qty executada
         order.applyMatch(result.matchedQty());
+        // 3. Persiste a ordem atualizada — primeira operação da unidade de trabalho
         orderRepository.save(order);
 
         boolean isBuyOrder = order.getOrderType().name().equals("BUY");
@@ -183,18 +208,23 @@ public class FundsReservedEventConsumer {
                 result.matchedQty()
         );
 
-        rabbitTemplate.convertAndSend(
+        // 3. Serializa o evento e grava no Outbox — segunda operação da mesma transação JPA.
+        //    Se qualquer passo anterior falhou e fez rollback, este save também é desfeito.
+        saveToOutbox(
+                order.getId(),
+                "MatchExecutedEvent",
                 RabbitMQConfig.EVENTS_EXCHANGE,
-                "order.events.match-executed",
+                RabbitMQConfig.RK_MATCH_EXECUTED,
                 matchEvent
         );
 
-        logger.info("Match executado: correlationId={} orderId={} qty={} fillType={}",
+        logger.info("Match executado (outbox): correlationId={} orderId={} qty={} fillType={}",
                 order.getCorrelationId(), order.getId(), result.matchedQty(), result.fillType());
     }
 
     /**
-     * Processa ausencia de contraparte: transiciona para OPEN e publica evento.
+     * Processa ausencia de contraparte: transiciona para OPEN e grava {@link OrderAddedToBookEvent}
+     * no Outbox dentro da mesma transação.
      *
      * <p>A ordem ja foi inserida no Redis Sorted Set pelo Lua script.
      * Utiliza {@link Order#markAsOpen()} que valida internamente que a ordem
@@ -213,18 +243,20 @@ public class FundsReservedEventConsumer {
                 order.getRemainingAmount()
         );
 
-        rabbitTemplate.convertAndSend(
+        saveToOutbox(
+                order.getId(),
+                "OrderAddedToBookEvent",
                 RabbitMQConfig.EVENTS_EXCHANGE,
-                "order.events.order-added-to-book",
+                RabbitMQConfig.RK_ORDER_ADDED_TO_BOOK,
                 addedEvent
         );
 
-        logger.info("Ordem adicionada ao livro: orderId={} type={} price={}",
+        logger.info("Ordem adicionada ao livro (outbox): orderId={} type={} price={}",
                 order.getId(), order.getOrderType(), order.getPrice());
     }
 
     /**
-     * Cancela a ordem e publica o evento de cancelamento para auditoria.
+     * Cancela a ordem e grava {@link OrderCancelledEvent} no Outbox dentro da mesma transação.
      *
      * @param order   Ordem a ser cancelada.
      * @param reason  Razao padronizada.
@@ -241,13 +273,57 @@ public class FundsReservedEventConsumer {
                 detail
         );
 
-        rabbitTemplate.convertAndSend(
+        saveToOutbox(
+                order.getId(),
+                "OrderCancelledEvent",
                 RabbitMQConfig.EVENTS_EXCHANGE,
-                "order.events.order-cancelled",
+                RabbitMQConfig.RK_ORDER_CANCELLED,
                 cancelledEvent
         );
 
-        logger.warn("Ordem cancelada: orderId={} reason={} detail={}",
+        logger.warn("Ordem cancelada (outbox): orderId={} reason={} detail={}",
                 order.getId(), reason, detail);
+    }
+
+    // =========================================================================
+    // Helpers privados
+    // =========================================================================
+
+    /**
+     * Serializa {@code payload} e persiste um {@link OrderOutboxMessage} na mesma
+     * transação JPA já aberta pelo chamador ({@code onFundsReserved}).
+     *
+     * <p>Atomicidade garantida: como este método é chamado a partir de um contexto
+     * já anotado com {@code @Transactional}, o save do outbox participa da mesma
+     * unidade de trabalho. Se qualquer operação anterior falhar e resultar em
+     * rollback, esta gravação também é desfeita — sem mensagem órfã no outbox.</p>
+     *
+     * @param aggregateId  UUID da ordem (chave de rastreamento do agregado).
+     * @param eventType    Nome do tipo do evento (ex.: {@code "MatchExecutedEvent"}).
+     * @param exchange     Exchange RabbitMQ de destino.
+     * @param routingKey   Routing key de destino.
+     * @param eventPayload Objeto a ser serializado como JSON no payload.
+     * @throws IllegalStateException se a serialização Jackson falhar.
+     */
+    private void saveToOutbox(UUID aggregateId, String eventType,
+                              String exchange, String routingKey,
+                              Object eventPayload) {
+        String json;
+        try {
+            json = objectMapper.writeValueAsString(eventPayload);
+        } catch (JsonProcessingException e) {
+            // Falha de serialização é não-recuperável: propagar como erro de sistema.
+            // O @Transactional irá fazer rollback, mantendo consistência.
+            throw new IllegalStateException(
+                    "Falha ao serializar " + eventType + " para o Outbox", e);
+        }
+        outboxRepository.save(new OrderOutboxMessage(
+                aggregateId,
+                "Order",
+                eventType,
+                exchange,
+                routingKey,
+                json
+        ));
     }
 }
