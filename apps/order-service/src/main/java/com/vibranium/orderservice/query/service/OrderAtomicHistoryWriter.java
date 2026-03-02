@@ -3,6 +3,7 @@ package com.vibranium.orderservice.query.service;
 import com.mongodb.client.result.UpdateResult;
 import com.vibranium.orderservice.query.model.OrderDocument;
 import com.vibranium.orderservice.query.model.OrderDocument.OrderHistoryEntry;
+import org.bson.types.Decimal128;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -217,10 +218,16 @@ public class OrderAtomicHistoryWriter {
         // $inc decrementa atomicamente — sem read-modify-write no caller.
         // remainingQty pode ficar negativo se a sequência de matches não for linear;
         // a UI deve tratar <= 0 como FILLED (max(0, remaining)).
+        //
+        // AT-05.3 / BUG FIX: BigDecimal.negate() é serializado como String pelo
+        // UpdateMapper do Spring Data MongoDB para operações $inc (sem conversão automática
+        // para Decimal128), causando TypeMismatch no servidor. A solução é passar um
+        // Decimal128 explícito — o tipo BSON nativo para valores decimais de alta precisão,
+        // compatível com campos armazenados como Decimal128 (padrão Spring Data MongoDB 3.x+).
         Update update = baseUpdate(entry)
                 .setOnInsert("createdAt", occurredOn)
                 .set("status", "PARTIAL")       // Assume PARTIAL; promovido a FILLED abaixo
-                .inc("remainingQty", matchAmount.negate());
+                .inc("remainingQty", new Decimal128(matchAmount.negate()));
 
         // returnNew=true: recebe o documento APÓS a modificação, com o remainingQty já decrementado.
         // Necessário para determinar se o status final é FILLED ou PARTIAL SEM fazer uma segunda leitura.
@@ -249,9 +256,11 @@ public class OrderAtomicHistoryWriter {
                         : BigDecimal.ZERO;
 
                 if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
+                    // Critério com literal 0 (int) — compatível com Decimal128 armazenado,
+                    // evitando ambiguidade de tipo BSON na comparação de query.
                     mongoTemplate.updateFirst(
                             new Query(Criteria.where("_id").is(orderId)
-                                              .and("remainingQty").lte(BigDecimal.ZERO)),
+                                              .and("remainingQty").lte(0)),
                             new Update().set("status", "FILLED"),
                             OrderDocument.class
                     );
@@ -307,20 +316,23 @@ public class OrderAtomicHistoryWriter {
                                            String orderType,
                                            java.math.BigDecimal price,
                                            java.math.BigDecimal originalQty) {
-        // Enriquece userId e demais campos demográficos somente quando ainda null (stub lazy)
+        // Enriquece userId e demais campos demográficos somente quando ainda null (stub lazy).
+        // Decimal128 explícito para price e qtys: garante tipo numérico BSON correto,
+        // evitando que $inc subsequente falhe com TypeMismatch em campo String.
         mongoTemplate.updateFirst(
                 new Query(Criteria.where("_id").is(orderId).and("userId").isNull()),
                 new Update()
                         .set("userId", userId)
                         .set("orderType", orderType)
-                        .set("price", price)
-                        .set("originalQty", originalQty),
+                        .set("price", new Decimal128(price))
+                        .set("originalQty", new Decimal128(originalQty)),
                 OrderDocument.class
         );
-        // remainingQty separado: preserva valor decrementado por MATCH_EXECUTED anterior
+        // remainingQty separado: preserva valor decrementado por MATCH_EXECUTED anterior.
+        // Decimal128 explícito: consistência com o tipo armazenado pelo ORDER_RECEIVED.
         mongoTemplate.updateFirst(
                 new Query(Criteria.where("_id").is(orderId).and("remainingQty").isNull()),
-                new Update().set("remainingQty", originalQty),
+                new Update().set("remainingQty", new Decimal128(originalQty)),
                 OrderDocument.class
         );
     }

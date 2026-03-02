@@ -8,11 +8,13 @@ import com.vibranium.orderservice.config.RabbitMQConfig;
 import com.vibranium.orderservice.query.model.OrderDocument;
 import com.vibranium.orderservice.query.model.OrderDocument.OrderHistoryEntry;
 import com.vibranium.orderservice.query.service.OrderAtomicHistoryWriter;
+import org.bson.types.Decimal128;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 
@@ -104,13 +106,15 @@ public class OrderEventProjectionConsumer {
         // ao histórico (os $setOnInsert não são aplicados a documentos existentes).
         boolean appended = atomicWriter.upsertAndAppend(
                 orderId, entry, event.occurredOn(),
-                // $setOnInsert — somente na criação do documento (nunca sobrescreve)
+                // $setOnInsert — somente na criação do documento (nunca sobrescreve).
+                // Decimal128 explícito: garante tipo BSON numérico (não String) para
+                // campos BigDecimal — necessário para $inc posterior sem TypeMismatch.
                 upsert -> upsert
                         .setOnInsert("userId",       userId)
                         .setOnInsert("orderType",    event.orderType().name())
-                        .setOnInsert("price",        event.price())
-                        .setOnInsert("originalQty",  event.amount())
-                        .setOnInsert("remainingQty", event.amount())
+                        .setOnInsert("price",        new Decimal128(event.price()))
+                        .setOnInsert("originalQty",  new Decimal128(event.amount()))
+                        .setOnInsert("remainingQty", new Decimal128(event.amount()))
                         .setOnInsert("status",       "PENDING"),
                 null  // sem extraUpdates: ORDER_RECEIVED não transiciona status em documentos existentes
         );
@@ -198,11 +202,20 @@ public class OrderEventProjectionConsumer {
      * @param event Evento publicado por {@code FundsReservedEventConsumer.handleMatch()}.
      */
     @RabbitListener(queues = RabbitMQConfig.QUEUE_ORDER_PROJECTION_MATCH)
+    // AT-05.3 — Atomicidade cross-document: os dois findAndModify (buyer + seller) são
+    // envolvidos em uma única sessão MongoDB com startTransaction. Se qualquer um falha,
+    // session.abortTransaction() reverte ambos — zero inconsistência parcial.
+    // Qualificador "mongoTransactionManager" é obrigatório para coexistir com o
+    // JpaTransactionManager do Command Side sem ambiguidade.
+    @Transactional("mongoTransactionManager")
     public void onMatchExecuted(MatchExecutedEvent event) {
         logger.debug("Projeção MATCH_EXECUTED: matchId={} buyOrderId={} sellOrderId={}",
                 event.matchId(), event.buyOrderId(), event.sellOrderId());
 
-        // Atualiza ambos os lados do trade atomicamente
+        // Atualiza ambos os lados do trade dentro da mesma transação MongoDB.
+        // Se updateDocumentWithMatch(seller) lançar exceção, o @Transactional
+        // instrui o MongoTransactionManager a fazer abortTransaction(),
+        // revertendo automaticamente a modificação do buyer — sem estado parcial.
         updateDocumentWithMatch(event.buyOrderId().toString(), event);
         updateDocumentWithMatch(event.sellOrderId().toString(), event);
     }
@@ -294,3 +307,4 @@ public class OrderEventProjectionConsumer {
                 orderId, event.reason());
     }
 }
+
