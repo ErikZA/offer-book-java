@@ -32,8 +32,14 @@ import org.springframework.data.redis.core.ZSetOperations;
  * <ul>
  *   <li>Key {@code {vibranium}:asks}: ASKs com score = price × 1_000_000 (menor preço primeiro)</li>
  *   <li>Key {@code {vibranium}:bids}: BIDs com score = price × 1_000_000 (maior preço primeiro via ZREVRANGEBYSCORE)</li>
- * </ul>
- *
+ * </ul> *
+ * <h2>AT-04.2 — Índice Reverso (order_index)</h2>
+ * <p>O script {@code match_engine.lua} popula atomicamente o hash auxiliar
+ * {@code {vibranium}:order_index} em cada inserção no livro:</p>
+ * <pre>{@code HSET {vibranium}:order_index <orderId> "<bookKey>|<score>|<member>"}</pre>
+ * <p>Isso permite que {@code removeFromBook} execute em O(1) via
+ * {@code HGET + ZREM + HDEL} no script {@code remove_from_book.lua},
+ * eliminando a necessidade de {@code ZSCAN} (O(n)).</p> *
  * <h2>Hash Tags e Redis Cluster (AT-11.1)</h2>
  * <p>As keys usam a hash tag {@code {vibranium}} para garantir que {@code {vibranium}:asks}
  * e {@code {vibranium}:bids} calculem o mesmo hash slot CRC16. Isso é obrigatório para
@@ -63,11 +69,25 @@ public class RedisMatchEngineAdapter {
     @Value("${app.redis.keys.bids}")
     private String bidsKey;
 
+    /**
+     * Hash auxiliar de índice reverso (AT-04.2).
+     * Mapeamento: {@code orderId → bookKey|score|member}.
+     * Permite remoção O(1) sem ZSCAN.
+     */
+    @Value("${app.redis.keys.order-index}")
+    private String orderIndexKey;
+
     private final StringRedisTemplate redisTemplate;
 
     /** Script Lua carregado do classpath — reutilizado para evitar reparsa a cada execução. */
     @SuppressWarnings("rawtypes")
     private DefaultRedisScript<List> matchScript;
+
+    /**
+     * Script Lua de remoção O(1) via índice reverso (AT-04.2).
+     * Executa atomicamente: HGET + ZREM + HDEL.
+     */
+    private DefaultRedisScript<Long> removeScript;
 
     public RedisMatchEngineAdapter(StringRedisTemplate redisTemplate) {
         this.redisTemplate = redisTemplate;
@@ -75,11 +95,17 @@ public class RedisMatchEngineAdapter {
 
     @PostConstruct
     void initScript() {
-        // Carrega e pré-compila o script Lua do classpath
+        // Carrega e pré-compila o script de match do classpath
         matchScript = new DefaultRedisScript<>();
         matchScript.setScriptSource(
                 new ResourceScriptSource(new ClassPathResource("lua/match_engine.lua")));
         matchScript.setResultType(List.class);
+
+        // AT-04.2: carrega o script de remoção O(1) via índice reverso
+        removeScript = new DefaultRedisScript<>();
+        removeScript.setScriptSource(
+                new ResourceScriptSource(new ClassPathResource("lua/remove_from_book.lua")));
+        removeScript.setResultType(Long.class);
     }
 
     // =========================================================================
@@ -143,10 +169,10 @@ public class RedisMatchEngineAdapter {
         // Converte preço em score inteiro (sem ponto flutuante)
         long priceScore = price.multiply(BigDecimal.valueOf(PRICE_PRECISION)).longValue();
 
-        // Executa o script Lua atomicamente
+        // Executa o script Lua atomicamente; KEYS[3] = order_index para AT-04.2
         List<Object> result = redisTemplate.execute(
                 matchScript,
-                Arrays.asList(asksKey, bidsKey),
+                Arrays.asList(asksKey, bidsKey, orderIndexKey),
                 orderType.name(),
                 String.valueOf(priceScore),
                 orderValue,
@@ -304,39 +330,60 @@ public class RedisMatchEngineAdapter {
     }
 
     /**
-     * Remove a ordem do Sorted Set correspondente (ASK ou BID) via ZSCAN + ZREM.
+     * Remove a ordem do Sorted Set e do índice reverso via script Lua atômico (AT-04.2).
      *
-     * <p>Operação idempotente: se o membro não for encontrado (ex: já foi removido
-     * ou nunca foi inserido), retorna silenciosamente sem lançar exceção.
-     * {@code ZREM} em membro inexistente é um no-op no Redis (retorna 0).</p>
+     * <h3>Caminho principal — O(1) via índice reverso</h3>
+     * <p>Executa {@code remove_from_book.lua}: {@code HGET → ZREM → HDEL} no mesmo
+     * {@code EVAL}. Para ordens inseridas pelo {@code match_engine.lua}, o índice
+     * sempre estará populado e a remoção leva exatamente 3 comandos Redis.</p>
      *
-     * <p><strong>Complexidade:</strong> O(N) via ZSCAN — aceitável para AT-04.1.
-     * AT-04.2 introduzirá índice reverso {@code {vibranium}:order_index} para
-     * remoção O(1), eliminando a necessidade do scan.</p>
+     * <h3>Fallback — ZSCAN O(n)</h3>
+     * <p>Ordens inseridas diretamente no Sorted Set (sem passar pelo Lua pipeline,
+     * ex: em testes ou durante disaster recovery) não possuem entrada no índice.
+     * Nesse caso, o script retorna {@code 0} e o método recorre ao ZSCAN para
+     * garantir compatibilidade retroativa. Uma mensagem WARN é emitida para
+     * sinalizar o uso do caminho lento.</p>
      *
-     * <p><strong>Limitação do ZSCAN:</strong> o match pattern é aplicado
-     * client-side pelo Redis; em sorted sets muito grandes, o ZSCAN pode
-     * iterar muitos elementos antes de encontrar o alvo. O índice reverso
-     * (AT-04.2) resolverá esse gargalo definitivamente via {@code HGET} + {@code ZREM}.</p>
+     * <p>Operação idempotente: se a ordem não for encontrada em nenhum dos dois
+     * caminhos, retorna silenciosamente (sem exceção).</p>
      *
      * @param orderId UUID da ordem a remover.
      * @param type    {@code SELL} → remove de {@code asks};
      *                {@code BUY}  → remove de {@code bids}.
-     * @throws RuntimeException se ocorrer falha na comunicação com o Redis durante
-     *                          o ZSCAN ou o ZREM; a exceção original é relançada para
-     *                          que o container AMQP execute NACK e roteie para a DLQ.
+     * @throws RuntimeException se ocorrer falha na comunicação com o Redis;
+     *                          relançada para NACK/DLQ no container AMQP.
      */
     public void removeFromBook(UUID orderId, OrderType type) {
-        // BUY inserido em bids; SELL inserido em asks
+        // Caminho principal (AT-04.2): remoção O(1) via índice reverso + Lua atômico.
+        // KEYS[1]=order_index, KEYS[2]=asks, KEYS[3]=bids declarados para conformidade
+        // com Redis Cluster (todos no mesmo hash slot {vibranium}).
+        Long luaResult = redisTemplate.execute(
+                removeScript,
+                Arrays.asList(orderIndexKey, asksKey, bidsKey),
+                orderId.toString()
+        );
+
+        if (luaResult != null && luaResult == 1L) {
+            logger.info("removeFromBook: O(1) via índice reverso orderId={}", orderId);
+            return;
+        }
+
+        if (luaResult != null && luaResult == -1L) {
+            // Entrada corrompida no índice — Lua já executou HDEL; log como warning
+            logger.warn("removeFromBook: entrada corrompida no índice — HDEL executado orderId={}", orderId);
+            return;
+        }
+
+        // Fallback: orderId ausente do índice (inserção fora do Lua pipeline).
+        // ZSCAN garante compat. retroativa; WARN sinaliza o caminho lento.
         String key    = OrderType.SELL.equals(type) ? asksKey : bidsKey;
         String prefix = orderId.toString() + "|";
+        logger.warn("removeFromBook: orderId={} ausente do índice reverso — fallback ZSCAN (O(n)) key={}",
+                orderId, key);
 
-        // ZSCAN com match pattern: filtra apenas membros iniciados com o orderId.
-        // O Redis aplica o filtro internamente, mas o pattern matching é best-effort —
-        // iteramos o cursor e verificamos o prefixo para garantir precisão.
         ScanOptions options = ScanOptions.scanOptions()
                 .match(prefix + "*")
-                .count(100)  // hint de batch ao Redis (não limita resultados)
+                .count(100)
                 .build();
 
         try (Cursor<ZSetOperations.TypedTuple<String>> cursor =
@@ -345,23 +392,20 @@ public class RedisMatchEngineAdapter {
                 ZSetOperations.TypedTuple<String> tuple = cursor.next();
                 String member = tuple.getValue();
                 if (member != null && member.startsWith(prefix)) {
-                    // ZREM é idempotente: se o membro foi removido por outro thread
-                    // entre o ZSCAN e o ZREM, retorna 0 sem erro.
                     Long removed = redisTemplate.opsForZSet().remove(key, member);
-                    logger.info("removeFromBook: ZREM executado key={} orderId={} removed={}",
+                    logger.info("removeFromBook: ZSCAN fallback ZREM key={} orderId={} removed={}",
                             key, orderId, removed);
-                    return; // cada orderId tem no máximo 1 membro no sorted set
+                    return;
                 }
             }
         } catch (Exception e) {
-            logger.error("removeFromBook: erro ao escanear/remover orderId={} key={}: {}",
+            logger.error("removeFromBook: erro no ZSCAN fallback orderId={} key={}: {}",
                     orderId, key, e.getMessage(), e);
             throw e;
         }
 
-        // Membro não encontrado — comportamento idempotente esperado em reprocessamentos
-        logger.debug("removeFromBook: membro não encontrado (idempotente) orderId={} key={}",
-                orderId, key);
+        // Membro não encontrado em nenhum caminho — idempotente esperado em reprocessamentos
+        logger.debug("removeFromBook: membro não encontrado (idempotente) orderId={} key={}", orderId, key);
     }
 
     /** Converte elemento retornado pelo Redis em String (byte[] ou String). */

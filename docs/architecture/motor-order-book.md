@@ -159,7 +159,59 @@ O Java lê o 5º elemento com fallback para `BigDecimal.ZERO` (compatibilidade c
 
 ---
 
-## 4. Cuidados Críticos (Para não quebrar o sistema)
+## 5. AT-04.2 — Índice Reverso: Remoção O(1) do Livro
+
+### O problema
+
+Cancelar ou expirar uma ordem do livro exige remover seu membro do Sorted Set via `ZREM`.
+Porém, `ZREM` precisa do **valor completo do membro** (`orderId|userId|walletId|qty|correlId|epochMs`).
+Sem conhecê-lo de antemão, a única alternativa era o `ZSCAN` — operação O(n) que itera o Sorted Set inteiro, ineficiente para livros grandes.
+
+### A solução — Hash de índice reverso
+
+O `match_engine.lua` agora popula atomicamente um hash auxiliar em **cada inserção** no livro:
+
+```lua
+redis.call('HSET', KEYS[3], orderId,
+           bookKey .. '|' .. score .. '|' .. member)
+-- Ex: HSET {vibranium}:order_index <uuid> "{vibranium}:bids|500000000|uuid|..."
+```
+
+O script `remove_from_book.lua` executa a remoção em O(1):
+
+```lua
+local entry = redis.call('HGET', KEYS[1], orderId)  -- O(1)
+-- extrai bookKey e member
+redis.call('ZREM', bookKey, member)                  -- O(log N)
+redis.call('HDEL', KEYS[1], orderId)                 -- O(1)
+```
+
+### Ciclo completo do índice por tipo de fill
+
+| Evento | HSET | HDEL |
+|---|---|---|
+| `BUY NO_MATCH` | `order_index[bidOrderId] = bids\|score\|member` | — |
+| `SELL NO_MATCH` | `order_index[askOrderId] = asks\|score\|member` | — |
+| `PARTIAL_ASK` (ASK residual) | Sobrescreve com novo member (qty reduzida) | — |
+| `PARTIAL_BID` (BID residual ingressante) | `order_index[bidOrderId] = bids\|score\|newMember` | HDEL do ASK consumido |
+| `FULL` (contraparte totalmente consumida) | — | HDEL da contraparte |
+
+### Atomicidade
+
+Todos os `HSET`/`HDEL` e `ZADD`/`ZREM` ocorrem no mesmo `EVAL`, sem possibilidade de leitura inconsistente por concorrentes.
+
+### Fallback ZSCAN
+
+Ordens inseridas diretamente no Sorted Set (fora do Lua pipeline — ex: testes `@BeforeEach` que usam `redisTemplate.opsForZSet().add(...)`) não possuem entrada no índice.
+Nesse caso, `remove_from_book.lua` retorna `0` e o `removeFromBook` recorre ao ZSCAN O(n) como fallback, emitindo um `WARN` para sinalizar o caminho lento.
+
+### Impacto em memória
+
+Cada ordem no livro cria 1 campo no hash `order_index`. Para N ordens, o overhead é aproximadamente **N × 100 bytes**. Com 100 mil ordens abertas: ~10 MB — negligível.
+
+---
+
+## 6. Cuidados Críticos (Para não quebrar o sistema)
 
 Para manter a integridade sob pressão de milhares de acessos:
 
