@@ -141,7 +141,7 @@ public class OrderEventProjectionConsumer {
      * (out-of-order) quanto na atualização do documento existente.</p>
      *
      * <p>Fanout: esta fila recebe a mesma mensagem que a fila do Command Side
-     * ({@code order.events.funds-reserved}), mas de forma independente.</p>
+     * ({@link RabbitMQConfig#QUEUE_FUNDS_RESERVED}), mas de forma independente.</p>
      *
      * @param event Evento publicado pelo wallet-service.
      */

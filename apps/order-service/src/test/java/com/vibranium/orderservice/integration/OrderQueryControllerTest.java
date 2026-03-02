@@ -101,7 +101,7 @@ class OrderQueryControllerTest extends AbstractMongoIntegrationTest {
         // WHEN — publica diretamente na exchange de eventos (simula o OrderCommandService)
         rabbitTemplate.convertAndSend(
                 RabbitMQConfig.EVENTS_EXCHANGE,
-                "order.events.order-received",
+                RabbitMQConfig.RK_ORDER_RECEIVED,
                 event
         );
 
@@ -133,7 +133,7 @@ class OrderQueryControllerTest extends AbstractMongoIntegrationTest {
                 correlationId, orderId, userId, walletId,
                 OrderType.BUY, new BigDecimal("50000.00"), new BigDecimal("1.0")
         );
-        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, "order.events.order-received", received);
+        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, RabbitMQConfig.RK_ORDER_RECEIVED, received);
 
         await().atMost(10, TimeUnit.SECONDS)
                .until(() -> orderHistoryRepository.existsById(orderId.toString()));
@@ -152,7 +152,7 @@ class OrderQueryControllerTest extends AbstractMongoIntegrationTest {
                 new BigDecimal("50000.00"),
                 new BigDecimal("1.0")
         );
-        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, "order.events.match-executed", matchEvent);
+        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, RabbitMQConfig.RK_MATCH_EXECUTED, matchEvent);
 
         // THEN — history deve conter entrada de match e status FILLED
         await().atMost(10, TimeUnit.SECONDS)
@@ -180,7 +180,7 @@ class OrderQueryControllerTest extends AbstractMongoIntegrationTest {
                 correlationId, orderId, userId, walletId,
                 OrderType.BUY, new BigDecimal("50000.00"), new BigDecimal("0.1")
         );
-        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, "order.events.order-received", received);
+        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, RabbitMQConfig.RK_ORDER_RECEIVED, received);
         await().atMost(10, TimeUnit.SECONDS)
                .until(() -> orderHistoryRepository.existsById(orderId.toString()));
 
@@ -210,7 +210,7 @@ class OrderQueryControllerTest extends AbstractMongoIntegrationTest {
                 correlationId, orderId, userId, walletId,
                 OrderType.SELL, new BigDecimal("50000.00"), new BigDecimal("0.2")
         );
-        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, "order.events.order-received", received);
+        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, RabbitMQConfig.RK_ORDER_RECEIVED, received);
         await().atMost(10, TimeUnit.SECONDS)
                .until(() -> orderHistoryRepository.existsById(orderId.toString()));
 
@@ -245,8 +245,8 @@ class OrderQueryControllerTest extends AbstractMongoIntegrationTest {
         );
 
         // WHEN
-        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, "order.events.order-received", event);
-        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, "order.events.order-received", event);
+        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, RabbitMQConfig.RK_ORDER_RECEIVED, event);
+        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, RabbitMQConfig.RK_ORDER_RECEIVED, event);
 
         // THEN — somente 1 entrada no history (idempotente)
         await().atMost(10, TimeUnit.SECONDS)
@@ -276,7 +276,7 @@ class OrderQueryControllerTest extends AbstractMongoIntegrationTest {
                 correlationId, orderId, userId, walletId,
                 OrderType.BUY, new BigDecimal("50000.00"), new BigDecimal("0.5")
         );
-        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, "order.events.order-received", received);
+        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, RabbitMQConfig.RK_ORDER_RECEIVED, received);
         await().atMost(10, TimeUnit.SECONDS)
                .until(() -> orderHistoryRepository.existsById(orderId.toString()));
 
@@ -305,7 +305,7 @@ class OrderQueryControllerTest extends AbstractMongoIntegrationTest {
                 correlationId, orderId, userId, walletId,
                 OrderType.BUY, new BigDecimal("50000.00"), new BigDecimal("0.5")
         );
-        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, "order.events.order-received", received);
+        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, RabbitMQConfig.RK_ORDER_RECEIVED, received);
         await().atMost(10, TimeUnit.SECONDS)
                .until(() -> orderHistoryRepository.existsById(orderId.toString()));
 
@@ -313,7 +313,7 @@ class OrderQueryControllerTest extends AbstractMongoIntegrationTest {
         OrderCancelledEvent cancelEvent = OrderCancelledEvent.of(
                 correlationId, orderId, FailureReason.INSUFFICIENT_FUNDS, "Saldo insuficiente"
         );
-        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, "order.events.order-cancelled", cancelEvent);
+        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, RabbitMQConfig.RK_ORDER_CANCELLED, cancelEvent);
 
         // THEN
         await().atMost(10, TimeUnit.SECONDS)

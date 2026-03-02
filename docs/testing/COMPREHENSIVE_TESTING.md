@@ -1268,6 +1268,7 @@ Adicionar à `.vscode/launch.json`:
 - [ ] Tempo de execução < 100ms para testes unitários
 - [ ] Documentação de casos complexos
 - [ ] Sem dados hardcoded que não sejam necessários
+- [ ] **Routing keys de RabbitMQ referenciadas exclusivamente via `RabbitMQConfig.RK_*` ou `RabbitMQConfig.QUEUE_*`** (guard AT-02.2)
 
 ### Pontos de Entrada para Novo Desenvolvedor
 
@@ -2246,6 +2247,85 @@ assertThat(result.getHistory())
 | `MongoIndexConfig` | Modificado | Adicionado `idx_history_eventId` para filtro de idempotência eficiente |
 | `OrderEventProjectionConsumer` | Refatorado | `findById+save` → `atomicWriter.*` em todos os handlers de eventos |
 | `OrderAtomicIdempotencyTest` | Novo | TDD RED→GREEN: `TC-ATOMIC-1` (100 lost updates) e `TC-ATOMIC-2` (100 duplicatas) |
+## Routing Key Literal Guard — Padronização Arquitetural (AT-02.2)
+
+### Contexto
+
+Strings literais de routing key (ex: `"order.events.order-received"`) espalhadas pelo código
+introduzem risco silencioso de **drift de configuração**: uma alteração em `RabbitMQConfig`
+não será propagada para os locais que usam strings hardcoded, causando falhas em runtime
+invisíveis em tempo de compilação.
+
+### Regra Arquitetural
+
+> **Nenhum arquivo `.java` fora de `RabbitMQConfig.java` pode conter a substring
+> `"order.events."`** como string literal. Toda referência a routing key deve usar as
+> constantes estáticas declaradas em `RabbitMQConfig`.
+
+### Constantes Autorizadas
+
+| Constante | Valor | Uso |
+|---|---|---|
+| `RabbitMQConfig.RK_ORDER_RECEIVED` | `order.events.order-received` | Publicação do `OrderReceivedEvent` |
+| `RabbitMQConfig.RK_MATCH_EXECUTED` | `order.events.match-executed` | Publicação do `MatchExecutedEvent` |
+| `RabbitMQConfig.RK_ORDER_ADDED_TO_BOOK` | `order.events.order-added-to-book` | Publicação do `OrderAddedToBookEvent` |
+| `RabbitMQConfig.RK_ORDER_CANCELLED` | `order.events.order-cancelled` | Publicação do `OrderCancelledEvent` |
+| `RabbitMQConfig.QUEUE_FUNDS_RESERVED` | `order.events.funds-reserved` | Fila consumida pelo Command Side |
+| `RabbitMQConfig.QUEUE_FUNDS_FAILED` | `order.events.funds-failed` | Fila consumida pelo Command Side |
+
+### Teste de Guarda: `RoutingKeyLiteralTest`
+
+Localização: `apps/order-service/src/test/java/.../architecture/RoutingKeyLiteralTest.java`
+
+O teste percorre todos os arquivos `.java` sob `src/` e falha se qualquer arquivo
+**(exceto `RabbitMQConfig.java` e ele próprio)** contiver a substring `"order.events."`.
+
+```java
+@Test
+@DisplayName("Nenhum arquivo .java fora de RabbitMQConfig deve conter literal 'order.events.'")
+void noRoutingKeyLiteralsOutsideRabbitMQConfig() throws IOException {
+    Path srcRoot = Paths.get("src"); // relativo ao diretório Maven
+    List<String> violations = Files.walk(srcRoot)
+            .filter(p -> p.toString().endsWith(".java"))
+            .filter(p -> EXCLUDED_FILES.stream()
+                    .noneMatch(e -> p.getFileName().toString().equals(e)))
+            .filter(p -> Files.readString(p).contains("order.events."))
+            .map(Path::toString)
+            .collect(toList());
+
+    assertThat(violations).isEmpty();
+}
+```
+
+### TDD: Ciclo RED → GREEN
+
+| Fase | Ação | Resultado |
+|---|---|---|
+| **RED** | Criar `RoutingKeyLiteralTest` com 5 arquivos em violação | Teste falha, listando os arquivos |
+| **GREEN** | Substituir todas as strings por constantes `RabbitMQConfig.*` | Teste passa, `BUILD SUCCESS` |
+
+### Arquivos Corrigidos (AT-02.2)
+
+| Arquivo | Violações | Substituição |
+|---|---|---|
+| `OrderQueryControllerTest` | 10 | `RK_ORDER_RECEIVED`, `RK_MATCH_EXECUTED`, `RK_ORDER_CANCELLED` |
+| `OrderIdempotencyIntegrationTest` | 7 | `QUEUE_FUNDS_RESERVED`, `QUEUE_FUNDS_FAILED` |
+| `OrderEventProjectionConsumer` | 1 (Javadoc) | `{@link RabbitMQConfig#QUEUE_FUNDS_RESERVED}` |
+| `MatchEngineRedisIntegrationTest` | 1 (comentário) | `RabbitMQConfig.QUEUE_FUNDS_RESERVED` |
+| `OrderOutboxResilienceIntegrationTest` | 1 (comentário) | `RabbitMQConfig.RK_ORDER_RECEIVED` |
+
+### Como Executar
+
+```bash
+# Executa apenas o guard (rápido — sem infraestrutura)
+mvn test -pl apps/order-service -Dtest=RoutingKeyLiteralTest
+
+# Valida manualmente (deve retornar zero resultados)
+grep -r "order.events." apps/order-service/src \\
+  --include="*.java" \\
+  | grep -v "RabbitMQConfig.java" \\
+  | grep -v "RoutingKeyLiteralTest.java"
+```
 
 ---
 
@@ -2266,6 +2346,7 @@ assertThat(result.getHistory())
 > **Mudanças recentes:**
 > - **AT-05.2**: Idempotência Atômica com MongoTemplate — eliminação do Lost Update em `OrderEventProjectionConsumer`. `findById+appendHistory+save` substituídos por `$push/$setOnInsert/$inc` via `MongoTemplate`. Novo `OrderAtomicHistoryWriter`, índice `idx_history_eventId` e testes `OrderAtomicIdempotencyTest` (TC-ATOMIC-1, TC-ATOMIC-2) com 100 Virtual Threads concorrentes.
 > - **AT-05.1**: Criação Lazy Determinística de `OrderDocument` — eliminação de `IllegalStateException` e `return` silencioso em `OrderEventProjectionConsumer`. Adicionados `createMinimalPending()` e `enrichFields()` em `OrderDocument`. Novos testes `OrderOutOfOrderEventsIntegrationTest` (TC-LAZY-1, TC-LAZY-2, TC-LAZY-3).
+> - **AT-02.2**: Routing Key Literal Guard — eliminadas todas as strings literais de routing key fora de `RabbitMQConfig`. Adicionado `RoutingKeyLiteralTest` (guarda arquitetural estático). 5 arquivos refatorados. Adicionada seção 18 neste guia.
 > - **AT-01.1**: Refatoração de Transacionalidade — eliminação do Dual Write (`Thread.ofVirtual` + `RabbitTemplate`) em `OrderCommandService.placeOrder()`. `OrderReceivedEvent` agora persiste via Outbox na mesma transação. Adicionado `OrderCommandServiceTest` (6 testes unitários TDD) e atualizado `OrderOutboxIntegrationTest` (2 entradas por `placeOrder`).
 > - **US-005**: Adicionada seção 16 — Invariantes de Domínio Wallet (encapsulamento de agregado, remoção de setters, `applyBuySettlement`, `applySellSettlement`, `@Version`)
 > - **US-005**: Documentados 4 padrões de teste unitário de domínio puro (`WalletDomainTest`) e padrão de setup de integração sem setters

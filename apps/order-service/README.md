@@ -193,6 +193,9 @@ mvn clean test
 
 # Apenas o teste de resiliência do Outbox (AT-01.2)
 mvn test -pl apps/order-service -Dtest=OrderOutboxResilienceIntegrationTest
+
+# Apenas o teste de guarda arquitetural (AT-02.2)
+mvn test -pl apps/order-service -Dtest=RoutingKeyLiteralTest
 ```
 
 ## 🧪 Cobertura de Testes de Integração
@@ -207,6 +210,7 @@ mvn test -pl apps/order-service -Dtest=OrderOutboxResilienceIntegrationTest
 | `KeycloakUserRegistryIntegrationTest` | Integração | Registro de usuário via evento Keycloak | — |
 | `MatchEngineRedisIntegrationTest` | Integração | Script Lua atômico no Sorted Set Redis | — |
 | `OrderQueryControllerTest` | Integração REST | Read Model MongoDB — paginação e detalhe | — |
+| **`RoutingKeyLiteralTest`** | **Guarda Arquitetural** | **Impede strings literais de routing key fora de `RabbitMQConfig`** | **AT-02.2** |
 
 ### AT-01.2 — Estratégia de Resiliência
 
