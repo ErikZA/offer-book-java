@@ -53,13 +53,21 @@ public class OrderCommandRabbitListener {
     }
 
     /**
-     * Processa comandos de carteira recebidos na fila {@code wallet.commands}.
+     * Processa comandos de carteira recebidos nas filas de comando:
+     * <ul>
+     *   <li>{@code wallet.commands.reserve-funds} — fila dedicada com DLQ configurada.</li>
+     *   <li>{@code wallet.commands} — fila genérica para comandos sem DLQ (ex: settle-funds).</li>
+     * </ul>
+     *
+     * <p>Ambas as filas compartilham o mesmo handler pois o roteamento do tipo de comando
+     * já é feito pelo header AMQP {@code type}. Manter um único método reduz duplicação
+     * e garante consistência na política de ACK/NACK.</p>
      *
      * @param message  Mensagem AMQP raw.
      * @param channel  Canal AMQP para ACK/NACK manual.
      * @throws Exception Propagado para erros de I/O no canal AMQP.
      */
-    @RabbitListener(queues = "wallet.commands")
+    @RabbitListener(queues = {"wallet.commands.reserve-funds", "wallet.commands"})
     public void handleCommand(Message message, Channel channel) throws Exception {
         String messageId = message.getMessageProperties().getMessageId();
         long deliveryTag = message.getMessageProperties().getDeliveryTag();

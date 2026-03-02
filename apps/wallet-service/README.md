@@ -52,7 +52,8 @@ src/
     │       ├── WalletConcurrentDeadlockTest.java         # AT-03.2 — Ausência de deadlock ABBA (PostgreSQL real)
     │       ├── WalletIdempotencyIntegrationTest.java
     │       ├── WalletBalanceUpdateIntegrationTest.java
-    │       └── OutboxPublisherIntegrationTest.java
+    │       ├── OutboxPublisherIntegrationTest.java
+    │       └── ReserveFundsDlqIntegrationTest.java       # AT-07.1 — DLQ routing para reserve-funds
     └── resources/application-test.yaml
 
 docker/
@@ -148,6 +149,24 @@ public void onUserRegistered(KeycloakEvent event) {
 }
 ```
 
+### Topologia RabbitMQ
+
+```
+Exchange: wallet.commands (topic)
+  ├─ wallet.command.reserve-funds → Queue: wallet.commands.reserve-funds
+  │    └─ x-dead-letter-exchange: vibranium.dlq
+  │    └─ x-dead-letter-routing-key: wallet.commands.reserve-funds.dlq
+  └─ wallet.command.settle-funds  → Queue: wallet.commands
+
+Exchange: vibranium.dlq (direct) — Dead Letter Exchange
+  └─ wallet.commands.reserve-funds.dlq → Queue: wallet.commands.reserve-funds.dlq
+```
+
+> **AT-07.1 — DLQ:** Mensagens de `ReserveFundsCommand` NACKed com `requeue=false`
+> (falha permanente: erro de deserialização, estado inválido da wallet, NPE)
+> são automaticamente roteadas para `wallet.commands.reserve-funds.dlq`
+> via o exchange `vibranium.dlq`. Nenhum comando financeiro é perdido silenciosamente.
+
 ### Eventos Publicados
 - `WalletCreatedEvent` — carteira criada via onboarding Keycloak
 - `FundsReservedEvent` — reserva de saldo bem-sucedida
@@ -203,6 +222,13 @@ restaurada por mapeamento após a aquisição dos locks, sem alterar contratos p
 | `WalletConcurrentDeadlockTest.FaseRed` | Integração (PostgreSQL) | Usa `TransactionTemplate` sem lock ordering para **provocar** um deadlock real (SQLState 40P01) |
 | `WalletConcurrentDeadlockTest.FaseGreen` | Integração (PostgreSQL) | 20 iterações × 2 threads com buyer/seller invertidos via `WalletService` — zero deadlocks |
 | `WalletConcurrentDeadlockTest.AltaContencao` | Integração (PostgreSQL) | 10 carteiras × 50 settlements simultâneos (pool fixo) — zero deadlocks, conservação global de valor |
+
+### Resiliência de Mensagens — Dead Letter Queue (AT-07.1)
+
+| Classe | Tipo | O que prova |
+|--------|------|-------------|
+| `ReserveFundsDlqIntegrationTest` (Teste 1) | Integração (RabbitMQ) | Consulta Management API e valida que `wallet.commands.reserve-funds` possui `x-dead-letter-exchange=vibranium.dlq` e `x-dead-letter-routing-key` configurados |
+| `ReserveFundsDlqIntegrationTest` (Teste 2) | Integração (RabbitMQ) | Simula poison pill via `@MockBean`, verifica que mensagem NACKed não fica na fila principal e aparece em `wallet.commands.reserve-funds.dlq` com header `x-death` |
 ### Schema Flyway
 
 | Migration | Descrição |
