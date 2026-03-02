@@ -27,6 +27,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -40,29 +41,34 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 
 /**
- * [FASE RED → GREEN] — Testes unitários para {@link FundsReservedEventConsumer}.
+ * [VERDE] — Testes unitários para {@link FundsReservedEventConsumer}.
  *
  * <h2>Critérios de aceite validados</h2>
  * <ol>
  *   <li>{@code handleMatch()} NÃO invoca {@link RabbitTemplate} — o broker não é
- *       atingido diretamente dentro da transação.</li>
- *   <li>{@code handleMatch()} persiste exactamente um {@link OrderOutboxMessage} com
- *       {@code eventType="MatchExecutedEvent"}, {@code exchange=EVENTS_EXCHANGE},
- *       {@code routingKey=RK_MATCH_EXECUTED} e {@code publishedAt=null}.</li>
+ *       atingido diretamente dentro da transação (Outbox Pattern).</li>
+ *   <li>{@code handleMatch()} com match total: persiste {@code MatchExecutedEvent} +
+ *       {@code OrderFilledEvent} (2 saves) na mesma transação — AT-15.1.</li>
+ *   <li>{@code handleMatch()} com match parcial: persiste {@code MatchExecutedEvent} +
+ *       {@code OrderPartiallyFilledEvent} (2 saves) na mesma transação — AT-15.1.</li>
  *   <li>Se uma {@link RuntimeException} for lançada antes do commit,
  *       {@code outboxRepository.save()} não é chamado — garantindo atomicidade.</li>
- *   <li>{@code handleNoMatch()} e {@code cancelOrder()} também usam outbox, sem
- *       {@code RabbitTemplate}.</li>
+ *   <li>{@code handleNoMatch()} grava apenas {@code OrderAddedToBookEvent} (1 save);
+ *       nenhum fill event é publicado.</li>
+ *   <li>{@code cancelOrder()} grava {@code OrderCancelledEvent} sem invocar
+ *       {@link RabbitTemplate}.</li>
  * </ol>
  *
- * <h2>Estado FASE RED</h2>
- * <p>Este arquivo foi criado <em>antes</em> da refatoração. O compilador rejeita
- * a chamada ao construtor {@code new FundsReservedEventConsumer(orderRepository,
- * processedEventRepository, matchEngine, outboxRepository, objectMapper)}
- * porque o construtor atual ainda exige {@code RabbitTemplate}.
- * Esse erro de compilação é a evidência formal do RED.</p>
- *
- * <p>Após a refatoração (FASE GREEN), o build passa e todos os testes ficam verdes.</p>
+ * <h2>Histórico TDD</h2>
+ * <ul>
+ *   <li><strong>RED (Outbox refactor — AT-02.1):</strong> construtor sem {@code RabbitTemplate}
+ *       não compilava; evidência formal do ciclo RED.</li>
+ *   <li><strong>GREEN (AT-02.1):</strong> refatoração para Outbox Pattern — todos os eventos
+ *       gravados no outbox na mesma transação JPA.</li>
+ *   <li><strong>RED → GREEN (AT-15.1):</strong> {@code handleMatch()} não publicava fill events;
+ *       testes AT15-01/AT15-02 falhavam em {@code times(2)}.
+ *       Implementação corrigida — ambos os cenários verdes.</li>
+ * </ul>
  */
 @ExtendWith(MockitoExtension.class)
 class FundsReservedEventConsumerTest {
@@ -223,8 +229,9 @@ class FundsReservedEventConsumerTest {
         }
 
         @Test
-        @DisplayName("RED-02: handleMatch() deve persistir OrderOutboxMessage com metadados corretos")
+        @DisplayName("RED-02: handleMatch() deve persistir MatchExecutedEvent + OrderFilledEvent (match total)")
         void handleMatch_shouldPersist_outboxMessage_withCorrectMetadata() throws Exception {
+            // buildOrder() cria ordem com amount=2.00 e buildMatchResult() com matchedQty=2.00 → FILLED
             Order order = buildOrder(OrderType.BUY);
             FundsReservedEvent event = buildFundsReservedEvent();
 
@@ -242,33 +249,36 @@ class FundsReservedEventConsumerTest {
             consumer.onFundsReserved(event, channel, DELIVERY_TAG);
 
             /*
-             * Captura a mensagem gravada no outbox e verifica todos os campos críticos:
-             *  - eventType identifica o tipo do evento para o publisher/scheduler
-             *  - exchange + routingKey garantem roteamento correto no broker
-             *  - publishedAt == null sinaliza que ainda aguarda relay
-             *  - payload não é vazio (evento serializado como JSON)
+             * [FASE GREEN — AT-15.1]
+             * Após a implementação, handleMatch() grava 2 mensagens no outbox:
+             *  1. MatchExecutedEvent  — informacional/infra para projeção MongoDB
+             *  2. OrderFilledEvent    — Domain Event explícito para sistemas downstream
+             *
+             * Em FASE RED: apenas 1 save → teste falha em times(2).
              */
-            then(outboxRepository).should(times(1)).save(outboxCaptor.capture());
-            OrderOutboxMessage saved = outboxCaptor.getValue();
+            then(outboxRepository).should(times(2)).save(outboxCaptor.capture());
+            List<OrderOutboxMessage> saved = outboxCaptor.getAllValues();
 
-            assertThat(saved.getEventType())
-                    .as("eventType deve ser 'MatchExecutedEvent'")
-                    .isEqualTo("MatchExecutedEvent");
-            assertThat(saved.getExchange())
-                    .as("exchange deve ser " + RabbitMQConfig.EVENTS_EXCHANGE)
-                    .isEqualTo(RabbitMQConfig.EVENTS_EXCHANGE);
-            assertThat(saved.getRoutingKey())
-                    .as("routingKey deve ser " + RabbitMQConfig.RK_MATCH_EXECUTED)
-                    .isEqualTo(RabbitMQConfig.RK_MATCH_EXECUTED);
-            assertThat(saved.getPublishedAt())
-                    .as("publishedAt deve ser null — mensagem ainda não enviada ao broker")
-                    .isNull();
-            assertThat(saved.getPayload())
-                    .as("payload não deve ser vazio")
-                    .isNotBlank();
-            assertThat(saved.getAggregateId())
-                    .as("aggregateId deve ser o orderId")
-                    .isEqualTo(ORDER_ID);
+            assertThat(saved)
+                    .extracting(OrderOutboxMessage::getEventType)
+                    .as("Outbox deve conter MatchExecutedEvent e OrderFilledEvent")
+                    .containsExactlyInAnyOrder("MatchExecutedEvent", "OrderFilledEvent");
+
+            OrderOutboxMessage matchMsg = saved.stream()
+                    .filter(m -> "MatchExecutedEvent".equals(m.getEventType()))
+                    .findFirst().orElseThrow();
+            assertThat(matchMsg.getRoutingKey()).isEqualTo(RabbitMQConfig.RK_MATCH_EXECUTED);
+            assertThat(matchMsg.getExchange()).isEqualTo(RabbitMQConfig.EVENTS_EXCHANGE);
+            assertThat(matchMsg.getPublishedAt()).isNull();
+            assertThat(matchMsg.getAggregateId()).isEqualTo(ORDER_ID);
+
+            OrderOutboxMessage fillMsg = saved.stream()
+                    .filter(m -> "OrderFilledEvent".equals(m.getEventType()))
+                    .findFirst().orElseThrow();
+            assertThat(fillMsg.getRoutingKey()).isEqualTo(RabbitMQConfig.RK_ORDER_FILLED);
+            assertThat(fillMsg.getExchange()).isEqualTo(RabbitMQConfig.EVENTS_EXCHANGE);
+            assertThat(fillMsg.getPublishedAt()).isNull();
+            assertThat(fillMsg.getPayload()).isNotBlank();
         }
 
         @Test
@@ -335,6 +345,187 @@ class FundsReservedEventConsumerTest {
             assertThat(saved.getPublishedAt()).isNull();
 
             then(rabbitTemplate).shouldHaveNoInteractions();
+        }
+    }
+
+    // =========================================================================
+    // AT-15.1 — OrderFilledEvent e OrderPartiallyFilledEvent no handleMatch()
+    // =========================================================================
+
+    @Nested
+    @DisplayName("AT-15.1 — Domain Events de preenchimento no Outbox")
+    class FillEventTests {
+
+        /**
+         * Cenário 1 (AT-15.1) — Match parcial.
+         *
+         * <p>Ordem criada com amount=100. Match executado de 40 → status PARTIAL.
+         * Outbox deve conter {@code OrderPartiallyFilledEvent} além do {@code MatchExecutedEvent}.</p>
+         *
+         * <p><strong>FASE RED:</strong> falha em {@code times(2)} porque handleMatch()
+         * ainda não publica o evento de preenchimento parcial.</p>
+         */
+        @Test
+        @DisplayName("AT15-01: match parcial → outbox persiste OrderPartiallyFilledEvent")
+        void handleMatch_partialMatch_shouldPersist_partiallyFilledEvent() throws Exception {
+            Order order = Order.create(
+                    ORDER_ID, CORRELATION_ID, USER_ID, WALLET_ID,
+                    OrderType.BUY,
+                    new BigDecimal("500.00"),
+                    new BigDecimal("100.00")          // amount total = 100
+            );
+            FundsReservedEvent event = buildFundsReservedEvent();
+
+            // Match parcial: 40 de 100 → remainingAmount = 60 → PARTIAL
+            MatchResult partialResult = new MatchResult(
+                    true,
+                    COUNTERPART_ID,
+                    COUNTERPART_USER,
+                    COUNTERPART_WALLET,
+                    new BigDecimal("40.00"),           // matchedQty
+                    new BigDecimal("60.00"),            // remainingCounterpartQty
+                    "PARTIAL_ASK"
+            );
+
+            given(processedEventRepository.saveAndFlush(any(ProcessedEvent.class)))
+                    .willAnswer(inv -> inv.getArgument(0));
+            given(orderRepository.findByCorrelationId(CORRELATION_ID))
+                    .willReturn(Optional.of(order));
+            given(matchEngine.tryMatch(any(), any(), any(), any(), any(), any(), any()))
+                    .willReturn(partialResult);
+            given(orderRepository.save(any(Order.class))).willAnswer(inv -> inv.getArgument(0));
+            given(objectMapper.writeValueAsString(any())).willReturn("{\"ok\":true}");
+            given(outboxRepository.save(any(OrderOutboxMessage.class)))
+                    .willAnswer(inv -> inv.getArgument(0));
+
+            consumer.onFundsReserved(event, channel, DELIVERY_TAG);
+
+            // Espera 2 saves: MatchExecutedEvent + OrderPartiallyFilledEvent
+            then(outboxRepository).should(times(2)).save(outboxCaptor.capture());
+            List<OrderOutboxMessage> allMessages = outboxCaptor.getAllValues();
+
+            assertThat(allMessages)
+                    .extracting(OrderOutboxMessage::getEventType)
+                    .as("Outbox deve conter MatchExecutedEvent e OrderPartiallyFilledEvent")
+                    .containsExactlyInAnyOrder("MatchExecutedEvent", "OrderPartiallyFilledEvent");
+
+            OrderOutboxMessage partialMsg = allMessages.stream()
+                    .filter(m -> "OrderPartiallyFilledEvent".equals(m.getEventType()))
+                    .findFirst().orElseThrow();
+
+            assertThat(partialMsg.getRoutingKey())
+                    .as("routing key deve ser " + RabbitMQConfig.RK_ORDER_PARTIALLY_FILLED)
+                    .isEqualTo(RabbitMQConfig.RK_ORDER_PARTIALLY_FILLED);
+            assertThat(partialMsg.getExchange()).isEqualTo(RabbitMQConfig.EVENTS_EXCHANGE);
+            assertThat(partialMsg.getPublishedAt())
+                    .as("publishedAt deve ser null — aguarda relay assíncrono")
+                    .isNull();
+            assertThat(partialMsg.getAggregateId()).isEqualTo(ORDER_ID);
+            assertThat(partialMsg.getPayload()).isNotBlank();
+        }
+
+        /**
+         * Cenário 2 (AT-15.1) — Match total.
+         *
+         * <p>Ordem criada com amount=100. Match executado de 100 → status FILLED.
+         * Outbox deve conter {@code OrderFilledEvent} além do {@code MatchExecutedEvent}.</p>
+         *
+         * <p><strong>FASE RED:</strong> falha em {@code times(2)} porque handleMatch()
+         * ainda não publica o evento de preenchimento total.</p>
+         */
+        @Test
+        @DisplayName("AT15-02: match total → outbox persiste OrderFilledEvent")
+        void handleMatch_fullMatch_shouldPersist_filledEvent() throws Exception {
+            Order order = Order.create(
+                    ORDER_ID, CORRELATION_ID, USER_ID, WALLET_ID,
+                    OrderType.BUY,
+                    new BigDecimal("500.00"),
+                    new BigDecimal("100.00")          // amount total = 100
+            );
+            FundsReservedEvent event = buildFundsReservedEvent();
+
+            // Match total: 100 de 100 → remainingAmount = 0 → FILLED
+            MatchResult fullResult = new MatchResult(
+                    true,
+                    COUNTERPART_ID,
+                    COUNTERPART_USER,
+                    COUNTERPART_WALLET,
+                    new BigDecimal("100.00"),          // matchedQty = amount total
+                    BigDecimal.ZERO,
+                    "FULL"
+            );
+
+            given(processedEventRepository.saveAndFlush(any(ProcessedEvent.class)))
+                    .willAnswer(inv -> inv.getArgument(0));
+            given(orderRepository.findByCorrelationId(CORRELATION_ID))
+                    .willReturn(Optional.of(order));
+            given(matchEngine.tryMatch(any(), any(), any(), any(), any(), any(), any()))
+                    .willReturn(fullResult);
+            given(orderRepository.save(any(Order.class))).willAnswer(inv -> inv.getArgument(0));
+            given(objectMapper.writeValueAsString(any())).willReturn("{\"ok\":true}");
+            given(outboxRepository.save(any(OrderOutboxMessage.class)))
+                    .willAnswer(inv -> inv.getArgument(0));
+
+            consumer.onFundsReserved(event, channel, DELIVERY_TAG);
+
+            // Espera 2 saves: MatchExecutedEvent + OrderFilledEvent
+            then(outboxRepository).should(times(2)).save(outboxCaptor.capture());
+            List<OrderOutboxMessage> allMessages = outboxCaptor.getAllValues();
+
+            assertThat(allMessages)
+                    .extracting(OrderOutboxMessage::getEventType)
+                    .as("Outbox deve conter MatchExecutedEvent e OrderFilledEvent")
+                    .containsExactlyInAnyOrder("MatchExecutedEvent", "OrderFilledEvent");
+
+            OrderOutboxMessage fillMsg = allMessages.stream()
+                    .filter(m -> "OrderFilledEvent".equals(m.getEventType()))
+                    .findFirst().orElseThrow();
+
+            assertThat(fillMsg.getRoutingKey())
+                    .as("routing key deve ser " + RabbitMQConfig.RK_ORDER_FILLED)
+                    .isEqualTo(RabbitMQConfig.RK_ORDER_FILLED);
+            assertThat(fillMsg.getExchange()).isEqualTo(RabbitMQConfig.EVENTS_EXCHANGE);
+            assertThat(fillMsg.getPublishedAt())
+                    .as("publishedAt deve ser null — aguarda relay assíncrono")
+                    .isNull();
+            assertThat(fillMsg.getAggregateId()).isEqualTo(ORDER_ID);
+            assertThat(fillMsg.getPayload()).isNotBlank();
+        }
+
+        /**
+         * Garante que match sem transição de status (ex: OPEN → OPEN) não publica
+         * nenhum fill event. Proteção contra eventos duplicados em cenários de
+         * reprocessamento idempotente.
+         *
+         * <p>Nota: este cenário não deve ocorrer em produção, pois {@code applyMatch()}
+         * sempre transiciona para FILLED ou PARTIAL. Teste documentado para garantia de
+         * que exclusivamente o status da ordem controla a publicação.</p>
+         */
+        @Test
+        @DisplayName("AT15-03: não deve publicar eventos de preenchimento para NoMatch")
+        void handleNoMatch_shouldNot_persist_fillEvent() throws Exception {
+            Order order = buildOrder(OrderType.BUY);
+            FundsReservedEvent event = buildFundsReservedEvent();
+
+            given(processedEventRepository.saveAndFlush(any(ProcessedEvent.class)))
+                    .willAnswer(inv -> inv.getArgument(0));
+            given(orderRepository.findByCorrelationId(CORRELATION_ID))
+                    .willReturn(Optional.of(order));
+            given(matchEngine.tryMatch(any(), any(), any(), any(), any(), any(), any()))
+                    .willReturn(MatchResult.noMatch());
+            given(orderRepository.save(any(Order.class))).willAnswer(inv -> inv.getArgument(0));
+            given(objectMapper.writeValueAsString(any())).willReturn("{\"ok\":true}");
+            given(outboxRepository.save(any(OrderOutboxMessage.class)))
+                    .willAnswer(inv -> inv.getArgument(0));
+
+            consumer.onFundsReserved(event, channel, DELIVERY_TAG);
+
+            then(outboxRepository).should(times(1)).save(outboxCaptor.capture());
+            OrderOutboxMessage saved = outboxCaptor.getValue();
+
+            assertThat(saved.getEventType())
+                    .as("NoMatch deve gravar apenas OrderAddedToBookEvent")
+                    .isEqualTo("OrderAddedToBookEvent");
         }
     }
 

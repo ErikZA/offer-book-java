@@ -4,9 +4,12 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rabbitmq.client.Channel;
 import com.vibranium.contracts.enums.FailureReason;
+import com.vibranium.contracts.enums.OrderStatus;
 import com.vibranium.contracts.events.order.MatchExecutedEvent;
 import com.vibranium.contracts.events.order.OrderAddedToBookEvent;
 import com.vibranium.contracts.events.order.OrderCancelledEvent;
+import com.vibranium.contracts.events.order.OrderFilledEvent;
+import com.vibranium.contracts.events.order.OrderPartiallyFilledEvent;
 import com.vibranium.contracts.events.wallet.FundsReservedEvent;
 import com.vibranium.orderservice.adapter.redis.RedisMatchEngineAdapter;
 import com.vibranium.orderservice.adapter.redis.RedisMatchEngineAdapter.MatchResult;
@@ -41,7 +44,14 @@ import java.util.UUID;
  *   <li>Insere o {@code eventId} em {@code tb_order_idempotency_keys} (idempotencia por tabela).</li>
  *   <li>Localiza a ordem pelo {@code correlationId}.</li>
  *   <li>Executa o Script Lua atomicamente no Redis Sorted Set.</li>
- *   <li>Se houver match - grava {@link MatchExecutedEvent} no Outbox e atualiza a ordem.</li>
+ *   <li>Se houver match:
+ *     <ul>
+ *       <li>Grava {@link MatchExecutedEvent} no Outbox (evento de infraestrutura/projecao MongoDB).</li>
+ *       <li>Grava {@link OrderFilledEvent} ou {@link OrderPartiallyFilledEvent} no Outbox
+ *           (Domain Event explícito da transicao de status — AT-15.1).</li>
+ *       <li>Atualiza o status da ordem para {@code FILLED} ou {@code PARTIAL}.</li>
+ *     </ul>
+ *   </li>
  *   <li>Se nao houver match - grava {@link OrderAddedToBookEvent} no Outbox (ordem entra no livro).</li>
  *   <li>Se Redis falhar - grava {@link OrderCancelledEvent} no Outbox (resiliencia).</li>
  *   <li>Apos commit JPA - envia {@code basicAck} manual ao RabbitMQ.</li>
@@ -52,6 +62,12 @@ import java.util.UUID;
  * transacao JPA que atualiza a {@link Order}, eliminando o Dual Write e garantindo atomicidade
  * financeira. O relay assincrono e feito pelo
  * {@link com.vibranium.orderservice.application.service.OrderOutboxPublisherService}.</p>
+ *
+ * <p><strong>Domain Events de preenchimento (AT-15.1):</strong> {@link OrderFilledEvent} e
+ * {@link OrderPartiallyFilledEvent} sao publicados explicitamente no Outbox apos
+ * {@code order.applyMatch()}, com base no status resultante da ordem. Isso elimina a divergencia
+ * entre o contrato declarado em {@code common-contracts} e a implementacao, permitindo que sistemas
+ * downstream reajam a transicoes de status sem precisar inferir via {@link MatchExecutedEvent}.</p>
  *
  * <p><strong>Estrategia de idempotencia:</strong> INSERT na tabela {@code tb_order_idempotency_keys}
  * com {@code eventId} como PK. Se ja existir ({@link DataIntegrityViolationException}),
@@ -66,6 +82,9 @@ import java.util.UUID;
  *
  * <p><strong>Sequencia garantida:</strong>
  * {@code (1) INSERT idempotency_key -> (2) UPDATE Order -> (3) INSERT outbox -> (4) Commit -> (5) basicAck}</p>
+ * <p><strong>Sequencia garantida (match):</strong>
+ * {@code (1) INSERT idempotency_key -> (2) UPDATE Order -> (3) INSERT MatchExecutedEvent outbox
+ * -> (4) INSERT FillEvent outbox -> (5) Commit -> (6) basicAck}</p>
  */
 @Component
 public class FundsReservedEventConsumer {
@@ -224,6 +243,11 @@ public class FundsReservedEventConsumer {
      * A publicação real ao broker é feita de forma assíncrona pelo
      * {@link com.vibranium.orderservice.application.service.OrderOutboxPublisherService},
      * garantindo atomicidade entre a atualização do estado da ordem e o registro do evento.</p>
+     *
+     * <p>[AT-15.1] Além do {@link MatchExecutedEvent}, publica o Domain Event de preenchimento
+     * explícito ({@link OrderFilledEvent} ou {@link OrderPartiallyFilledEvent}) no mesmo outbox,
+     * na mesma transação. Isso elimina a divergência contrato ↔ implementação e permite que
+     * sistemas downstream reajam à transição de status sem inferir via MatchExecutedEvent.</p>
      */
     private void handleMatch(Order order, MatchResult result, FundsReservedEvent event) {
         // 1. Um match imediato significa que a ordem foi a mercado e encontrou contraparte.
@@ -253,8 +277,7 @@ public class FundsReservedEventConsumer {
                 result.matchedQty()
         );
 
-        // 3. Serializa o evento e grava no Outbox — segunda operação da mesma transação JPA.
-        //    Se qualquer passo anterior falhou e fez rollback, este save também é desfeito.
+        // 4. Grava MatchExecutedEvent no Outbox — infraestrutura/projeção MongoDB.
         saveToOutbox(
                 order.getId(),
                 "MatchExecutedEvent",
@@ -262,6 +285,46 @@ public class FundsReservedEventConsumer {
                 RabbitMQConfig.RK_MATCH_EXECUTED,
                 matchEvent
         );
+
+        // 5. [AT-15.1] Publica Domain Event explícito de preenchimento, baseado na transição
+        //    de status produzida por applyMatch().
+        //    Regra: somente FILLED ou PARTIAL geram evento — nenhum outro status é possível
+        //    após applyMatch(), mas o guard explícito previne regressão.
+        //
+        //    Ambos os saves ocorrem NA MESMA TRANSAÇÃO que atualizou a Order acima,
+        //    garantindo atomicidade total via Outbox Pattern.
+        if (order.getStatus() == OrderStatus.FILLED) {
+            // Ordem totalmente executada: informa quantidade total e preço de execução.
+            // Preço médio = order.getPrice() (match único; extensão futura pode calcular VWAP).
+            saveToOutbox(
+                    order.getId(),
+                    "OrderFilledEvent",
+                    RabbitMQConfig.EVENTS_EXCHANGE,
+                    RabbitMQConfig.RK_ORDER_FILLED,
+                    OrderFilledEvent.of(
+                            order.getCorrelationId(),
+                            order.getId(),
+                            order.getAmount(),     // totalFilled = quantidade original (remainder = 0)
+                            order.getPrice()       // averagePrice = preço limite da ordem
+                    )
+            );
+        } else if (order.getStatus() == OrderStatus.PARTIAL) {
+            // Ordem parcialmente executada: informa quanto foi executado neste match
+            // e quanto ainda resta no livro. matchId = counterpartId (contraparte deste match).
+            saveToOutbox(
+                    order.getId(),
+                    "OrderPartiallyFilledEvent",
+                    RabbitMQConfig.EVENTS_EXCHANGE,
+                    RabbitMQConfig.RK_ORDER_PARTIALLY_FILLED,
+                    OrderPartiallyFilledEvent.of(
+                            order.getCorrelationId(),
+                            order.getId(),
+                            result.counterpartId(),       // matchId = ID da ordem contraparte
+                            result.matchedQty(),          // filledAmount = executado neste match
+                            order.getRemainingAmount()    // remainingAmount = saldo restante
+                    )
+            );
+        }
 
         logger.info("Match executado (outbox): correlationId={} orderId={} qty={} fillType={}",
                 order.getCorrelationId(), order.getId(), result.matchedQty(), result.fillType());
