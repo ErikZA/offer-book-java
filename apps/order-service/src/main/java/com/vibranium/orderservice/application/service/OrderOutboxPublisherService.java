@@ -5,11 +5,15 @@ import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.AmqpException;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.core.MessageBuilder;
+import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
@@ -24,7 +28,8 @@ import java.util.List;
  * <ol>
  *   <li>{@code OrderCommandService} grava a mensagem com {@code published_at = NULL}.</li>
  *   <li>Este serviço lê os registros {@code WHERE published_at IS NULL}.</li>
- *   <li>Publica no broker via {@link RabbitTemplate#convertAndSend}.</li>
+ *   <li>Serializa o payload como bytes raw e publica via {@link RabbitTemplate#send}
+ *       (evita double-serialization do {@link org.springframework.amqp.rabbit.core.RabbitTemplate#convertAndSend}).</li>
  *   <li>Atualiza {@code published_at = now()} via {@link OrderOutboxMessage#markAsPublished()}.</li>
  * </ol>
  *
@@ -82,13 +87,28 @@ public class OrderOutboxPublisherService {
      * {@code published_at} só seja commitada se a publicação no RabbitMQ
      * não lançar exceção — se o broker falhar, o status permanece {@code null}.</p>
      *
+     * <p>Usa {@link RabbitTemplate#send} com bytes raw em vez de
+     * {@link RabbitTemplate#convertAndSend}: o payload já é JSON serializado
+     * ({@code String}), e passar uma {@code String} ao {@code Jackson2JsonMessageConverter}
+     * causaria double-serialization — a mensagem chegaria aos consumers como
+     * {@code "\"{ ... }\""} em vez de {@code { ... }}.</p>
+     *
      * @param msg Mensagem do outbox a ser publicada.
      */
     @Transactional
     public void publishSingle(OrderOutboxMessage msg) {
         try {
-            // Publica no RabbitMQ usando exchange e routing key gravados na mensagem
-            rabbitTemplate.convertAndSend(msg.getExchange(), msg.getRoutingKey(), msg.getPayload());
+            // Publica no RabbitMQ usando exchange e routing key gravados na mensagem.
+            // O payload já é JSON serializado — usa rabbitTemplate.send() com bytes raw
+            // para evitar double-serialization que ocorreria com convertAndSend(String payload):
+            // Jackson2JsonMessageConverter re-serializaria a String como JSON quoted → consumidores
+            // receberiam "\"{ ... }\"" em vez de { ... } → MismatchedInputException.
+            Message amqpMessage = MessageBuilder
+                    .withBody(msg.getPayload().getBytes(StandardCharsets.UTF_8))
+                    .andProperties(new MessageProperties())
+                    .build();
+            amqpMessage.getMessageProperties().setContentType(MessageProperties.CONTENT_TYPE_JSON);
+            rabbitTemplate.send(msg.getExchange(), msg.getRoutingKey(), amqpMessage);
 
             // Marca como publicada na mesma transação do commit
             msg.markAsPublished();

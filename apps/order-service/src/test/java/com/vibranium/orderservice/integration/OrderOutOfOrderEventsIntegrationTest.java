@@ -40,7 +40,7 @@ import static org.awaitility.Awaitility.await;
  * <ul>
  *   <li>{@code FundsReservedEvent} → routing key {@code wallet.events.funds-reserved}
  *       (binding da fila {@code order.projection.funds-reserved}).</li>
- *   <li>{@code MatchExecutedEvent} → routing key {@code order.events.match-executed}
+ *   <li>{@code MatchExecutedEvent} → routing key definida em {@link com.vibranium.orderservice.config.RabbitMQConfig#RK_MATCH_EXECUTED}
  *       (binding da fila {@code order.projection.match-executed}).</li>
  * </ul>
  */
@@ -133,7 +133,7 @@ class OrderOutOfOrderEventsIntegrationTest extends AbstractMongoIntegrationTest 
 
         rabbitTemplate.convertAndSend(
                 RabbitMQConfig.EVENTS_EXCHANGE,
-                RabbitMQConfig.RK_ORDER_RECEIVED,      // "order.events.order-received"
+                RabbitMQConfig.RK_ORDER_RECEIVED,      // ver RabbitMQConfig.RK_ORDER_RECEIVED
                 receivedEvent
         );
 
@@ -201,7 +201,7 @@ class OrderOutOfOrderEventsIntegrationTest extends AbstractMongoIntegrationTest 
 
         rabbitTemplate.convertAndSend(
                 RabbitMQConfig.EVENTS_EXCHANGE,
-                RabbitMQConfig.RK_MATCH_EXECUTED,   // "order.events.match-executed"
+                RabbitMQConfig.RK_MATCH_EXECUTED,   // ver RabbitMQConfig.RK_MATCH_EXECUTED
                 matchEvent
         );
 

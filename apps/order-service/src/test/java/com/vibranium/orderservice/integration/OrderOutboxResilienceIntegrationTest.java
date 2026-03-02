@@ -140,12 +140,16 @@ class OrderOutboxResilienceIntegrationTest {
      * {@code docker pause/unpause} sem impactar outros testes da suíte.
      * Se o container fosse compartilhado via reuse, pausá-lo derrubaria
      * todos os testes que dependem do mesmo broker.</p>
+     *
+     * <p>Não sobrescreve a wait strategy: {@link RabbitMQContainer} aguarda
+     * internamente a mensagem de log {@code "Server startup complete"}, garantindo
+     * que o AMQP handshake esteja pronto antes do Spring context inicializar.
+     * Usar {@code Wait.forListeningPort()} é insuficiente — a porta TCP pode estar
+     * aberta antes que o RabbitMQ termine o startup, causando {@code AmqpConnectException}.</p>
      */
     @Container
     static final RabbitMQContainer RABBITMQ =
-            new RabbitMQContainer(DockerImageName.parse("rabbitmq:3.13-management-alpine"))
-                    // Aguarda a porta AMQP (5672) estar escutando antes de injetar properties
-                    .waitingFor(Wait.forListeningPort());
+            new RabbitMQContainer(DockerImageName.parse("rabbitmq:3.13-management-alpine"));
 
     /**
      * Redis 7 Alpine dedicado.

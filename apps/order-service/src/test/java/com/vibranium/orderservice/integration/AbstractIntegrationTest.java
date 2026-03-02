@@ -5,6 +5,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -40,6 +41,18 @@ import org.testcontainers.utility.DockerImageName;
  * {@link com.vibranium.orderservice.query.consumer.OrderEventProjectionConsumer} e
  * {@link com.vibranium.orderservice.web.controller.OrderQueryController} só são criados
  * quando {@code MongoTemplate} está disponível no contexto ({@code @ConditionalOnBean}).</p>
+ *
+ * <p><strong>Isolamento de contexto na suíte completa:</strong> esta classe é anotada com
+ * {@code @DirtiesContext(AFTER_CLASS)} para garantir que o {@code ApplicationContext} seja
+ * destruído após cada classe de teste. Isso impede a coexistência simultânea de dois contextos
+ * Spring (Command Side e Query Side) com listeners AMQP competindo pelas mesmas filas do
+ * RabbitMQ singleton. Sem este mecanismo, mensagens publicadas em testes do Query Side
+ * poderiam ser consumidas pelos listeners do contexto Command Side (já em cache), fazendo
+ * o {@code await(10s)} expirar — falso positivo ao rodar a suíte completa.</p>
+ *
+ * <p>Os containers Testcontainers (campos {@code static}) <strong>não são afetados</strong>
+ * por {@code @DirtiesContext} — eles persistem durante toda a JVM. Apenas os beans Spring
+ * (pools de conexão, listeners AMQP, etc.) são destruídos e recriados a cada classe.</p>
  */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -60,6 +73,11 @@ import org.testcontainers.utility.DockerImageName;
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Testcontainers
+// Garante que cada classe de teste destrua o ApplicationContext após sua execução.
+// Evita que contextos Command Side e Query Side co-existam em cache simultaneamente,
+// o que geraria listeners AMQP competindo pelas mesmas filas — causa raiz dos false
+// positives (ConditionTimeoutException) ao executar a suíte completa.
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 public abstract class AbstractIntegrationTest {
 
     // =========================================================================

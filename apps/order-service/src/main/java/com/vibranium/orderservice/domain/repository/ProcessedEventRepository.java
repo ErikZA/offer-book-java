@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -33,6 +34,7 @@ public interface ProcessedEventRepository extends JpaRepository<ProcessedEvent, 
      *
      * @param cutoff Instante de corte — registros anteriores a este serão deletados.
      */
+    @Transactional  // Obrigatório: @Modifying sem transação lança TransactionRequiredException
     @Modifying
     @Query("DELETE FROM ProcessedEvent e WHERE e.processedAt < :cutoff")
     void deleteByProcessedAtBefore(@Param("cutoff") Instant cutoff);
