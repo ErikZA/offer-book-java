@@ -17,6 +17,9 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.ScanOptions;
+import org.springframework.data.redis.core.ZSetOperations;
 
 /**
  * Adaptador do Motor de Match baseado em Redis Sorted Set.
@@ -298,6 +301,67 @@ public class RedisMatchEngineAdapter {
         logger.info("requeueResidual (fallback manual): fillType={} counterpartId={} remainingQty={} key={}",
                 result.fillType(), result.counterpartId(),
                 result.remainingCounterpartQty(), targetKey);
+    }
+
+    /**
+     * Remove a ordem do Sorted Set correspondente (ASK ou BID) via ZSCAN + ZREM.
+     *
+     * <p>Operação idempotente: se o membro não for encontrado (ex: já foi removido
+     * ou nunca foi inserido), retorna silenciosamente sem lançar exceção.
+     * {@code ZREM} em membro inexistente é um no-op no Redis (retorna 0).</p>
+     *
+     * <p><strong>Complexidade:</strong> O(N) via ZSCAN — aceitável para AT-04.1.
+     * AT-04.2 introduzirá índice reverso {@code {vibranium}:order_index} para
+     * remoção O(1), eliminando a necessidade do scan.</p>
+     *
+     * <p><strong>Limitação do ZSCAN:</strong> o match pattern é aplicado
+     * client-side pelo Redis; em sorted sets muito grandes, o ZSCAN pode
+     * iterar muitos elementos antes de encontrar o alvo. O índice reverso
+     * (AT-04.2) resolverá esse gargalo definitivamente via {@code HGET} + {@code ZREM}.</p>
+     *
+     * @param orderId UUID da ordem a remover.
+     * @param type    {@code SELL} → remove de {@code asks};
+     *                {@code BUY}  → remove de {@code bids}.
+     * @throws RuntimeException se ocorrer falha na comunicação com o Redis durante
+     *                          o ZSCAN ou o ZREM; a exceção original é relançada para
+     *                          que o container AMQP execute NACK e roteie para a DLQ.
+     */
+    public void removeFromBook(UUID orderId, OrderType type) {
+        // BUY inserido em bids; SELL inserido em asks
+        String key    = OrderType.SELL.equals(type) ? asksKey : bidsKey;
+        String prefix = orderId.toString() + "|";
+
+        // ZSCAN com match pattern: filtra apenas membros iniciados com o orderId.
+        // O Redis aplica o filtro internamente, mas o pattern matching é best-effort —
+        // iteramos o cursor e verificamos o prefixo para garantir precisão.
+        ScanOptions options = ScanOptions.scanOptions()
+                .match(prefix + "*")
+                .count(100)  // hint de batch ao Redis (não limita resultados)
+                .build();
+
+        try (Cursor<ZSetOperations.TypedTuple<String>> cursor =
+                     redisTemplate.opsForZSet().scan(key, options)) {
+            while (cursor.hasNext()) {
+                ZSetOperations.TypedTuple<String> tuple = cursor.next();
+                String member = tuple.getValue();
+                if (member != null && member.startsWith(prefix)) {
+                    // ZREM é idempotente: se o membro foi removido por outro thread
+                    // entre o ZSCAN e o ZREM, retorna 0 sem erro.
+                    Long removed = redisTemplate.opsForZSet().remove(key, member);
+                    logger.info("removeFromBook: ZREM executado key={} orderId={} removed={}",
+                            key, orderId, removed);
+                    return; // cada orderId tem no máximo 1 membro no sorted set
+                }
+            }
+        } catch (Exception e) {
+            logger.error("removeFromBook: erro ao escanear/remover orderId={} key={}: {}",
+                    orderId, key, e.getMessage(), e);
+            throw e;
+        }
+
+        // Membro não encontrado — comportamento idempotente esperado em reprocessamentos
+        logger.debug("removeFromBook: membro não encontrado (idempotente) orderId={} key={}",
+                orderId, key);
     }
 
     /** Converte elemento retornado pelo Redis em String (byte[] ou String). */
