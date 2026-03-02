@@ -3,6 +3,7 @@ package com.vibranium.orderservice.adapter.messaging;
 import com.rabbitmq.client.Channel;
 import com.vibranium.contracts.enums.OrderStatus;
 import com.vibranium.contracts.events.wallet.FundsReservationFailedEvent;
+import com.vibranium.orderservice.adapter.redis.RedisMatchEngineAdapter;
 import com.vibranium.orderservice.config.RabbitMQConfig;
 import com.vibranium.orderservice.domain.model.Order;
 import com.vibranium.orderservice.domain.model.ProcessedEvent;
@@ -44,6 +45,13 @@ import java.util.Optional;
  *
  * <p><strong>Sequencia garantida:</strong>
  * {@code (1) INSERT idempotency_key -> (2) UPDATE Order -> (3) Commit -> (4) basicAck}</p>
+ * <p><strong>Sequência garantida (AT-04.1):</strong>
+ * {@code (1) INSERT idempotency_key -> (2) ZREM Redis -> (3) UPDATE Order -> (4) Commit -> (5) basicAck}</p>
+ *
+ * <p><strong>Consistência cross-store (AT-04.1):</strong> A remoção do Redis é executada
+ * <em>antes</em> do {@code basicAck} para garantir que, mesmo em caso de reinicialização
+ * pós-cancelamento-PostgreSQL e pré-ACK, o Redis esteja limpo no reprocessamento.
+ * O {@code ZREM} é idempotente: membros inexistentes são ignorados silenciosamente.</p>
  */
 @Component
 public class FundsReservationFailedEventConsumer {
@@ -58,12 +66,30 @@ public class FundsReservationFailedEventConsumer {
     // rastreabilidade end-to-end no Jaeger (placeOrder → FundsReservationFailed).
     private final Tracer                     tracer;
 
+    /**
+     * Adaptador do Redis Order Book injetado para executar ZREM antes do basicAck (AT-04.1).
+     * Garante consistência entre o estado transacional (PostgreSQL CANCELLED) e o
+     * livro de ofertas em memória (Redis Sorted Set).
+     */
+    private final RedisMatchEngineAdapter     redisAdapter;
+
+    /**
+     * Cria o consumidor com todas as dependências obrigatórias.
+     *
+     * @param orderRepository          repositório JPA das ordens.
+     * @param processedEventRepository repositório de idempotência por eventId.
+     * @param redisAdapter             adaptador do Redis Order Book; usado para
+     *                                 executar {@code ZREM} antes do {@code basicAck}
+     *                                 garantindo consistência cross-store (AT-04.1).
+     */
     public FundsReservationFailedEventConsumer(OrderRepository orderRepository,
                                                ProcessedEventRepository processedEventRepository,
-                                               Tracer tracer) {
-        this.orderRepository         = orderRepository;
+                                               Tracer tracer,
+                                               RedisMatchEngineAdapter redisAdapter) {
+        this.orderRepository          = orderRepository;
         this.processedEventRepository = processedEventRepository;
         this.tracer                  = tracer;
+        this.redisAdapter             = redisAdapter;
     }
 
     /**
@@ -72,14 +98,11 @@ public class FundsReservationFailedEventConsumer {
      * <p>O {@code containerFactory = "manualAckContainerFactory"} habilita ACK manual.
      * O ACK so e enviado apos o commit JPA, eliminando a janela de duplicacao.</p>
      *
-     * <p><strong>Instrumentação MDC (AT-14.2):</strong> o corpo e envolvido em
-     * {@code try (MDC.putCloseable("correlationId", ...))} para que todas as linhas
-     * de log emitidas durante o processamento incluam automaticamente {@code correlationId}
-     * e {@code orderId} — sem passá-los manualmente a cada {@code logger.info(...)}.</p>
-     *
-     * @param event       Evento de falha publicado pelo wallet-service.
-     * @param channel     Canal AMQP para envio do ACK/NACK manual.
-     * @param deliveryTag Tag de entrega fornecida pelo broker.
+     * @param event       evento de falha publicado pelo wallet-service.
+     * @param channel     canal AMQP para envio do ACK/NACK manual.
+     * @param deliveryTag tag de entrega fornecida pelo broker.
+     * @throws Exception  se o ACK/NACK manual falhar ou ocorrer erro de I/O no canal AMQP;
+     *                    o container RabbitMQ trata a exceção e reenvia a mensagem.
      */
     @RabbitListener(
             queues = RabbitMQConfig.QUEUE_FUNDS_FAILED,
@@ -120,7 +143,7 @@ public class FundsReservationFailedEventConsumer {
                     return;
                 }
 
-                Order order = orderOpt.get();
+                Order order = orderOpt.get()
 
                 // AT-14.1: Enriquece o span ativo com atributos de domínio.
                 // Permite ao Jaeger exibir o trecho de cancelação da Saga com o contexto correto.
@@ -136,6 +159,9 @@ public class FundsReservationFailedEventConsumer {
                 //    o check de status abaixo e uma defesa extra contra corrupcao de dados.
                 if (order.getStatus() == OrderStatus.CANCELLED) {
                     logger.debug("Ordem ja cancelada (defensivo): orderId={}", order.getId());
+                      // AT-04.1: mesmo no caminho defensivo, garante remocao do Redis
+                    // (idempotente: ZREM em membro inexistente e silencioso)
+                    redisAdapter.removeFromBook(order.getId(), order.getOrderType());
                     channel.basicAck(deliveryTag, false);
                     return;
                 }
@@ -145,13 +171,22 @@ public class FundsReservationFailedEventConsumer {
                         ? reason + ": " + event.detail()
                         : reason;
 
+
+                                
+                // 4. AT-04.1: Remove do Redis Order Book ANTES do basicAck.
+                //    Garante que a ordem cancelada nao seja retornada como contraparte pelo
+                //    motor de match, evitando MatchExecutedEvent invalido e tentativa de
+                //    liquidacao com fundos inexistentes no wallet-service.
+                //    Ordem de execucao obrigatoria: ZREM -> UPDATE Postgres -> basicAck
+                redisAdapter.removeFromBook(order.getId(), order.getOrderType());
+
                 order.cancel(detail);
                 orderRepository.save(order);
 
-                logger.info("Ordem cancelada: orderId={} correlationId={} reason={}",
+                logger.info("Ordem cancelada e removida do Redis: orderId={} correlationId={} reason={}",
                         order.getId(), event.correlationId(), reason);
 
-                // 4. ACK manual apos commit bem-sucedido do JPA
+                // 5. ACK manual apos ZREM + commit bem-sucedido do JPA
                 channel.basicAck(deliveryTag, false);
 
             } finally {
