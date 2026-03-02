@@ -6,8 +6,11 @@
   executem contra o mesmo ASK simultaneamente.
 
   KEYS:
-    KEYS[1] = asks_key  (ex: "vibranium:asks")
-    KEYS[2] = bids_key  (ex: "vibranium:bids")
+    KEYS[1] = asks_key  (ex: "{vibranium}:asks")
+    KEYS[2] = bids_key  (ex: "{vibranium}:bids")
+
+  Nota (AT-11.1): As keys usam hash tags {vibranium} para garantir mesmo slot CRC16
+  em Redis Cluster. O script em si não conhece as keys — recebe via KEYS[] dinamicamente.
 
   ARGV:
     ARGV[1] = orderType     "BUY" ou "SELL"

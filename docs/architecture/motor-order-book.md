@@ -82,8 +82,8 @@ O Lua já removia a contraparte do Sorted Set via `ZREM` antes do US-002, mas **
 | `fillType` | Quem foi consumido | Quem tem residual | Residual vai para |
 |---|---|---|---|
 | `FULL` | Contraparte (total) | Nenhum residual | — |
-| `PARTIAL_ASK` | Ingressante (total) | Contraparte (ASK sobrou) | `vibranium:asks` |
-| `PARTIAL_BID` | Contraparte (ASK, total) | Ingressante (BID sobrou) | `vibranium:bids` |
+| `PARTIAL_ASK` | Ingressante (total) | Contraparte (ASK sobrou) | `{vibranium}:asks` |
+| `PARTIAL_BID` | Contraparte (ASK, total) | Ingressante (BID sobrou) | `{vibranium}:bids` |
 
 ### Design decision: Lua é a fonte de verdade
 
@@ -105,6 +105,46 @@ return {'MATCH', askValue, matchedQty, 'PARTIAL_ASK', remainingQty}
 O Redis executa scripts Lua serializados: nenhum outro comando pode intercalar entre o `ZREM` e o `ZADD`. **Atomicidade garantida sem locks de aplicação.**
 
 O método Java `requeueResidual()` existe no `RedisMatchEngineAdapter` mas **não é chamado no fluxo normal** — é uma API pública exclusivamente para disaster recovery e replay de eventos fora da Saga.
+
+---
+
+## 4. Hash Tags Redis e Compatibilidade com Redis Cluster (AT-11.1)
+
+As keys do Match Engine usam a hash tag `{vibranium}` para garantir compatibilidade com **Redis Cluster**.
+
+### O problema (antes de AT-11.1)
+
+Redis Cluster distribui keys por **hash slots** (0–16383) usando CRC16. Scripts Lua multi-key (`EVAL`/`EVALSHA`) só executam se **todas as KEYS[] estiverem no mesmo slot**. Sem hash tags:
+
+```
+CRC16("vibranium:asks") % 16384 → slot α
+CRC16("vibranium:bids") % 16384 → slot β   (α ≠ β)
+→ CROSSSLOT Keys in request don't hash to the same slot
+```
+
+### A solução — Hash Tags `{vibranium}`
+
+Quando a key contém `{tag}`, o Redis usa **somente o conteúdo entre as chaves** no cálculo CRC16:
+
+```
+CRC16("{vibranium}:asks") → CRC16("vibranium") → slot γ
+CRC16("{vibranium}:bids") → CRC16("vibranium") → slot γ  ← mesmo slot!
+CRC16("{vibranium}:order_index") → slot γ
+→ Lua executa sem CROSSSLOT em qualquer nó do cluster
+```
+
+### Configuração atual (`application.yaml`)
+
+```yaml
+app:
+  redis:
+    keys:
+      asks:        "{vibranium}:asks"
+      bids:        "{vibranium}:bids"
+      order-index: "{vibranium}:order_index"
+```
+
+> **Compatibilidade standalone:** hash tags são ignoradas em modo Redis single-node — zero impacto em desenvolvimento local.
 
 ### O 5º elemento do retorno Lua
 

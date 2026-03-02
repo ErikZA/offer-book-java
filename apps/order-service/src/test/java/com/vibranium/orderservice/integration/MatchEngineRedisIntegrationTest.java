@@ -48,10 +48,10 @@ class MatchEngineRedisIntegrationTest extends AbstractIntegrationTest {
 
     private static final String FUNDS_RESERVED_RK = "wallet.events.funds-reserved";
 
-    @Value("${app.redis.keys.asks:vibranium:asks}")
+    @Value("${app.redis.keys.asks:{vibranium}:asks}")
     private String asksKey;
 
-    @Value("${app.redis.keys.bids:vibranium:bids}")
+    @Value("${app.redis.keys.bids:{vibranium}:bids}")
     private String bidsKey;
 
     @Autowired

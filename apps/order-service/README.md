@@ -209,8 +209,28 @@ mvn test -pl apps/order-service -Dtest=RoutingKeyLiteralTest
 | `OrderSagaConcurrencyTest` | Integração (Concorrência) | Optimistic lock + retry em ordens concorrentes | — |
 | `KeycloakUserRegistryIntegrationTest` | Integração | Registro de usuário via evento Keycloak | — |
 | `MatchEngineRedisIntegrationTest` | Integração | Script Lua atômico no Sorted Set Redis | — |
+| **`RedisKeyFormatIT`** | **Integração (Spring Context)** | **FASE RED → GREEN: keys com hash tag `{vibranium}` injetadas via `@Value`** | **AT-11.1** |
+| **`RedisClusterHashTagIT`** | **Integração (CRC16 + Testcontainers Cluster)** | **CRC16 slot equality; CROSSSLOT antes e sem erro após hash tags em cluster real** | **AT-11.1** |
 | `OrderQueryControllerTest` | Integração REST | Read Model MongoDB — paginação e detalhe | — |
 | **`RoutingKeyLiteralTest`** | **Guarda Arquitetural** | **Impede strings literais de routing key fora de `RabbitMQConfig`** | **AT-02.2** |
+
+### AT-11.1 — Hash Tags Redis para Redis Cluster
+
+As keys do Match Engine foram atualizadas para usar a hash tag `{vibranium}`, garantindo que `{vibranium}:asks`, `{vibranium}:bids` e `{vibranium}:order_index` calculem o mesmo hash slot CRC16. Sem essa mudança, o Redis Cluster retornaria `CROSSSLOT Keys in request don't hash to the same slot` ao executar o `match_engine.lua` (que usa múltiplas keys via `KEYS[]`).
+
+**Regra:** scripts Lua multi-key (`EVAL`/`EVALSHA`) só executam em Redis Cluster se todas as `KEYS[]` estiverem no mesmo slot. Hash tags resolvem isso de forma transparente com Redis standalone.
+
+Testes de validação:
+- `RedisKeyFormatIT` — valida formato das keys no Spring Context (FASE RED → GREEN)
+- `RedisClusterHashTagIT` — demonstra CROSSSLOT sem hash tag e execução correta com hash tag em cluster real
+
+```yaml
+# application.yaml
+app.redis.keys:
+  asks:        "{vibranium}:asks"
+  bids:        "{vibranium}:bids"
+  order-index: "{vibranium}:order_index"
+```
 
 ### AT-01.2 — Estratégia de Resiliência
 

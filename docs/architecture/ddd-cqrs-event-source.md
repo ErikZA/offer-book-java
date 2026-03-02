@@ -192,9 +192,12 @@ Um cenário importante para o Command Side é o **partial fill**: a ordem entra 
 
 ```
 Command Side (write):                     Redis (livro):
-  Order.status = PARTIAL                    vibranium:bids
+  Order.status = PARTIAL                    {vibranium}:bids
   Order.remainingAmount = 60                  score=500  member="orderId|...|60|..."
 ```
+
+> **AT-11.1:** As keys do Redis usam hash tags `{vibranium}` para compatibilitar com Redis Cluster.
+> Ver [motor-order-book.md](motor-order-book.md#4-hash-tags-redis-e-compatibilidade-com-redis-cluster-at-111).
 
 O ponto crítico: **o Redis e o PostgreSQL precisam ficar consistentes**. O Script Lua trata isso atomicamente:
 1. Dentro do `EVAL`: remove a contraparte ASK, calcula o residual, reinsere ASK com `qty=residual`, retorna `matchedQty` e `remainingCounterpartQty`.

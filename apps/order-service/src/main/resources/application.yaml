@@ -129,8 +129,15 @@ app:
             keycloak-register: 'KK.EVENT.CLIENT.orderbook-realm.REGISTER'
     redis:
         keys:
-            asks: vibranium:asks
-            bids: vibranium:bids
+            # Hash tags {vibranium} garantem que asks, bids e order_index sejam calculados
+            # sobre o mesmo slot CRC16 (apenas o conteúdo entre {} é usado no hash).
+            # Sem hash tags: CRC16("vibranium:asks") ≠ CRC16("vibranium:bids") → slots diferentes
+            # → CROSSSLOT em Redis Cluster ao executar script Lua multi-key com EVAL/EVALSHA.
+            # Com hash tags: CRC16("vibranium") == CRC16("vibranium") → mesmo slot → OK.
+            # Compatível com Redis standalone (hash tags são ignoradas em modo single-node).
+            asks: "{vibranium}:asks"
+            bids: "{vibranium}:bids"
+            order-index: "{vibranium}:order_index"
 
 logging:
     level:

@@ -27,9 +27,17 @@ import java.util.UUID;
  *
  * <h2>Estrutura dos Sorted Sets</h2>
  * <ul>
- *   <li>Key {@code vibranium:asks}: ASKs com score = price × 1_000_000 (menor preço primeiro)</li>
- *   <li>Key {@code vibranium:bids}: BIDs com score = price × 1_000_000 (maior preço primeiro via ZREVRANGEBYSCORE)</li>
+ *   <li>Key {@code {vibranium}:asks}: ASKs com score = price × 1_000_000 (menor preço primeiro)</li>
+ *   <li>Key {@code {vibranium}:bids}: BIDs com score = price × 1_000_000 (maior preço primeiro via ZREVRANGEBYSCORE)</li>
  * </ul>
+ *
+ * <h2>Hash Tags e Redis Cluster (AT-11.1)</h2>
+ * <p>As keys usam a hash tag {@code {vibranium}} para garantir que {@code {vibranium}:asks}
+ * e {@code {vibranium}:bids} calculem o mesmo hash slot CRC16. Isso é obrigatório para
+ * execução de scripts Lua multi-key ({@code EVAL}/{@code EVALSHA}) em Redis Cluster:
+ * sem hash tags, os slots difeririam e o Redis retornaria
+ * {@code CROSSSLOT Keys in request don't hash to the same slot}.
+ * A hash tag é ignorada em modo standalone — sem regressão.</p>
  *
  * <h2>Formato do valor (pipe-delimited)</h2>
  * <pre>{orderId}|{userId}|{walletId}|{quantity}|{correlationId}|{epochMs}</pre>
@@ -249,8 +257,8 @@ public class RedisMatchEngineAdapter {
      * <p>Implementação: constrói o valor pipe-delimited a partir dos campos do
      * {@link MatchResult} e executa {@code ZADD} na chave do lado correto:</p>
      * <ul>
-     *   <li>{@code PARTIAL_ASK} (contraparte ASK sobrou) → chave {@code vibranium:asks}</li>
-     *   <li>{@code PARTIAL_BID} (contraparte BID sobrou) → chave {@code vibranium:bids}</li>
+     *   <li>{@code PARTIAL_ASK} (contraparte ASK sobrou) → chave {@code {vibranium}:asks}</li>
+     *   <li>{@code PARTIAL_BID} (contraparte BID sobrou) → chave {@code {vibranium}:bids}</li>
      * </ul>
      *
      * @param result    MatchResult de um match parcial com {@code remainingCounterpartQty > 0}.
