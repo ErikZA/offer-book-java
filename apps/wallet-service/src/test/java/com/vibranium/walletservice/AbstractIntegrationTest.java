@@ -45,7 +45,7 @@ public abstract class AbstractIntegrationTest {
      * com.vibranium.walletservice.infrastructure.outbox.DebeziumOutboxEngine}).
      * Configura também {@code max_replication_slots} e {@code max_wal_senders}
      * para suportar múltiplos engines em testes paralelos.</p> */
-    static final PostgreSQLContainer<?> POSTGRES =
+    protected static final PostgreSQLContainer<?> POSTGRES =
             new PostgreSQLContainer<>("postgres:15-alpine")
                     .withDatabaseName("vibranium_wallet_test")
                     .withUsername("test")
@@ -56,8 +56,12 @@ public abstract class AbstractIntegrationTest {
                                  "-c", "max_wal_senders=10")
                     .withReuse(true);
 
-    /** RabbitMQ 3.13 com Management UI. */
-    static final RabbitMQContainer RABBIT =
+    /** RabbitMQ 3.13 com Management UI.
+     *
+     * <p>A imagem {@code management-alpine} habilita o plugin {@code rabbitmq_management},
+     * expondo a HTTP Management API em porta 15672. Isso permite que testes inspecionem
+     * metadados de filas (argumentos, bindings) via {@code GET /api/queues/%2F/{name}}.</p> */
+    protected static final RabbitMQContainer RABBIT =
             new RabbitMQContainer("rabbitmq:3.13-management-alpine")
                     .withReuse(true);
 
@@ -123,12 +127,19 @@ public abstract class AbstractIntegrationTest {
      */
     @BeforeEach
     void resetRabbitQueues() {
-        // Purga as filas de teste para garantir isolamento entre cenários
-        try {
-            rabbitAdmin.purgeQueue("wallet.keycloak.events", false);
-            rabbitAdmin.purgeQueue("wallet.commands", false);
-        } catch (Exception ignored) {
-            // Filas ainda não existem — serão criadas pelo contexto Spring
+        // Purga todas as filas entre cenários para garantir isolamento total.
+        // Inclui a fila dedicada de reserve-funds e sua DLQ (AT-07.1).
+        for (String queue : new String[]{
+                "wallet.keycloak.events",
+                "wallet.commands",
+                "wallet.commands.reserve-funds",
+                "wallet.commands.reserve-funds.dlq"
+        }) {
+            try {
+                rabbitAdmin.purgeQueue(queue, false);
+            } catch (Exception ignored) {
+                // Fila ainda não existe — será declarada automaticamente pelo contexto Spring
+            }
         }
     }
 }
