@@ -465,7 +465,7 @@ class WalletConcurrentDeadlockTest extends AbstractIntegrationTest {
                     try {
                         walletService.settleFunds(
                                 buildCmd(walletA.getId(), walletB.getId()),
-                                "green01-T1-iter" + iter + "-" + UUID.randomUUID()
+                                UUID.randomUUID().toString()
                         );
                     } catch (Throwable t) {
                         errors.add(t);
@@ -486,7 +486,7 @@ class WalletConcurrentDeadlockTest extends AbstractIntegrationTest {
                     try {
                         walletService.settleFunds(
                                 buildCmd(walletB.getId(), walletA.getId()),
-                                "green01-T2-iter" + iter + "-" + UUID.randomUUID()
+                                UUID.randomUUID().toString()
                         );
                     } catch (Throwable t) {
                         errors.add(t);
