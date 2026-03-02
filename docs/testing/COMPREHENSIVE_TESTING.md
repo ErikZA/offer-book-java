@@ -744,6 +744,125 @@ void shouldHandleConcurrentRequests() {
 }
 ```
 
+### Deadlock ABBA — Prova de ausência com PostgreSQL real (AT-03.2)
+
+#### Problema — Deadlock ABBA
+
+Sem ordenação global de locks, dois settlements concorrentes sobre as mesmas carteiras em
+ordens opostas criam uma espera circular que nunca se resolve (deadlock ABBA):
+
+```
+Thread 1: lock(A) → aguarda lock(B)  ← mantido por Thread 2
+Thread 2: lock(B) → aguarda lock(A)  ← mantido por Thread 1
+          ↑ DEADLOCK — PostgreSQL detecta e cancela uma transação (SQLState 40P01)
+```
+
+#### Solução — Lock Ordering Determinístico
+
+`WalletService.settleFunds()` adquire locks sempre em **ordem crescente de UUID** (`UUID.compareTo`).
+Qualquer par de threads processando as mesmas carteiras bloqueia na mesma sequência —
+eliminando a possibilidade de espera circular. Prova formal: o grafo de espera é acíclico
+por construção (Teorema de Coffman, condição de ordenação de recursos).
+
+#### FASE RED — Provocar o deadlock deliberadamente
+
+Usa `TransactionTemplate` **sem** lock ordering para forçar a ordem ABBA de forma
+100% determinística via dois `CountDownLatch`, sem `Thread.sleep()`:
+
+```java
+// Dois CountDownLatches garantem a sequência ABBA sem Thread.sleep()
+CountDownLatch thread1HasLockA = new CountDownLatch(1);
+CountDownLatch thread2HasLockB = new CountDownLatch(1);
+
+// Thread 1: lock(A) → sinaliza → aguarda Thread 2 ter lock(B) → tenta lock(B)
+executor.submit(() -> transactionTemplate.execute(status -> {
+    walletRepository.findByIdForUpdate(idA);   // adquire A
+    thread1HasLockA.countDown();                // sinaliza
+    thread2HasLockB.await();                    // espera B estar preso
+    walletRepository.findByIdForUpdate(idB);   // BLOQUEADO ← deadlock
+    return null;
+}));
+
+// Thread 2: lock(B) → sinaliza → aguarda Thread 1 ter lock(A) → tenta lock(A)
+executor.submit(() -> transactionTemplate.execute(status -> {
+    walletRepository.findByIdForUpdate(idB);   // adquire B
+    thread2HasLockB.countDown();                // sinaliza
+    thread1HasLockA.await();                    // espera A estar preso
+    walletRepository.findByIdForUpdate(idA);   // BLOQUEADO ← deadlock
+    return null;
+}));
+
+// O PostgreSQL detecta em ~1s (deadlock_timeout) e cancela uma das transações
+// → Spring lança CannotAcquireLockException (PSQLException SQLState 40P01)
+assertThat(errors).isNotEmpty();
+assertThat(errors).anySatisfy(e ->
+    assertThat(buildFullExceptionMessage(e)).containsIgnoringCase("deadlock")
+);
+```
+
+#### FASE GREEN — Ausência de deadlock com lock ordering (20 iterações)
+
+```java
+@Test
+@Timeout(300)
+void invertedConcurrentSettlements_neverDeadlock_20Iterations() throws Exception {
+    for (int iteration = 0; iteration < 20; iteration++) {
+        Wallet walletA = createWalletWithLockedFunds(TOTAL_BRL, MATCH_AMOUNT);
+        Wallet walletB = createWalletWithLockedFunds(TOTAL_BRL, MATCH_AMOUNT);
+
+        // Disparo simultâneo via readyLatch(2) + startLatch(1)
+        CountDownLatch readyLatch = new CountDownLatch(2);
+        CountDownLatch startLatch = new CountDownLatch(1);
+
+        executor.submit(() -> {
+            readyLatch.countDown();
+            startLatch.await();
+            // Thread 1: buyer=A, seller=B → lock ordering: min(A,B) primeiro
+            walletService.settleFunds(buildCmd(walletA.getId(), walletB.getId()), msgId);
+        });
+        executor.submit(() -> {
+            readyLatch.countDown();
+            startLatch.await();
+            // Thread 2: buyer=B, seller=A (INVERTIDO) → lock ordering: min(A,B) primeiro
+            walletService.settleFunds(buildCmd(walletB.getId(), walletA.getId()), msgId);
+        });
+
+        readyLatch.await(10, TimeUnit.SECONDS);
+        startLatch.countDown(); // start simultâneo
+        executor.awaitTermination(30, TimeUnit.SECONDS);
+
+        // Validações por iteração
+        assertThat(errors).isEmpty();                                          // zero rollbacks
+        assertThat(outbox).filteredOn("FundsSettlementFailedEvent").isEmpty(); // zero falhas
+        assertThat(outbox).filteredOn("FundsSettledEvent").hasSize(2);         // 2 commits
+        assertThat(totalBrl(A) + totalBrl(B)).isEqualTo(totalBrlBefore);       // conservação
+        assertThat(totalVib(A) + totalVib(B)).isEqualTo(totalVibBefore);
+    }
+}
+```
+
+#### Alta Contenção — 10 carteiras × 50 settlements concorrentes
+
+Stress-test com pares aleatórios de semente fixa (`Random(42L)`) para reprodutibilidade em CI:
+
+| Configuração | Valor |
+|---|---|
+| Carteiras | 10 (cada com `brlLocked=500`, `vibLocked=50` — cobre pior caso) |
+| Settlements | 50 concorrentes com pares aleatórios (semente 42L) |
+| Pool de threads | `newFixedThreadPool(50)` |
+| Timeout absoluto | 120s |
+
+Validações ao final:
+- Zero exceções em qualquer thread
+- `completedCount == 50`
+- Zero `FundsSettlementFailedEvent`
+- Exatamente 50 `FundsSettledEvent`
+- $\sum_i \text{BRL}_i^{\text{antes}} = \sum_i \text{BRL}_i^{\text{depois}}$ (idem VIB)
+
+**Classe:** `WalletConcurrentDeadlockTest` (wallet-service, pacote `integration`)
+
+---
+
 ### SLA de Latência com Virtual Threads
 
 O teste `whenFiftyConcurrentOrdersFromSameUser_thenAllAcceptedWithinSLA` valida que
