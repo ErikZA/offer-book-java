@@ -15,7 +15,7 @@ package com.vibranium.contracts.commands;
  * <p>Comandos carregam um {@code correlationId} para rastrear a Saga
  * que os disparou.</p>
  */
-public interface Command {
+public interface Command extends com.vibranium.contracts.VersionedContract {
 
     /**
      * ID de correlação da Saga. Deve ser propagado para todos os eventos

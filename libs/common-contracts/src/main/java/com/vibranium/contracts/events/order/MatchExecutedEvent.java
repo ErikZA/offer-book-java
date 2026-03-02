@@ -55,9 +55,17 @@ public record MatchExecutedEvent(
         UUID buyerWalletId,
         UUID sellerWalletId,
         BigDecimal matchPrice,
-        BigDecimal matchAmount
+        BigDecimal matchAmount,
+
+        // Versionamento do contrato — permite deploy independente entre producer e consumer.
+        int schemaVersion
 
 ) implements DomainEvent {
+
+    /** Compact constructor: garante schemaVersion=1 para payloads antigos (backward compat). */
+    public MatchExecutedEvent {
+        if (schemaVersion == 0) schemaVersion = 1;
+    }
 
     /** Factory method com geração automática de matchId, eventId e occurredOn. */
     public static MatchExecutedEvent of(UUID correlationId,
@@ -79,7 +87,8 @@ public record MatchExecutedEvent(
                 buyerWalletId,
                 sellerWalletId,
                 matchPrice,
-                matchAmount
+                matchAmount,
+                1
         );
     }
 }

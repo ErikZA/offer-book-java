@@ -33,6 +33,15 @@ public record ReserveFundsCommand(
 
         @NotNull
         @DecimalMin(value = "0.0", inclusive = false, message = "Amount must be positive")
-        BigDecimal amount
+        BigDecimal amount,
 
-) implements Command {}
+        // Versionamento do contrato — permite deploy independente entre producer e consumer.
+        int schemaVersion
+
+) implements Command {
+
+    /** Compact constructor: garante schemaVersion=1 para payloads antigos (backward compat). */
+    public ReserveFundsCommand {
+        if (schemaVersion == 0) schemaVersion = 1;
+    }
+}

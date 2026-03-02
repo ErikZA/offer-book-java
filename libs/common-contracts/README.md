@@ -24,17 +24,20 @@ Em uma arquitetura de microsserviços orientada a eventos (EDA) com coreografia 
 |---|---|
 | `record` Java (imutável) | Mensagens em trânsito não devem ser mutáveis após criação |
 | Framework-agnostic | A lib não depende de Spring, JPA ou qualquer infraestrutura — pode ser usada em qualquer serviço |
+| Interface `VersionedContract` | Âncora única para o campo `schemaVersion` em todos os contratos (AT-16.1) |
 | Interface `DomainEvent` | Contrato mínimo de rastreabilidade exigido por todos os eventos |
 | Interface `Command` | Separação semântica clara: intenção (command) vs. fato ocorrido (event) |
 | Jakarta Validation (`@NotNull`, `@DecimalMin`) | Garante que contratos inválidos sejam detectados antes de serem publicados |
-| Factory methods (`Event.of(...)`) | Garantem que `eventId` e `occurredOn` sejam sempre gerados automaticamente |
+| Factory methods (`Event.of(...)`) | Garantem que `eventId`, `occurredOn` e `schemaVersion=1` sejam sempre gerados automaticamente |
+| `int schemaVersion` + compact constructor | Versionamento de contrato: default=1 garante backward compatibility com payloads antigos |
 
 ### Processo de desenvolvimento (TDD)
 
 1. Definição do `pom.xml` com dependências mínimas (Jackson, Jakarta Validation, JUnit 5, AssertJ, Hibernate Validator no escopo test)
-2. Criação dos **testes primeiro** (Fase RED) — 50 casos cobrindo validação, serialização round-trip JSON, unicidade de IDs e propagação de correlação na Saga
+2. Criação dos **testes primeiro** (Fase RED) — cobrindo validação, serialização round-trip JSON, unicidade de IDs e propagação de correlação na Saga
 3. Implementação dos contratos (Fase GREEN) até todos os testes passarem
-4. Resultado: `Tests run: 50, Failures: 0, Errors: 0` em 5.6s
+4. **AT-16.1 (Fase RED→GREEN)** — `ContractSchemaVersionTest` adicionado para cobrir backward/forward compatibility com `schemaVersion`
+5. Resultado atual: `Tests run: 55, Failures: 0, Errors: 0`
 
 ---
 
@@ -43,8 +46,10 @@ Em uma arquitetura de microsserviços orientada a eventos (EDA) com coreografia 
 ```
 src/main/java/com/vibranium/contracts/
 │
+├── VersionedContract.java                 ← interface de versionamento: schemaVersion() (AT-16.1)
+│
 ├── commands/                              # Intenções (o que DEVE acontecer)
-│   ├── Command.java                       ← interface marker com correlationId
+│   ├── Command.java                       ← interface marker com correlationId (extends VersionedContract)
 │   ├── wallet/
 │   │   ├── CreateWalletCommand            ← Criar carteira zerada (onboarding)
 │   │   ├── ReserveFundsCommand            ← Bloquear BRL ou VIBRANIUM
@@ -53,7 +58,7 @@ src/main/java/com/vibranium/contracts/
 │       └── CreateOrderCommand             ← Criar intenção de compra/venda
 │
 ├── events/                                # Fatos (o que JÁ aconteceu)
-│   ├── DomainEvent.java                   ← Interface base de rastreabilidade
+│   ├── DomainEvent.java                   ← Interface base de rastreabilidade (extends VersionedContract)
 │   ├── wallet/
 │   │   ├── WalletCreatedEvent             ← Carteira criada com sucesso
 │   │   ├── FundsReservedEvent             ← Saldo bloqueado ✅
@@ -79,29 +84,56 @@ src/main/java/com/vibranium/contracts/
 
 ## Contrato de rastreabilidade (`DomainEvent`)
 
-Todo evento implementa `DomainEvent`, que exige quatro metadados obrigatórios:
+Todo evento implementa `DomainEvent`, que exige cinco metadados obrigatórios:
 
 ```java
-public interface DomainEvent {
+public interface DomainEvent extends VersionedContract {
     UUID    eventId();       // Idempotência: consumidor descarta duplicatas pelo eventId
     UUID    correlationId(); // Rastreabilidade: mesmo ID do início ao fim da Saga
     String  aggregateId();   // Agregado afetado (orderId, walletId, matchId)
     Instant occurredOn();    // Timestamp UTC para ordenação e auditoria
+    int     schemaVersion(); // Versionamento do contrato (AT-16.1) — padrão: 1
+}
+```
+
+## Versionamento de contrato (`schemaVersion`) — AT-16.1
+
+Todos os eventos e comandos possuem o campo `int schemaVersion` (default `1`). Ele habilita **deploy independente** entre produtor e consumidor sem coordenação:
+
+| Cenário | Comportamento |
+|---|---|
+| **Backward compat** — consumer novo, payload antigo (sem `schemaVersion`) | Compact constructor assume `schemaVersion = 1` automaticamente |
+| **Forward compat** — consumer antigo, payload novo (com campos extras) | `FAIL_ON_UNKNOWN_PROPERTIES=false` ignora silenciosamente |
+| **Round-trip** — factory method → serializa → deserializa | `schemaVersion=1` preservado na íntegra |
+
+**Padrão obrigatório para novos records:**
+```java
+public record MeuEvento(
+        // ... campos de domínio ...
+        int schemaVersion         // sempre o último campo
+) implements DomainEvent {
+    public MeuEvento {
+        if (schemaVersion == 0) schemaVersion = 1; // backward compat
+    }
+    public static MeuEvento of(...) {
+        return new MeuEvento(..., 1); // factory sempre passa schemaVersion=1
+    }
 }
 ```
 
 ### Configuração obrigatória do `ObjectMapper` nos microsserviços
 
-`Instant` é serializado como **epoch-milliseconds** (long). Configure o `ObjectMapper` assim:
+`Instant` é serializado como **epoch-milliseconds** (long), e campos desconhecidos são tolerados para forward compatibility. A configuração canônica está centralizada em `libs/common-utils` (`VibraniumJacksonConfig`):
 
 ```java
 objectMapper.registerModule(new JavaTimeModule())
             .enable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
             .disable(SerializationFeature.WRITE_DATE_TIMESTAMPS_AS_NANOSECONDS)
-            .disable(DeserializationFeature.READ_DATE_TIMESTAMPS_AS_NANOSECONDS);
+            .disable(DeserializationFeature.READ_DATE_TIMESTAMPS_AS_NANOSECONDS)
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false); // forward compat
 ```
 
-> **Próximo passo**: essa fábrica de `ObjectMapper` será centralizada em `libs/common-utils` para evitar que cada microsserviço duplique esta configuração.
+> **`FAIL_ON_UNKNOWN_PROPERTIES=false`** é obrigatório para que um consumer antigo não quebre ao receber um payload de um producer mais novo com campos adicionais. Sem essa configuração, um campo novo causaria `UnrecognizedPropertyException` e rollback da mensagem.
 
 ---
 
@@ -143,7 +175,7 @@ public void onOrderReceived(OrderReceivedEvent event) {
 ## Testes
 
 ```
-Tests run: 50, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 55, Failures: 0, Errors: 0, Skipped: 0
 ```
 
 | Classe de teste | Tipo | O que valida |
@@ -154,6 +186,7 @@ Tests run: 50, Failures: 0, Errors: 0, Skipped: 0
 | `WalletEventsSerializationTest` | Round-trip JSON | BigDecimal com alta precisão, Instant, enums |
 | `OrderEventsSerializationTest` | Round-trip JSON | Todos os eventos de order sobrevivem ao ciclo serialização → bytes → deserialização |
 | `SagaChoreographyContractIT` | Integração | `correlationId` propagado do `CreateOrderCommand` até `OrderFilledEvent` e nos caminhos de compensação |
+| `ContractSchemaVersionTest` | Unitário (AT-16.1) | backward compat (payload sem `schemaVersion` → default 1), forward compat (campo desconhecido ignorado), round-trip com `schemaVersion=1` |
 
 ---
 

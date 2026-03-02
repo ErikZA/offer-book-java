@@ -65,7 +65,7 @@ class WalletIdempotencyIntegrationTest extends AbstractIntegrationTest {
         ReserveFundsCommand command = new ReserveFundsCommand(
                 UUID.randomUUID(), orderId,
                 testWallet.getId(), AssetType.BRL,
-                new BigDecimal("50.00")
+                new BigDecimal("50.00"), 1
         );
         String json = objectMapper.writeValueAsString(command);
 
@@ -99,11 +99,11 @@ class WalletIdempotencyIntegrationTest extends AbstractIntegrationTest {
         // Arrange — dois comandos com messageIds distintos reservando R$50 cada
         ReserveFundsCommand command1 = new ReserveFundsCommand(
                 UUID.randomUUID(), UUID.randomUUID(),
-                testWallet.getId(), AssetType.BRL, new BigDecimal("50.00")
+                testWallet.getId(), AssetType.BRL, new BigDecimal("50.00"), 1
         );
         ReserveFundsCommand command2 = new ReserveFundsCommand(
                 UUID.randomUUID(), UUID.randomUUID(),
-                testWallet.getId(), AssetType.BRL, new BigDecimal("50.00")
+                testWallet.getId(), AssetType.BRL, new BigDecimal("50.00"), 1
         );
 
         // Act
@@ -130,7 +130,7 @@ class WalletIdempotencyIntegrationTest extends AbstractIntegrationTest {
         // Arrange — mensagem sem messageId definido
         ReserveFundsCommand command = new ReserveFundsCommand(
                 UUID.randomUUID(), UUID.randomUUID(),
-                testWallet.getId(), AssetType.BRL, new BigDecimal("50.00")
+                testWallet.getId(), AssetType.BRL, new BigDecimal("50.00"), 1
         );
         String json = objectMapper.writeValueAsString(command);
 

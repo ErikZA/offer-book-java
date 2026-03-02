@@ -37,9 +37,17 @@ public record OrderAddedToBookEvent(
         UUID orderId,
         OrderType orderType,
         BigDecimal price,
-        BigDecimal remainingAmount
+        BigDecimal remainingAmount,
+
+        // Versionamento do contrato — permite deploy independente entre producer e consumer.
+        int schemaVersion
 
 ) implements DomainEvent {
+
+    /** Compact constructor: garante schemaVersion=1 para payloads antigos (backward compat). */
+    public OrderAddedToBookEvent {
+        if (schemaVersion == 0) schemaVersion = 1;
+    }
 
     /** Factory method com geração automática de eventId e occurredOn. */
     public static OrderAddedToBookEvent of(UUID correlationId, UUID orderId,
@@ -53,7 +61,8 @@ public record OrderAddedToBookEvent(
                 orderId,
                 orderType,
                 price,
-                remainingAmount
+                remainingAmount,
+                1
         );
     }
 }

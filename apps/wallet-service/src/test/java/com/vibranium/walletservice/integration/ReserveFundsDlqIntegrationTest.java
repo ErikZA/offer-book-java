@@ -209,7 +209,7 @@ class ReserveFundsDlqIntegrationTest extends AbstractIntegrationTest {
                 UUID.randomUUID(),           // orderId
                 UUID.randomUUID(),           // walletId
                 AssetType.BRL,
-                new BigDecimal("100.00")
+                new BigDecimal("100.00"), 1
         );
 
         String json = objectMapper.writeValueAsString(command);

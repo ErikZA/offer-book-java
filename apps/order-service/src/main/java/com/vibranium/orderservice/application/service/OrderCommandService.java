@@ -133,7 +133,7 @@ public class OrderCommandService {
         //    Isso garante que o comando nao seja perdido mesmo que o broker esteja
         //    indisponivel no momento do commit desta transacao.
         ReserveFundsCommand cmd = new ReserveFundsCommand(
-                correlationId, orderId, request.walletId(), assetToLock, amountToLock
+                correlationId, orderId, request.walletId(), assetToLock, amountToLock, 1
         );
 
         try {

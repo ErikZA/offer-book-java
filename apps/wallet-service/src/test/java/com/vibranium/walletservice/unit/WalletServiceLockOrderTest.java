@@ -144,7 +144,7 @@ class WalletServiceLockOrderTest {
                 UUID.randomUUID(), UUID.randomUUID(),
                 UUID.randomUUID(), UUID.randomUUID(),
                 buyerWalletId, sellerWalletId,
-                MATCH_PRICE, MATCH_AMOUNT
+                MATCH_PRICE, MATCH_AMOUNT, 1
         );
     }
 

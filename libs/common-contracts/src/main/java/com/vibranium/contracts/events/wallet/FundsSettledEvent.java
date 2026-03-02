@@ -47,9 +47,17 @@ public record FundsSettledEvent(
         UUID buyerWalletId,
         UUID sellerWalletId,
         BigDecimal matchPrice,
-        BigDecimal matchAmount
+        BigDecimal matchAmount,
+
+        // Versionamento do contrato — permite deploy independente entre producer e consumer.
+        int schemaVersion
 
 ) implements DomainEvent {
+
+    /** Compact constructor: garante schemaVersion=1 para payloads antigos (backward compat). */
+    public FundsSettledEvent {
+        if (schemaVersion == 0) schemaVersion = 1;
+    }
 
     /** Factory method com geração automática de eventId e occurredOn. */
     public static FundsSettledEvent of(UUID correlationId, UUID matchId,
@@ -67,7 +75,8 @@ public record FundsSettledEvent(
                 buyerWalletId,
                 sellerWalletId,
                 matchPrice,
-                matchAmount
+                matchAmount,
+                1
         );
     }
 }

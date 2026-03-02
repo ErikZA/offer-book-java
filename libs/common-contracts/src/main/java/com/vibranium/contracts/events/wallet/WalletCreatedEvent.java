@@ -32,9 +32,17 @@ public record WalletCreatedEvent(
         Instant occurredOn,
 
         UUID walletId,
-        UUID userId
+        UUID userId,
+
+        // Versionamento do contrato — permite deploy independente entre producer e consumer.
+        int schemaVersion
 
 ) implements DomainEvent {
+
+    /** Compact constructor: garante schemaVersion=1 para payloads antigos (backward compat). */
+    public WalletCreatedEvent {
+        if (schemaVersion == 0) schemaVersion = 1;
+    }
 
     /** Factory method que gera eventId e occurredOn automaticamente. */
     public static WalletCreatedEvent of(UUID correlationId, UUID walletId, UUID userId) {
@@ -44,7 +52,8 @@ public record WalletCreatedEvent(
                 walletId.toString(),
                 Instant.now(),
                 walletId,
-                userId
+                userId,
+                1
         );
     }
 }

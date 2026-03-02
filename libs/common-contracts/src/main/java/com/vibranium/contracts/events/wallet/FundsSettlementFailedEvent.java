@@ -37,9 +37,17 @@ public record FundsSettlementFailedEvent(
 
         UUID matchId,
         FailureReason reason,
-        String detail
+        String detail,
+
+        // Versionamento do contrato — permite deploy independente entre producer e consumer.
+        int schemaVersion
 
 ) implements DomainEvent {
+
+    /** Compact constructor: garante schemaVersion=1 para payloads antigos (backward compat). */
+    public FundsSettlementFailedEvent {
+        if (schemaVersion == 0) schemaVersion = 1;
+    }
 
     /** Factory method com geração automática de eventId e occurredOn. */
     public static FundsSettlementFailedEvent of(UUID correlationId, UUID matchId,
@@ -51,7 +59,8 @@ public record FundsSettlementFailedEvent(
                 Instant.now(),
                 matchId,
                 reason,
-                detail
+                detail,
+                1
         );
     }
 }

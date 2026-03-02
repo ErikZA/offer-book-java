@@ -34,9 +34,17 @@ public record OrderFilledEvent(
 
         UUID orderId,
         BigDecimal totalFilled,
-        BigDecimal averagePrice
+        BigDecimal averagePrice,
+
+        // Versionamento do contrato — permite deploy independente entre producer e consumer.
+        int schemaVersion
 
 ) implements DomainEvent {
+
+    /** Compact constructor: garante schemaVersion=1 para payloads antigos (backward compat). */
+    public OrderFilledEvent {
+        if (schemaVersion == 0) schemaVersion = 1;
+    }
 
     /** Factory method com geração automática de eventId e occurredOn. */
     public static OrderFilledEvent of(UUID correlationId, UUID orderId,
@@ -48,7 +56,8 @@ public record OrderFilledEvent(
                 Instant.now(),
                 orderId,
                 totalFilled,
-                averagePrice
+                averagePrice,
+                1
         );
     }
 }

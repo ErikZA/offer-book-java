@@ -37,9 +37,17 @@ public record OrderPartiallyFilledEvent(
         UUID orderId,
         UUID matchId,
         BigDecimal filledAmount,
-        BigDecimal remainingAmount
+        BigDecimal remainingAmount,
+
+        // Versionamento do contrato — permite deploy independente entre producer e consumer.
+        int schemaVersion
 
 ) implements DomainEvent {
+
+    /** Compact constructor: garante schemaVersion=1 para payloads antigos (backward compat). */
+    public OrderPartiallyFilledEvent {
+        if (schemaVersion == 0) schemaVersion = 1;
+    }
 
     /** Factory method com geração automática de eventId e occurredOn. */
     public static OrderPartiallyFilledEvent of(UUID correlationId, UUID orderId,
@@ -54,7 +62,8 @@ public record OrderPartiallyFilledEvent(
                 orderId,
                 matchId,
                 filledAmount,
-                remainingAmount
+                remainingAmount,
+                1
         );
     }
 }

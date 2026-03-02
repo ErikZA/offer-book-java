@@ -1,5 +1,7 @@
 package com.vibranium.contracts.events;
 
+import com.vibranium.contracts.VersionedContract;
+
 import java.time.Instant;
 import java.util.UUID;
 
@@ -28,7 +30,7 @@ import java.util.UUID;
  * <p>Isso garante que {@code Instant} seja serializado como epoch-millis (long),
  * compatível entre todos os serviços consumidores.</p>
  */
-public interface DomainEvent {
+public interface DomainEvent extends VersionedContract {
 
     /**
      * Identificador único deste evento. Usado para idempotência:

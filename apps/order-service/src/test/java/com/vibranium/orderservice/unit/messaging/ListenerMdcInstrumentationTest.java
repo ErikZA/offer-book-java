@@ -152,7 +152,8 @@ class ListenerMdcInstrumentationTest {
                 Instant.now(),
                 orderId,
                 FailureReason.INSUFFICIENT_FUNDS,
-                "Saldo insuficiente para reserva"
+                "Saldo insuficiente para reserva",
+                1
         );
 
         // Mock: idempotência passa (não lança DataIntegrityViolationException)
@@ -242,7 +243,7 @@ class ListenerMdcInstrumentationTest {
 
         FundsReservationFailedEvent event = new FundsReservationFailedEvent(
                 eventId, correlationId, orderId.toString(),
-                Instant.now(), orderId, FailureReason.INSUFFICIENT_FUNDS, "Duplicata"
+                Instant.now(), orderId, FailureReason.INSUFFICIENT_FUNDS, "Duplicata", 1
         );
 
         // Mock: simula duplicata — lança DataIntegrityViolationException

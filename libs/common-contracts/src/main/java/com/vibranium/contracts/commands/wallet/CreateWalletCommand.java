@@ -21,6 +21,15 @@ import java.util.UUID;
 public record CreateWalletCommand(
 
         @NotNull UUID correlationId,
-        @NotNull UUID userId
+        @NotNull UUID userId,
 
-) implements Command {}
+        // Versionamento do contrato — permite deploy independente entre producer e consumer.
+        int schemaVersion
+
+) implements Command {
+
+    /** Compact constructor: garante schemaVersion=1 para payloads antigos (backward compat). */
+    public CreateWalletCommand {
+        if (schemaVersion == 0) schemaVersion = 1;
+    }
+}

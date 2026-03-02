@@ -234,7 +234,7 @@ class OrderIdempotencyIntegrationTest extends AbstractIntegrationTest {
                 walletId.toString(),
                 java.time.Instant.now(),
                 pendingOrder.getId(), walletId,
-                AssetType.BRL, new BigDecimal("100.00")
+                AssetType.BRL, new BigDecimal("100.00"), 1
         );
     }
 
@@ -245,7 +245,8 @@ class OrderIdempotencyIntegrationTest extends AbstractIntegrationTest {
                 java.time.Instant.now(),
                 pendingOrder.getId(),
                 FailureReason.INSUFFICIENT_FUNDS,
-                "Saldo insuficiente para reserva"
+                "Saldo insuficiente para reserva",
+                1
         );
     }
 

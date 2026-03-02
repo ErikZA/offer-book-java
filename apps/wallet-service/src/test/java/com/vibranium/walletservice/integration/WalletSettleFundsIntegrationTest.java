@@ -86,7 +86,7 @@ class WalletSettleFundsIntegrationTest extends AbstractIntegrationTest {
                 buyerWallet.getId(),
                 sellerWallet.getId(),
                 new BigDecimal("20.00"), // matchPrice
-                new BigDecimal("10")     // matchAmount (VIB)
+                new BigDecimal("10"), 1  // matchAmount (VIB)
         );
 
         sendCommand(command, UUID.randomUUID().toString());
@@ -119,7 +119,7 @@ class WalletSettleFundsIntegrationTest extends AbstractIntegrationTest {
         SettleFundsCommand command = new SettleFundsCommand(
                 UUID.randomUUID(), matchId, buyOrderId, sellOrderId,
                 buyerWallet.getId(), sellerWallet.getId(),
-                new BigDecimal("20.00"), new BigDecimal("10")
+                new BigDecimal("20.00"), new BigDecimal("10"), 1
         );
 
         sendCommand(command, UUID.randomUUID().toString());
@@ -146,7 +146,7 @@ class WalletSettleFundsIntegrationTest extends AbstractIntegrationTest {
                 UUID.randomUUID(), UUID.randomUUID(), buyOrderId, sellOrderId,
                 UUID.randomUUID(), // walletId inexistente
                 sellerWallet.getId(),
-                new BigDecimal("20.00"), new BigDecimal("10")
+                new BigDecimal("20.00"), new BigDecimal("10"), 1
         );
 
         sendCommand(command, UUID.randomUUID().toString());
@@ -173,7 +173,7 @@ class WalletSettleFundsIntegrationTest extends AbstractIntegrationTest {
         SettleFundsCommand command = new SettleFundsCommand(
                 UUID.randomUUID(), UUID.randomUUID(), buyOrderId, sellOrderId,
                 lowBuyerWallet.getId(), sellerWallet.getId(),
-                new BigDecimal("20.00"), new BigDecimal("10") // total = R$200
+                new BigDecimal("20.00"), new BigDecimal("10"), 1 // total = R$200
         );
 
         sendCommand(command, UUID.randomUUID().toString());

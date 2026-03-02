@@ -44,9 +44,21 @@ public record OrderReceivedEvent(
         UUID walletId,
         OrderType orderType,
         BigDecimal price,
-        BigDecimal amount
+        BigDecimal amount,
+
+        // Versionamento do contrato — permite deploy independente entre producer e consumer.
+        // Valor padrão 1 é aplicado pelo compact constructor quando ausente no JSON.
+        int schemaVersion
 
 ) implements DomainEvent {
+
+    /**
+     * Compact constructor: garante {@code schemaVersion=1} ao desserializar payloads
+     * antigos que não possuíam este campo (backward compatibility).
+     */
+    public OrderReceivedEvent {
+        if (schemaVersion == 0) schemaVersion = 1;
+    }
 
     /** Factory method com geração automática de eventId e occurredOn. */
     public static OrderReceivedEvent of(UUID correlationId, UUID orderId,
@@ -63,7 +75,8 @@ public record OrderReceivedEvent(
                 walletId,
                 orderType,
                 price,
-                amount
+                amount,
+                1
         );
     }
 }

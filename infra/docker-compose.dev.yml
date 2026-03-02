@@ -142,9 +142,9 @@ services:
         image: jaegertracing/all-in-one:1.58
         container_name: vibranium-jaeger-dev
         ports:
-            - '16686:16686'  # Jaeger UI (traces end-to-end visíveis aqui)
-            - '4317:4317'    # OTLP gRPC (alternativo ao HTTP)
-            - '4318:4318'    # OTLP HTTP (endpoint configurado nos serviços)
+            - '16686:16686' # Jaeger UI (traces end-to-end visíveis aqui)
+            - '4317:4317' # OTLP gRPC (alternativo ao HTTP)
+            - '4318:4318' # OTLP HTTP (endpoint configurado nos serviços)
         environment:
             # Habilita o OTLP receiver HTTP + gRPC no Jaeger
             COLLECTOR_OTLP_ENABLED: 'true'

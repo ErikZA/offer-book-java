@@ -39,9 +39,17 @@ public record FundsReservedEvent(
         UUID orderId,
         UUID walletId,
         AssetType asset,
-        BigDecimal reservedAmount
+        BigDecimal reservedAmount,
+
+        // Versionamento do contrato — permite deploy independente entre producer e consumer.
+        int schemaVersion
 
 ) implements DomainEvent {
+
+    /** Compact constructor: garante schemaVersion=1 para payloads antigos (backward compat). */
+    public FundsReservedEvent {
+        if (schemaVersion == 0) schemaVersion = 1;
+    }
 
     /** Factory method com geração automática de eventId e occurredOn. */
     public static FundsReservedEvent of(UUID correlationId, UUID orderId,
@@ -55,7 +63,8 @@ public record FundsReservedEvent(
                 orderId,
                 walletId,
                 asset,
-                reservedAmount
+                reservedAmount,
+                1
         );
     }
 }

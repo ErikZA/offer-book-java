@@ -77,7 +77,7 @@ class WalletReserveFundsIntegrationTest extends AbstractIntegrationTest {
                 UUID.randomUUID(),        // orderId
                 testWallet.getId(),       // walletId
                 AssetType.BRL,
-                new BigDecimal("200.00") // valor > disponível
+                new BigDecimal("200.00"), 1 // valor > disponível
         );
 
         sendCommand(command, UUID.randomUUID().toString());
@@ -112,7 +112,7 @@ class WalletReserveFundsIntegrationTest extends AbstractIntegrationTest {
                 orderId,
                 testWallet.getId(),
                 AssetType.BRL,
-                new BigDecimal("60.00")
+                new BigDecimal("60.00"), 1
         );
 
         sendCommand(command, UUID.randomUUID().toString());
@@ -147,7 +147,7 @@ class WalletReserveFundsIntegrationTest extends AbstractIntegrationTest {
                 UUID.randomUUID(),
                 testWallet.getId(),
                 AssetType.VIBRANIUM,
-                new BigDecimal("20")
+                new BigDecimal("20"), 1
         );
 
         sendCommand(command, UUID.randomUUID().toString());
@@ -190,7 +190,7 @@ class WalletReserveFundsIntegrationTest extends AbstractIntegrationTest {
                             UUID.randomUUID(),
                             testWallet.getId(),
                             AssetType.BRL,
-                            new BigDecimal("80.00")
+                            new BigDecimal("80.00"), 1
                     );
                     sendCommand(command, UUID.randomUUID().toString());
                 } catch (Exception e) {
@@ -252,7 +252,7 @@ class WalletReserveFundsIntegrationTest extends AbstractIntegrationTest {
                     ReserveFundsCommand command = new ReserveFundsCommand(
                             UUID.randomUUID(), UUID.randomUUID(),
                             testWallet.getId(), AssetType.BRL,
-                            new BigDecimal("15.00")
+                            new BigDecimal("15.00"), 1
                     );
                     sendCommand(command, UUID.randomUUID().toString());
                 } catch (Exception ignored) {

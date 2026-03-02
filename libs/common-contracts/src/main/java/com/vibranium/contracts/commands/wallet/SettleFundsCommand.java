@@ -43,6 +43,15 @@ public record SettleFundsCommand(
 
         @NotNull
         @DecimalMin(value = "0.0", inclusive = false, message = "Match amount must be positive")
-        BigDecimal matchAmount
+        BigDecimal matchAmount,
 
-) implements Command {}
+        // Versionamento do contrato — permite deploy independente entre producer e consumer.
+        int schemaVersion
+
+) implements Command {
+
+    /** Compact constructor: garante schemaVersion=1 para payloads antigos (backward compat). */
+    public SettleFundsCommand {
+        if (schemaVersion == 0) schemaVersion = 1;
+    }
+}

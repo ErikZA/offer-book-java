@@ -48,14 +48,14 @@ class CommandValidationTest {
         @Test
         @DisplayName("válido: todos os campos preenchidos")
         void valid_allFieldsPresent() {
-            var cmd = new CreateWalletCommand(UUID.randomUUID(), UUID.randomUUID());
+            var cmd = new CreateWalletCommand(UUID.randomUUID(), UUID.randomUUID(), 1);
             assertThat(validator.validate(cmd)).isEmpty();
         }
 
         @Test
         @DisplayName("inválido: correlationId nulo")
         void invalid_nullCorrelationId() {
-            var cmd = new CreateWalletCommand(null, UUID.randomUUID());
+            var cmd = new CreateWalletCommand(null, UUID.randomUUID(), 1);
             Set<ConstraintViolation<CreateWalletCommand>> violations = validator.validate(cmd);
             assertThat(violations).isNotEmpty();
             assertThat(violations).anyMatch(v -> v.getPropertyPath().toString().equals("correlationId"));
@@ -64,7 +64,7 @@ class CommandValidationTest {
         @Test
         @DisplayName("inválido: userId nulo")
         void invalid_nullUserId() {
-            var cmd = new CreateWalletCommand(UUID.randomUUID(), null);
+            var cmd = new CreateWalletCommand(UUID.randomUUID(), null, 1);
             Set<ConstraintViolation<CreateWalletCommand>> violations = validator.validate(cmd);
             assertThat(violations).isNotEmpty();
             assertThat(violations).anyMatch(v -> v.getPropertyPath().toString().equals("userId"));
@@ -85,14 +85,14 @@ class CommandValidationTest {
         @Test
         @DisplayName("válido: todos os campos corretos")
         void valid() {
-            var cmd = new ReserveFundsCommand(cid, oid, wid, AssetType.BRL, new BigDecimal("100.00"));
+            var cmd = new ReserveFundsCommand(cid, oid, wid, AssetType.BRL, new BigDecimal("100.00"), 1);
             assertThat(validator.validate(cmd)).isEmpty();
         }
 
         @Test
         @DisplayName("inválido: amount zero deve falhar @DecimalMin(exclusive)")
         void invalid_zeroAmount() {
-            var cmd = new ReserveFundsCommand(cid, oid, wid, AssetType.BRL, BigDecimal.ZERO);
+            var cmd = new ReserveFundsCommand(cid, oid, wid, AssetType.BRL, BigDecimal.ZERO, 1);
             assertThat(validator.validate(cmd))
                 .anyMatch(v -> v.getPropertyPath().toString().equals("amount"));
         }
@@ -100,7 +100,7 @@ class CommandValidationTest {
         @Test
         @DisplayName("inválido: amount negativo deve falhar @DecimalMin")
         void invalid_negativeAmount() {
-            var cmd = new ReserveFundsCommand(cid, oid, wid, AssetType.VIBRANIUM, new BigDecimal("-1.00"));
+            var cmd = new ReserveFundsCommand(cid, oid, wid, AssetType.VIBRANIUM, new BigDecimal("-1.00"), 1);
             assertThat(validator.validate(cmd))
                 .anyMatch(v -> v.getPropertyPath().toString().equals("amount"));
         }
@@ -108,7 +108,7 @@ class CommandValidationTest {
         @Test
         @DisplayName("inválido: asset nulo")
         void invalid_nullAsset() {
-            var cmd = new ReserveFundsCommand(cid, oid, wid, null, new BigDecimal("50.00"));
+            var cmd = new ReserveFundsCommand(cid, oid, wid, null, new BigDecimal("50.00"), 1);
             assertThat(validator.validate(cmd))
                 .anyMatch(v -> v.getPropertyPath().toString().equals("asset"));
         }
@@ -116,7 +116,7 @@ class CommandValidationTest {
         @Test
         @DisplayName("inválido: walletId nulo")
         void invalid_nullWalletId() {
-            var cmd = new ReserveFundsCommand(cid, oid, null, AssetType.BRL, new BigDecimal("50.00"));
+            var cmd = new ReserveFundsCommand(cid, oid, null, AssetType.BRL, new BigDecimal("50.00"), 1);
             assertThat(validator.validate(cmd))
                 .anyMatch(v -> v.getPropertyPath().toString().equals("walletId"));
         }
@@ -140,7 +140,7 @@ class CommandValidationTest {
         @DisplayName("válido: todos os campos corretos")
         void valid() {
             var cmd = new SettleFundsCommand(cid, mid, boid, soid, bwid, swid,
-                    new BigDecimal("150.00"), new BigDecimal("10.00"));
+                    new BigDecimal("150.00"), new BigDecimal("10.00"), 1);
             assertThat(validator.validate(cmd)).isEmpty();
         }
 
@@ -148,7 +148,7 @@ class CommandValidationTest {
         @DisplayName("inválido: matchPrice zero deve falhar")
         void invalid_zeroMatchPrice() {
             var cmd = new SettleFundsCommand(cid, mid, boid, soid, bwid, swid,
-                    BigDecimal.ZERO, new BigDecimal("10.00"));
+                    BigDecimal.ZERO, new BigDecimal("10.00"), 1);
             assertThat(validator.validate(cmd))
                 .anyMatch(v -> v.getPropertyPath().toString().equals("matchPrice"));
         }
@@ -157,7 +157,7 @@ class CommandValidationTest {
         @DisplayName("inválido: matchAmount negativo deve falhar")
         void invalid_negativeMatchAmount() {
             var cmd = new SettleFundsCommand(cid, mid, boid, soid, bwid, swid,
-                    new BigDecimal("150.00"), new BigDecimal("-5.00"));
+                    new BigDecimal("150.00"), new BigDecimal("-5.00"), 1);
             assertThat(validator.validate(cmd))
                 .anyMatch(v -> v.getPropertyPath().toString().equals("matchAmount"));
         }
@@ -166,7 +166,7 @@ class CommandValidationTest {
         @DisplayName("inválido: múltiplos campos nulos devem gerar múltiplas violações")
         void invalid_multipleNulls() {
             var cmd = new SettleFundsCommand(null, null, boid, soid, bwid, swid,
-                    new BigDecimal("150.00"), new BigDecimal("10.00"));
+                    new BigDecimal("150.00"), new BigDecimal("10.00"), 1);
             assertThat(validator.validate(cmd)).hasSizeGreaterThanOrEqualTo(2);
         }
     }
@@ -187,7 +187,7 @@ class CommandValidationTest {
         @DisplayName("válido: BUY com price e amount positivos")
         void valid_buy() {
             var cmd = new CreateOrderCommand(cid, oid, uid, wid, OrderType.BUY,
-                    new BigDecimal("150.00"), new BigDecimal("5.00"));
+                    new BigDecimal("150.00"), new BigDecimal("5.00"), 1);
             assertThat(validator.validate(cmd)).isEmpty();
         }
 
@@ -195,7 +195,7 @@ class CommandValidationTest {
         @DisplayName("válido: SELL com price e amount positivos")
         void valid_sell() {
             var cmd = new CreateOrderCommand(cid, oid, uid, wid, OrderType.SELL,
-                    new BigDecimal("160.00"), new BigDecimal("2.50"));
+                    new BigDecimal("160.00"), new BigDecimal("2.50"), 1);
             assertThat(validator.validate(cmd)).isEmpty();
         }
 
@@ -203,7 +203,7 @@ class CommandValidationTest {
         @DisplayName("inválido: price zero deve falhar")
         void invalid_zeroPrice() {
             var cmd = new CreateOrderCommand(cid, oid, uid, wid, OrderType.BUY,
-                    BigDecimal.ZERO, new BigDecimal("5.00"));
+                    BigDecimal.ZERO, new BigDecimal("5.00"), 1);
             assertThat(validator.validate(cmd))
                 .anyMatch(v -> v.getPropertyPath().toString().equals("price"));
         }
@@ -212,7 +212,7 @@ class CommandValidationTest {
         @DisplayName("inválido: amount negativo deve falhar")
         void invalid_negativeAmount() {
             var cmd = new CreateOrderCommand(cid, oid, uid, wid, OrderType.SELL,
-                    new BigDecimal("100.00"), new BigDecimal("-1.00"));
+                    new BigDecimal("100.00"), new BigDecimal("-1.00"), 1);
             assertThat(validator.validate(cmd))
                 .anyMatch(v -> v.getPropertyPath().toString().equals("amount"));
         }
@@ -221,7 +221,7 @@ class CommandValidationTest {
         @DisplayName("inválido: orderType nulo deve falhar")
         void invalid_nullOrderType() {
             var cmd = new CreateOrderCommand(cid, oid, uid, wid, null,
-                    new BigDecimal("100.00"), new BigDecimal("1.00"));
+                    new BigDecimal("100.00"), new BigDecimal("1.00"), 1);
             assertThat(validator.validate(cmd))
                 .anyMatch(v -> v.getPropertyPath().toString().equals("orderType"));
         }

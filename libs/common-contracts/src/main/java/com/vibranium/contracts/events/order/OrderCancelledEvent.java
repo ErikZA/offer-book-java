@@ -36,9 +36,17 @@ public record OrderCancelledEvent(
 
         UUID orderId,
         FailureReason reason,
-        String detail
+        String detail,
+
+        // Versionamento do contrato — permite deploy independente entre producer e consumer.
+        int schemaVersion
 
 ) implements DomainEvent {
+
+    /** Compact constructor: garante schemaVersion=1 para payloads antigos (backward compat). */
+    public OrderCancelledEvent {
+        if (schemaVersion == 0) schemaVersion = 1;
+    }
 
     /** Factory method com geração automática de eventId e occurredOn. */
     public static OrderCancelledEvent of(UUID correlationId, UUID orderId,
@@ -50,7 +58,8 @@ public record OrderCancelledEvent(
                 Instant.now(),
                 orderId,
                 reason,
-                detail
+                detail,
+                1
         );
     }
 }

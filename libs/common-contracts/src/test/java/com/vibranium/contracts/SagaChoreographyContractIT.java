@@ -61,7 +61,7 @@ class SagaChoreographyContractIT {
 
             CreateOrderCommand cmd = new CreateOrderCommand(
                     correlationId, orderId, userId, walletId,
-                    OrderType.BUY, price, amount);
+                    OrderType.BUY, price, amount, 1);
 
             assertThat(cmd.correlationId()).isEqualTo(correlationId);
 
@@ -79,7 +79,8 @@ class SagaChoreographyContractIT {
                     orderReceived.orderId(),
                     orderReceived.walletId(),
                     AssetType.BRL, // BUY → bloqueia BRL
-                    orderReceived.price().multiply(orderReceived.amount())
+                    orderReceived.price().multiply(orderReceived.amount()),
+                    1
             );
 
             assertThat(reserveCmd.correlationId()).isEqualTo(correlationId);
@@ -128,7 +129,8 @@ class SagaChoreographyContractIT {
                     matchEvent.buyerWalletId(),
                     matchEvent.sellerWalletId(),
                     matchEvent.matchPrice(),
-                    matchEvent.matchAmount());
+                    matchEvent.matchAmount(),
+                    1);
 
             assertThat(settleCmd.correlationId()).isEqualTo(correlationId);
             assertThat(settleCmd.matchId()).isEqualTo(matchEvent.matchId());
@@ -184,7 +186,7 @@ class SagaChoreographyContractIT {
             // Comando original
             CreateOrderCommand cmd = new CreateOrderCommand(
                     correlationId, orderId, UUID.randomUUID(), walletId,
-                    OrderType.BUY, new BigDecimal("200.00"), new BigDecimal("10.00"));
+                    OrderType.BUY, new BigDecimal("200.00"), new BigDecimal("10.00"), 1);
 
             // Wallet Service detecta saldo insuficiente
             FundsReservationFailedEvent failedEvent = FundsReservationFailedEvent.of(

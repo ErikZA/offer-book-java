@@ -166,11 +166,11 @@ class MatchExecutedEventTest {
             MatchExecutedEvent e1 = new MatchExecutedEvent(eid, CORRELATION,
                     mid.toString(), java.time.Instant.EPOCH,
                     mid, BUY_ORDER_ID, SELL_ORDER_ID, BUYER_USER, SELLER_USER,
-                    BUYER_WALLET, SELLER_WALLET, PRICE, AMOUNT);
+                    BUYER_WALLET, SELLER_WALLET, PRICE, AMOUNT, 1);
             MatchExecutedEvent e2 = new MatchExecutedEvent(eid, CORRELATION,
                     mid.toString(), java.time.Instant.EPOCH,
                     mid, BUY_ORDER_ID, SELL_ORDER_ID, BUYER_USER, SELLER_USER,
-                    BUYER_WALLET, SELLER_WALLET, PRICE, AMOUNT);
+                    BUYER_WALLET, SELLER_WALLET, PRICE, AMOUNT, 1);
 
             assertThat(e1).isEqualTo(e2);
             assertThat(e1.hashCode()).isEqualTo(e2.hashCode());
