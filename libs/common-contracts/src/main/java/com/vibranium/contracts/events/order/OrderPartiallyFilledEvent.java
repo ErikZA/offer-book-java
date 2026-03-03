@@ -1,6 +1,7 @@
 package com.vibranium.contracts.events.order;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vibranium.contracts.events.DomainEvent;
 
 import java.math.BigDecimal;
@@ -25,6 +26,7 @@ import java.util.UUID;
  * @param filledAmount    Quantidade executada neste match.
  * @param remainingAmount Quantidade restante no livro de ofertas.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record OrderPartiallyFilledEvent(
 
         UUID eventId,

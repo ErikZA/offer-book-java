@@ -1,5 +1,6 @@
 package com.vibranium.contracts.commands.order;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vibranium.contracts.commands.Command;
 import com.vibranium.contracts.enums.OrderType;
 import jakarta.validation.constraints.DecimalMin;
@@ -24,6 +25,7 @@ import java.util.UUID;
  * @param price          Preço limite em BRL desejado pelo usuário.
  * @param amount         Quantidade de VIBRANIUM desejada.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record CreateOrderCommand(
 
         @NotNull UUID correlationId,

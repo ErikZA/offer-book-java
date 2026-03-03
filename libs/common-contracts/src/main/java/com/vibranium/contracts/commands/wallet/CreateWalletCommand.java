@@ -1,5 +1,6 @@
 package com.vibranium.contracts.commands.wallet;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vibranium.contracts.commands.Command;
 import com.vibranium.contracts.enums.AssetType;
 import jakarta.validation.constraints.DecimalMin;
@@ -18,6 +19,7 @@ import java.util.UUID;
  * @param correlationId ID de correlação da Saga de onboarding.
  * @param userId        UUID do usuário no Keycloak — chave da relação 1:1.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record CreateWalletCommand(
 
         @NotNull UUID correlationId,

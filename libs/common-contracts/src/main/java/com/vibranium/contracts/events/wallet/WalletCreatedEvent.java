@@ -1,6 +1,7 @@
 package com.vibranium.contracts.events.wallet;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vibranium.contracts.events.DomainEvent;
 
 import java.time.Instant;
@@ -22,6 +23,7 @@ import java.util.UUID;
  * @param walletId      UUID da nova carteira.
  * @param userId        UUID do usuário dono da carteira (vem do Keycloak).
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record WalletCreatedEvent(
 
         UUID eventId,

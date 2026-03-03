@@ -1,5 +1,6 @@
 package com.vibranium.contracts.commands.wallet;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vibranium.contracts.commands.Command;
 import com.vibranium.contracts.enums.AssetType;
 import jakarta.validation.constraints.DecimalMin;
@@ -24,6 +25,7 @@ import java.util.UUID;
  * @param asset         Tipo do ativo a ser bloqueado (BRL ou VIBRANIUM).
  * @param amount        Valor a ser movido de "available" para "locked".
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record ReserveFundsCommand(
 
         @NotNull UUID correlationId,

@@ -1,6 +1,7 @@
 package com.vibranium.contracts.events.wallet;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vibranium.contracts.enums.AssetType;
 import com.vibranium.contracts.events.DomainEvent;
 
@@ -32,6 +33,7 @@ import java.util.UUID;
  * @param releasedAmount Valor efetivamente liberado de "locked" para "available".
  * @param schemaVersion  Versão do contrato para compatibilidade consumer/producer.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record FundsReleasedEvent(
 
         UUID eventId,

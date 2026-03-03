@@ -1,6 +1,7 @@
 package com.vibranium.contracts.events.order;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vibranium.contracts.enums.FailureReason;
 import com.vibranium.contracts.events.DomainEvent;
 
@@ -25,6 +26,7 @@ import java.util.UUID;
  * @param reason        Razão padronizada do cancelamento.
  * @param detail        Descrição técnica do motivo (para auditoria).
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record OrderCancelledEvent(
 
         UUID eventId,

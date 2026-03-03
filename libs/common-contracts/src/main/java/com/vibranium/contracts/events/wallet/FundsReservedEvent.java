@@ -1,6 +1,7 @@
 package com.vibranium.contracts.events.wallet;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vibranium.contracts.enums.AssetType;
 import com.vibranium.contracts.events.DomainEvent;
 
@@ -27,6 +28,7 @@ import java.util.UUID;
  * @param asset          Ativo bloqueado (BRL para BUY, VIBRANIUM para SELL).
  * @param reservedAmount Valor efetivamente bloqueado.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record FundsReservedEvent(
 
         UUID eventId,

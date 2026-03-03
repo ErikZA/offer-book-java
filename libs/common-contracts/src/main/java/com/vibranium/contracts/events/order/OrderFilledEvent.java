@@ -1,6 +1,7 @@
 package com.vibranium.contracts.events.order;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vibranium.contracts.events.DomainEvent;
 
 import java.math.BigDecimal;
@@ -23,6 +24,7 @@ import java.util.UUID;
  * @param totalFilled   Quantidade total de VIBRANIUM executada.
  * @param averagePrice  Preço médio de execução (para ordens com matches parciais).
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record OrderFilledEvent(
 
         UUID eventId,

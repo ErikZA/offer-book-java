@@ -1,6 +1,7 @@
 package com.vibranium.contracts.events.order;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vibranium.contracts.enums.OrderType;
 import com.vibranium.contracts.events.DomainEvent;
 
@@ -25,6 +26,7 @@ import java.util.UUID;
  * @param price         Preço limite da ordem no livro.
  * @param remainingAmount Quantidade ainda não executada.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record OrderAddedToBookEvent(
 
         UUID eventId,

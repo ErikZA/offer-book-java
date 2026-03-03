@@ -1,6 +1,7 @@
 package com.vibranium.contracts.events.order;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vibranium.contracts.events.DomainEvent;
 
 import java.math.BigDecimal;
@@ -38,6 +39,7 @@ import java.util.UUID;
  * @param matchPrice     Preço em BRL pelo qual o negócio fechou.
  * @param matchAmount    Quantidade de VIBRANIUM transacionada.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record MatchExecutedEvent(
 
         UUID eventId,

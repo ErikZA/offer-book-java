@@ -1,6 +1,7 @@
 package com.vibranium.contracts.events.wallet;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vibranium.contracts.enums.FailureReason;
 import com.vibranium.contracts.events.DomainEvent;
 
@@ -26,6 +27,7 @@ import java.util.UUID;
  * @param reason        Razão padronizada da falha (enum FailureReason).
  * @param detail        Mensagem técnica adicional para logs/auditoria.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record FundsReservationFailedEvent(
 
         UUID eventId,

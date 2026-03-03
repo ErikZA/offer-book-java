@@ -14,7 +14,6 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Testes de compatibilidade de contrato para o campo {@code schemaVersion}.
@@ -160,17 +159,23 @@ class ContractSchemaVersionTest {
         }
 
         /**
-         * Demonstra o PROBLEMA: mapper padrão (strictMapper) com
-         * {@code FAIL_ON_UNKNOWN_PROPERTIES=true} lança
-         * {@link com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException}
-         * ao encontrar um campo desconhecido.
+         * Confirma que {@code @JsonIgnoreProperties(ignoreUnknown = true)} aplicada ao
+         * record tem <strong>precedência</strong> sobre {@code FAIL_ON_UNKNOWN_PROPERTIES=true}
+         * configurado no mapper (AT-5.2.1).
          *
-         * <p>Este teste valida a motivação do requisito — mostra por que a
-         * configuração é obrigatória para deploy independente de microsserviços.</p>
+         * <p>A anotação em nível de tipo sobrepõe a configuração global do
+         * {@link ObjectMapper}: mesmo um {@code strictMapper} com
+         * {@code FAIL_ON_UNKNOWN_PROPERTIES=true} não lança exceção ao desserializar
+         * um record anotado com {@code @JsonIgnoreProperties(ignoreUnknown = true)}.</p>
+         *
+         * <p><em>Comportamento anterior à AT-5.2.1:</em> sem a anotação, este cenário
+         * lançava {@link com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException}
+         * — essa era a motivação do requisito. Após a anotação, o record é auto-protegido
+         * independentemente da configuração do consumer.</p>
          */
         @Test
-        @DisplayName("Mapper padrão (sem config): JSON com campo desconhecido lança exceção — motivação do requisito")
-        void givenJsonWithUnknownField_withStrictMapper_thenThrowsUnrecognizedProperty() {
+        @DisplayName("@JsonIgnoreProperties no record sobrepõe FAIL_ON_UNKNOWN_PROPERTIES=true do mapper (AT-5.2.1)")
+        void givenJsonWithUnknownField_withStrictMapper_thenAnnotationOverridesMapperConfig() {
 
             String jsonFromFutureProducer = """
                     {
@@ -184,13 +189,13 @@ class ContractSchemaVersionTest {
                     }
                     """;
 
-            // strictMapper (FAIL_ON_UNKNOWN_PROPERTIES=true) DEVE lançar exceção
-            assertThatThrownBy(() ->
+            // AT-5.2.1: @JsonIgnoreProperties(ignoreUnknown = true) no record sobrepõe
+            // FAIL_ON_UNKNOWN_PROPERTIES=true do mapper — o record é auto-protegido.
+            assertThatCode(() ->
                     strictMapper.readValue(jsonFromFutureProducer, WalletCreatedEvent.class))
-                    .as("Mapper não configurado deve falhar em campo desconhecido — "
-                        + "demonstra a necessidade da configuração")
-                    .isInstanceOf(
-                            com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException.class);
+                    .as("@JsonIgnoreProperties(ignoreUnknown=true) no record sobrepõe a config "
+                        + "FAIL_ON_UNKNOWN_PROPERTIES=true do mapper")
+                    .doesNotThrowAnyException();
         }
 
         /**
@@ -264,6 +269,64 @@ class ContractSchemaVersionTest {
             assertThat(json)
                     .as("payload JSON deve incluir schemaVersion para forward compatibility")
                     .contains("\"schemaVersion\"");
+        }
+    }
+
+    // =========================================================================
+    // Cenário 4 — @JsonIgnoreProperties(ignoreUnknown = true) no record (AT-5.2.1)
+    // Forward compat via anotação no record, sem depender de config global do mapper
+    // =========================================================================
+
+    @Nested
+    @DisplayName("Cenário 4 — @JsonIgnoreProperties(ignoreUnknown=true) no record (AT-5.2.1)")
+    class ForwardCompatAnnotation {
+
+        /**
+         * Valida que um record anotado com {@code @JsonIgnoreProperties(ignoreUnknown = true)}
+         * tolera campos desconhecidos mesmo com um {@link ObjectMapper} <em>padrão</em>,
+         * sem nenhuma configuração global de {@code FAIL_ON_UNKNOWN_PROPERTIES}.
+         *
+         * <p>Por padrão, o Jackson tem {@code FAIL_ON_UNKNOWN_PROPERTIES = true} em nível
+         * global. Sem a anotação no record, qualquer campo extra no JSON lança
+         * {@link com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException}.
+         * A anotação {@code @JsonIgnoreProperties(ignoreUnknown = true)} aplicada
+         * diretamente ao record sobrescreve o comportamento do mapper — garantindo
+         * forward compatibility <strong>independente</strong> da configuração do consumer.</p>
+         *
+         * <p><strong>FASE RED:</strong> falha com {@code UnrecognizedPropertyException}
+         * enquanto a anotação não estiver presente nos records.</p>
+         * <p><strong>FASE GREEN:</strong> passa após adicionar
+         * {@code @JsonIgnoreProperties(ignoreUnknown = true)} a todos os records.</p>
+         */
+        @Test
+        @DisplayName("ObjectMapper padrão + campo desconhecido → não lança exceção (AT-5.2.1)")
+        void testForwardCompat_withDefaultObjectMapper_unknownFieldsIgnored() {
+
+            // ObjectMapper padrão sem configurar FAIL_ON_UNKNOWN_PROPERTIES.
+            // O padrão Jackson é FAIL = true; a anotação no record deve sobrescrever.
+            ObjectMapper defaultMapper = new ObjectMapper()
+                    .registerModule(new JavaTimeModule());
+
+            String jsonWithExtraField = """
+                    {
+                      "eventId": "11111111-1111-1111-1111-111111111111",
+                      "correlationId": "22222222-2222-2222-2222-222222222222",
+                      "aggregateId": "55555555-5555-5555-5555-555555555555",
+                      "occurredOn": 1000000000000,
+                      "walletId": "55555555-5555-5555-5555-555555555555",
+                      "userId": "44444444-4444-4444-4444-444444444444",
+                      "schemaVersion": 1,
+                      "campoFuturoDesconhecido": "deve ser ignorado pelo record anotado"
+                    }
+                    """;
+
+            // VERDE após adicionar @JsonIgnoreProperties(ignoreUnknown = true) ao record.
+            // VERMELHO antes: lança UnrecognizedPropertyException pois FAIL = true por padrão.
+            assertThatCode(() ->
+                    defaultMapper.readValue(jsonWithExtraField, WalletCreatedEvent.class))
+                    .as("@JsonIgnoreProperties(ignoreUnknown=true) no record deve silenciar "
+                        + "campos extras mesmo com ObjectMapper padrão (sem config global)")
+                    .doesNotThrowAnyException();
         }
     }
 }

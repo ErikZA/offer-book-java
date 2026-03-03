@@ -1,6 +1,7 @@
 package com.vibranium.contracts.events.wallet;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vibranium.contracts.enums.FailureReason;
 import com.vibranium.contracts.events.DomainEvent;
 
@@ -30,6 +31,7 @@ import java.util.UUID;
  * @param detail        Mensagem técnica adicional para logs/auditoria.
  * @param schemaVersion Versão do contrato para compatibilidade consumer/producer.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record FundsReleaseFailedEvent(
 
         UUID eventId,

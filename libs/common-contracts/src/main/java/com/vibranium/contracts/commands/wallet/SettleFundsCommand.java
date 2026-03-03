@@ -1,5 +1,6 @@
 package com.vibranium.contracts.commands.wallet;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vibranium.contracts.commands.Command;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotNull;
@@ -28,6 +29,7 @@ import java.util.UUID;
  * @param matchPrice      Preço em BRL pelo qual o match foi executado.
  * @param matchAmount     Quantidade de VIBRANIUM transacionada.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record SettleFundsCommand(
 
         @NotNull UUID correlationId,

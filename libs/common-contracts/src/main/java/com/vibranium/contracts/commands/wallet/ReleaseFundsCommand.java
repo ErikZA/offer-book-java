@@ -1,5 +1,6 @@
 package com.vibranium.contracts.commands.wallet;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vibranium.contracts.commands.Command;
 import com.vibranium.contracts.enums.AssetType;
 import jakarta.validation.constraints.DecimalMin;
@@ -29,6 +30,7 @@ import java.util.UUID;
  * @param amount        Valor a ser movido de "locked" de volta para "available".
  * @param schemaVersion Versão do contrato para compatibilidade consumer/producer.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record ReleaseFundsCommand(
 
         @NotNull UUID correlationId,

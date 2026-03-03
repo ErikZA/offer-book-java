@@ -1,6 +1,7 @@
 package com.vibranium.contracts.events.order;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.vibranium.contracts.enums.OrderType;
 import com.vibranium.contracts.events.DomainEvent;
 
@@ -30,6 +31,7 @@ import java.util.UUID;
  * @param price         Preço limite em BRL.
  * @param amount        Quantidade de VIBRANIUM desejada.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record OrderReceivedEvent(
 
         UUID eventId,
