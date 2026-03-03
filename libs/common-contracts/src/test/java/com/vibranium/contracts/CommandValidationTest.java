@@ -2,6 +2,7 @@ package com.vibranium.contracts;
 
 import com.vibranium.contracts.commands.order.CreateOrderCommand;
 import com.vibranium.contracts.commands.wallet.CreateWalletCommand;
+import com.vibranium.contracts.commands.wallet.ReleaseFundsCommand;
 import com.vibranium.contracts.commands.wallet.ReserveFundsCommand;
 import com.vibranium.contracts.commands.wallet.SettleFundsCommand;
 import com.vibranium.contracts.enums.AssetType;
@@ -119,6 +120,73 @@ class CommandValidationTest {
             var cmd = new ReserveFundsCommand(cid, oid, null, AssetType.BRL, new BigDecimal("50.00"), 1);
             assertThat(validator.validate(cmd))
                 .anyMatch(v -> v.getPropertyPath().toString().equals("walletId"));
+        }
+    }
+
+    // =========================================================================
+    // ReleaseFundsCommand
+    // =========================================================================
+    @Nested
+    @DisplayName("ReleaseFundsCommand")
+    class ReleaseFundsCommandTests {
+
+        private final UUID cid = UUID.randomUUID();
+        private final UUID oid = UUID.randomUUID();
+        private final UUID wid = UUID.randomUUID();
+
+        @Test
+        @DisplayName("válido: todos os campos corretos")
+        void valid() {
+            var cmd = new ReleaseFundsCommand(cid, oid, wid, AssetType.BRL, new BigDecimal("100.00"), 1);
+            assertThat(validator.validate(cmd)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("inválido: correlationId nulo")
+        void invalid_nullCorrelationId() {
+            var cmd = new ReleaseFundsCommand(null, oid, wid, AssetType.BRL, new BigDecimal("50.00"), 1);
+            assertThat(validator.validate(cmd))
+                .anyMatch(v -> v.getPropertyPath().toString().equals("correlationId"));
+        }
+
+        @Test
+        @DisplayName("inválido: orderId nulo")
+        void invalid_nullOrderId() {
+            var cmd = new ReleaseFundsCommand(cid, null, wid, AssetType.BRL, new BigDecimal("50.00"), 1);
+            assertThat(validator.validate(cmd))
+                .anyMatch(v -> v.getPropertyPath().toString().equals("orderId"));
+        }
+
+        @Test
+        @DisplayName("inválido: walletId nulo")
+        void invalid_nullWalletId() {
+            var cmd = new ReleaseFundsCommand(cid, oid, null, AssetType.BRL, new BigDecimal("50.00"), 1);
+            assertThat(validator.validate(cmd))
+                .anyMatch(v -> v.getPropertyPath().toString().equals("walletId"));
+        }
+
+        @Test
+        @DisplayName("inválido: asset nulo")
+        void invalid_nullAsset() {
+            var cmd = new ReleaseFundsCommand(cid, oid, wid, null, new BigDecimal("50.00"), 1);
+            assertThat(validator.validate(cmd))
+                .anyMatch(v -> v.getPropertyPath().toString().equals("asset"));
+        }
+
+        @Test
+        @DisplayName("inválido: amount zero deve falhar @DecimalMin(exclusive)")
+        void invalid_zeroAmount() {
+            var cmd = new ReleaseFundsCommand(cid, oid, wid, AssetType.VIBRANIUM, BigDecimal.ZERO, 1);
+            assertThat(validator.validate(cmd))
+                .anyMatch(v -> v.getPropertyPath().toString().equals("amount"));
+        }
+
+        @Test
+        @DisplayName("inválido: amount negativo deve falhar @DecimalMin")
+        void invalid_negativeAmount() {
+            var cmd = new ReleaseFundsCommand(cid, oid, wid, AssetType.BRL, new BigDecimal("-1.00"), 1);
+            assertThat(validator.validate(cmd))
+                .anyMatch(v -> v.getPropertyPath().toString().equals("amount"));
         }
     }
 

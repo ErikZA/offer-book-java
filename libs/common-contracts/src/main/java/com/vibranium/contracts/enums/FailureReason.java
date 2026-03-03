@@ -14,6 +14,9 @@ public enum FailureReason {
     /** Transação de liquidação falhou por erro ACID no PostgreSQL. */
     SETTLEMENT_DB_ERROR,
 
+    /** Transação de liberação de fundos falhou por erro ACID no PostgreSQL. */
+    RELEASE_DB_ERROR,
+
     /** Tempo máximo de processamento da Saga excedido. */
     SAGA_TIMEOUT,
 

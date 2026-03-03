@@ -1,6 +1,7 @@
 package com.vibranium.contracts;
 
 import com.vibranium.contracts.commands.order.CreateOrderCommand;
+import com.vibranium.contracts.commands.wallet.ReleaseFundsCommand;
 import com.vibranium.contracts.commands.wallet.ReserveFundsCommand;
 import com.vibranium.contracts.commands.wallet.SettleFundsCommand;
 import com.vibranium.contracts.enums.AssetType;
@@ -267,6 +268,87 @@ class SagaChoreographyContractIT {
             // O consumidor usa o eventId para detectar e descartar duplicatas
             assertThat(delivery1.eventId()).isNotNull();
             assertThat(delivery2.eventId()).isNotNull();
+        }
+    }
+
+    // =========================================================================
+    // Cenário 5 — Compensação: Release de Fundos Bloqueados
+    // =========================================================================
+    @Nested
+    @DisplayName("Cenário 5: Compensação — release de fundos bloqueados após falha externa")
+    class ReleaseFundsCompensationPath {
+
+        @Test
+        @DisplayName("sagaCompensation_releaseFunds_shouldProduceCorrectEvent")
+        void sagaCompensation_releaseFunds_shouldProduceCorrectEvent() {
+            // Simula uma Saga que reservou fundos com sucesso mas depois precisou
+            // compensar (ex.: falha no motor de match ou cancelamento externo).
+            UUID correlationId = UUID.randomUUID();
+            UUID orderId = UUID.randomUUID();
+            UUID walletId = UUID.randomUUID();
+            BigDecimal reserved = new BigDecimal("500.00");
+
+            // --- Passo 1: Fundos foram reservados anteriormente ---
+            FundsReservedEvent fundsReserved = FundsReservedEvent.of(
+                    correlationId, orderId, walletId, AssetType.BRL, reserved);
+
+            assertThat(fundsReserved.correlationId()).isEqualTo(correlationId);
+            assertThat(fundsReserved.orderId()).isEqualTo(orderId);
+
+            // --- Passo 2: Saga emite ReleaseFundsCommand para compensar ---
+            ReleaseFundsCommand releaseCmd = new ReleaseFundsCommand(
+                    fundsReserved.correlationId(),
+                    fundsReserved.orderId(),
+                    fundsReserved.walletId(),
+                    fundsReserved.asset(),
+                    fundsReserved.reservedAmount(),
+                    1
+            );
+
+            // correlationId deve ser igual ao da reserva — mesma Saga
+            assertThat(releaseCmd.correlationId()).isEqualTo(correlationId);
+            assertThat(releaseCmd.orderId()).isEqualTo(orderId);
+            assertThat(releaseCmd.walletId()).isEqualTo(walletId);
+            assertThat(releaseCmd.asset()).isEqualTo(AssetType.BRL);
+            assertThat(releaseCmd.amount()).isEqualByComparingTo(reserved);
+            assertThat(releaseCmd.schemaVersion()).isEqualTo(1);
+
+            // --- Passo 3 (sucesso): Wallet Service emite FundsReleasedEvent ---
+            FundsReleasedEvent fundsReleased = FundsReleasedEvent.of(
+                    releaseCmd.correlationId(),
+                    releaseCmd.orderId(),
+                    releaseCmd.walletId(),
+                    releaseCmd.asset(),
+                    releaseCmd.amount()
+            );
+
+            assertThat(fundsReleased.correlationId()).isEqualTo(correlationId);
+            assertThat(fundsReleased.orderId()).isEqualTo(orderId);
+            assertThat(fundsReleased.walletId()).isEqualTo(walletId);
+            assertThat(fundsReleased.aggregateId()).isEqualTo(walletId.toString());
+            assertThat(fundsReleased.releasedAmount()).isEqualByComparingTo(reserved);
+            assertThat(fundsReleased.eventId()).isNotNull();
+            assertThat(fundsReleased.occurredOn()).isNotNull();
+        }
+
+        @Test
+        @DisplayName("sagaCompensation_releaseFundsFailed_shouldPreserveCorrelationId")
+        void sagaCompensation_releaseFundsFailed_shouldPreserveCorrelationId() {
+            // Simula o caminho de falha no release — o compensador não conseguiu liberar.
+            UUID correlationId = UUID.randomUUID();
+            UUID orderId = UUID.randomUUID();
+
+            FundsReleaseFailedEvent failed = FundsReleaseFailedEvent.of(
+                    correlationId, orderId, "wallet-comp-id",
+                    FailureReason.RELEASE_DB_ERROR,
+                    "Could not find locked balance record for orderId: " + orderId);
+
+            assertThat(failed.correlationId()).isEqualTo(correlationId);
+            assertThat(failed.orderId()).isEqualTo(orderId);
+            assertThat(failed.aggregateId()).isEqualTo("wallet-comp-id");
+            assertThat(failed.reason()).isEqualTo(FailureReason.RELEASE_DB_ERROR);
+            assertThat(failed.detail()).contains(orderId.toString());
+            assertThat(failed.eventId()).isNotNull();
         }
     }
 }

@@ -37,7 +37,8 @@ Em uma arquitetura de microsserviços orientada a eventos (EDA) com coreografia 
 2. Criação dos **testes primeiro** (Fase RED) — cobrindo validação, serialização round-trip JSON, unicidade de IDs e propagação de correlação na Saga
 3. Implementação dos contratos (Fase GREEN) até todos os testes passarem
 4. **AT-16.1 (Fase RED→GREEN)** — `ContractSchemaVersionTest` adicionado para cobrir backward/forward compatibility com `schemaVersion`
-5. Resultado atual: `Tests run: 55, Failures: 0, Errors: 0`
+5. **1.1.1 (Fase RED→GREEN)** — contratos compensatórios de release adicionados: `ReleaseFundsCommand`, `FundsReleasedEvent`, `FundsReleaseFailedEvent` + `RELEASE_DB_ERROR`
+6. Resultado atual: `Tests run: 63, Failures: 0, Errors: 0`
 
 ---
 
@@ -53,6 +54,7 @@ src/main/java/com/vibranium/contracts/
 │   ├── wallet/
 │   │   ├── CreateWalletCommand            ← Criar carteira zerada (onboarding)
 │   │   ├── ReserveFundsCommand            ← Bloquear BRL ou VIBRANIUM
+│   │   ├── ReleaseFundsCommand            ← Desbloquear BRL ou VIBRANIUM (compensação)
 │   │   └── SettleFundsCommand             ← Liquidar trade (pós-match)
 │   └── order/
 │       └── CreateOrderCommand             ← Criar intenção de compra/venda
@@ -63,6 +65,8 @@ src/main/java/com/vibranium/contracts/
 │   │   ├── WalletCreatedEvent             ← Carteira criada com sucesso
 │   │   ├── FundsReservedEvent             ← Saldo bloqueado ✅
 │   │   ├── FundsReservationFailedEvent    ← Saldo insuficiente (compensação) ❌
+│   │   ├── FundsReleasedEvent             ← Saldo desbloqueado com sucesso ✅
+│   │   ├── FundsReleaseFailedEvent        ← Falha ao desbloquear (incidente) ⚠️
 │   │   ├── FundsSettledEvent              ← Trade liquidado ✅
 │   │   └── FundsSettlementFailedEvent     ← Falha na liquidação (incidente) ⚠️
 │   └── order/
@@ -77,7 +81,9 @@ src/main/java/com/vibranium/contracts/
     ├── OrderType      ← BUY / SELL
     ├── AssetType      ← BRL / VIBRANIUM
     ├── OrderStatus    ← PENDING → OPEN → PARTIAL → FILLED / CANCELLED
-    └── FailureReason  ← Razões padronizadas de falha (Saga compensatória)
+    └── FailureReason  ← Razões padronizadas de falha (INSUFFICIENT_FUNDS, WALLET_NOT_FOUND,
+                         SETTLEMENT_DB_ERROR, RELEASE_DB_ERROR, SAGA_TIMEOUT, DUPLICATE_MESSAGE,
+                         INTERNAL_ERROR)
 ```
 
 ---
@@ -175,17 +181,17 @@ public void onOrderReceived(OrderReceivedEvent event) {
 ## Testes
 
 ```
-Tests run: 55, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 63, Failures: 0, Errors: 0, Skipped: 0
 ```
 
 | Classe de teste | Tipo | O que valida |
 |---|---|---|
-| `CommandValidationTest` | Unitário (JSR-380) | Constraints `@NotNull`, `@DecimalMin` sem Spring |
+| `CommandValidationTest` | Unitário (JSR-380) | Constraints `@NotNull`, `@DecimalMin` para todos os Commands (incl. `ReleaseFundsCommand`) |
 | `DomainEventContractTest` | Unitário | `eventId` único, `correlationId` presente, `occurredOn` recente |
 | `MatchExecutedEventTest` | Unitário | Evento crítico: integridade, imutabilidade, unicidade em 1000 instâncias |
-| `WalletEventsSerializationTest` | Round-trip JSON | BigDecimal com alta precisão, Instant, enums |
+| `WalletEventsSerializationTest` | Round-trip JSON | BigDecimal com alta precisão, Instant, enums (incl. `FundsReleasedEvent`, `FundsReleaseFailedEvent`) |
 | `OrderEventsSerializationTest` | Round-trip JSON | Todos os eventos de order sobrevivem ao ciclo serialização → bytes → deserialização |
-| `SagaChoreographyContractIT` | Integração | `correlationId` propagado do `CreateOrderCommand` até `OrderFilledEvent` e nos caminhos de compensação |
+| `SagaChoreographyContractIT` | Integração | `correlationId` propagado em 5 cenários: happy path, saldo insuficiente, falha de liquidação, idempotência e **compensação com release** |
 | `ContractSchemaVersionTest` | Unitário (AT-16.1) | backward compat (payload sem `schemaVersion` → default 1), forward compat (campo desconhecido ignorado), round-trip com `schemaVersion=1` |
 
 ---

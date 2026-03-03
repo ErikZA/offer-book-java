@@ -149,25 +149,57 @@ class WalletEventsSerializationTest {
     }
 
     // -------------------------------------------------------------------------
-    // FundsSettlementFailedEvent
+    // FundsReleasedEvent
     // -------------------------------------------------------------------------
     @Test
-    @DisplayName("FundsSettlementFailedEvent: round-trip preserva matchId e FailureReason")
-    void fundsSettlementFailedEvent_roundTrip() throws Exception {
+    @DisplayName("FundsReleasedEvent: round-trip preserva BigDecimal e AssetType enum")
+    void fundsReleasedEvent_roundTrip() throws Exception {
         UUID correlationId = UUID.randomUUID();
-        UUID matchId = UUID.randomUUID();
+        UUID orderId = UUID.randomUUID();
+        UUID walletId = UUID.randomUUID();
+        BigDecimal amount = new BigDecimal("987.6543");
 
-        FundsSettlementFailedEvent original = FundsSettlementFailedEvent.of(
-                correlationId, matchId, FailureReason.SETTLEMENT_DB_ERROR,
-                "PostgreSQL deadlock detected");
+        FundsReleasedEvent original = FundsReleasedEvent.of(
+                correlationId, orderId, walletId, AssetType.BRL, amount);
 
         String json = mapper.writeValueAsString(original);
-        FundsSettlementFailedEvent restored = mapper.readValue(
-                json, FundsSettlementFailedEvent.class);
+        FundsReleasedEvent restored = mapper.readValue(json, FundsReleasedEvent.class);
 
-        assertThat(restored.matchId()).isEqualTo(matchId);
-        assertThat(restored.reason()).isEqualTo(FailureReason.SETTLEMENT_DB_ERROR);
-        assertThat(restored.detail()).isEqualTo("PostgreSQL deadlock detected");
+        assertThat(restored.eventId()).isEqualTo(original.eventId());
+        assertThat(restored.correlationId()).isEqualTo(correlationId);
+        assertThat(restored.aggregateId()).isEqualTo(walletId.toString());
+        assertThat(restored.orderId()).isEqualTo(orderId);
+        assertThat(restored.walletId()).isEqualTo(walletId);
+        assertThat(restored.asset()).isEqualTo(AssetType.BRL);
+        assertThat(restored.releasedAmount()).isEqualByComparingTo(amount);
+        assertThat(restored.occurredOn()).isCloseTo(original.occurredOn(), within(1, ChronoUnit.MILLIS));
+        assertThat(restored.schemaVersion()).isEqualTo(1);
+    }
+
+    // -------------------------------------------------------------------------
+    // FundsReleaseFailedEvent
+    // -------------------------------------------------------------------------
+    @Test
+    @DisplayName("FundsReleaseFailedEvent: round-trip preserva orderId, FailureReason e detail")
+    void fundsReleaseFailedEvent_roundTrip() throws Exception {
+        UUID correlationId = UUID.randomUUID();
+        UUID orderId = UUID.randomUUID();
+        String detail = "Wallet lock record not found for orderId";
+
+        FundsReleaseFailedEvent original = FundsReleaseFailedEvent.of(
+                correlationId, orderId, "wallet-xyz",
+                FailureReason.RELEASE_DB_ERROR, detail);
+
+        String json = mapper.writeValueAsString(original);
+        FundsReleaseFailedEvent restored = mapper.readValue(json, FundsReleaseFailedEvent.class);
+
+        assertThat(restored.eventId()).isEqualTo(original.eventId());
+        assertThat(restored.correlationId()).isEqualTo(correlationId);
+        assertThat(restored.aggregateId()).isEqualTo("wallet-xyz");
+        assertThat(restored.orderId()).isEqualTo(orderId);
+        assertThat(restored.reason()).isEqualTo(FailureReason.RELEASE_DB_ERROR);
+        assertThat(restored.detail()).isEqualTo(detail);
+        assertThat(restored.schemaVersion()).isEqualTo(1);
     }
 
     // -------------------------------------------------------------------------
