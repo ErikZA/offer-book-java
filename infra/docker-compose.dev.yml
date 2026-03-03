@@ -276,9 +276,9 @@ services:
         environment:
             KONG_ADMIN_URL: http://kong:8001
             KEYCLOAK_URL: http://keycloak:8080
-            KEYCLOAK_REALM: vibranium-realm
+            KEYCLOAK_REALM: orderbook-realm
             KONG_CONSUMER_NAME: keycloak-realm-consumer
-            KEYCLOAK_ISSUER: http://localhost:8180/realms/vibranium-realm
+            KEYCLOAK_ISSUER: http://localhost:8180/realms/orderbook-realm
         volumes:
             - ./kong/kong-setup.sh:/kong-setup.sh:ro
         command: ['sh', '/kong-setup.sh']
