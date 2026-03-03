@@ -429,4 +429,51 @@ public class RabbitMQConfig {
         factory.setAcknowledgeMode(AcknowledgeMode.MANUAL);
         return factory;
     }
+
+    // -------------------------------------------------------------------------
+    // Listener Container Factory — ACK Automático (projeção MongoDB — Query Side)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Container factory com {@link AcknowledgeMode#AUTO} para os consumers de projeção
+     * ({@link com.vibranium.orderservice.query.consumer.OrderEventProjectionConsumer}).
+     *
+     * <h3>Por que AUTO e não MANUAL para projeção?</h3>
+     * <p>Os listeners de projeção não possuem parâmetro {@code Channel} e não chamam
+     * {@code basicAck()} explicitamente. Com o {@code acknowledge-mode: manual} global
+     * configurado em {@code application.yaml}, eles herdariam MANUAL pelo factory padrão
+     * e todas as mensagens ficariam em estado {@code unacknowledged} indefinidamente —
+     * acumulando no broker durante o ciclo de vida do serviço.</p>
+     *
+     * <h3>Justificativa de segurança</h3>
+     * <p>Filas de projeção são idempotentes: o filtro {@code $ne} no MongoDB
+     * ({@link com.vibranium.orderservice.query.service.OrderAtomicHistoryWriter})
+     * garante que eventos duplicados não corrompem o Read Model. O re-processamento
+     * acidental é inofensivo; a perda de evento degrada o Read Model mas não afeta
+     * o Command Side (PostgreSQL permanece íntegro).</p>
+     *
+     * <p>Com AUTO, o Spring AMQP chama {@code basicAck()} automaticamente após o método
+     * listener retornar sem exceção. Erros de processamento disparam o retry policy
+     * configurado em {@code application.yaml} (max-attempts=3) e, após esgotamento,
+     * a mensagem é descartada (sem DLX nas filas de projeção — comportamento intencional).</p>
+     *
+     * <p>Referenciado nos listeners via
+     * {@code @RabbitListener(containerFactory = "autoAckContainerFactory")}.</p>
+     *
+     * @param connectionFactory    Conexao AMQP gerenciada pelo Spring Boot auto-configure.
+     * @param jsonMessageConverter Conversor Jackson2JSON compartilhado com os demais factories.
+     */
+    @Bean
+    SimpleRabbitListenerContainerFactory autoAckContainerFactory(
+            ConnectionFactory connectionFactory,
+            MessageConverter jsonMessageConverter) {
+        SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
+        factory.setConnectionFactory(connectionFactory);
+        factory.setMessageConverter(jsonMessageConverter);
+        // AUTO: Spring AMQP confirma a mensagem automaticamente após o listener retornar.
+        // Adequado para projeções idempotentes onde mensagem perdida é preferível
+        // a mensagem acumulada indefinidamente no broker sem confirmação.
+        factory.setAcknowledgeMode(AcknowledgeMode.AUTO);
+        return factory;
+    }
 }

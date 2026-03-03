@@ -119,6 +119,14 @@ O Read Model MongoDB é populado por 4 filas dedicadas, cada uma consumindo um t
 > TopicExchange com as filas do Command Side. Isso garante que o Read Model receba os mesmos
 > eventos sem acoplamento direto com o fluxo da Saga.
 
+> **ACK Mode — AT-1.2.1:** Os listeners de projeção usam `containerFactory = "autoAckContainerFactory"`
+> (`AcknowledgeMode.AUTO`), enquanto os consumers do Command Side usam `manualAckContainerFactory`
+> (`AcknowledgeMode.MANUAL`). O `application.yaml` define `acknowledge-mode: manual` globalmente;
+> sem factory explícito, os listeners de projeção herdariam MANUAL e acumulariam mensagens
+> `unacknowledged` no broker indefinidamente (sem `channel.basicAck()`). Projeções são idempotentes
+> via filtro `$ne` no MongoDB, portanto AUTO ACK é seguro: a perda de um evento degrada o Read Model
+> mas não corrompe os dados do Command Side.
+
 ### Dead Letter Queue (DLQ)
 
 Filas com `x-dead-letter-exchange=vibranium.dlq` e `x-dead-letter-routing-key=order.dead-letter`

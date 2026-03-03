@@ -23,7 +23,8 @@
 19. [Índice MongoDB history.eventId com sparse (AT-06.1)](#índice-mongodb-historyeventid-com-sparse-at-061)
 20. [Testes de Segurança Spring Security Test (AT-10.3)](#testes-de-segurança-spring-security-test-at-103)
 21. [Saga Timeout + Bean Clock (AT-09.1 + AT-09.2)](#saga-timeout--bean-clock-at-091--at-092)
-22. [Referências](#referências)
+22. [Auto ACK em Listeners de Projeção MongoDB (AT-1.2.1)](#auto-ack-em-listeners-de-projeção-mongodb-at-121)
+23. [Referências](#referências)
 
 ---
 
@@ -2706,6 +2707,119 @@ O Spring resolve a ambiguíade do bean pelo `@Primary` — nenhuma alteração e
 
 ---
 
+## Auto ACK em Listeners de Projeção MongoDB (AT-1.2.1)
+
+Esta seção documenta a correção do modo de confirmação (ACK) dos listeners de projeção MongoDB
+em `OrderEventProjectionConsumer`.
+
+### Problema
+
+O `application.yaml` define `acknowledge-mode: manual` globalmente:
+
+```yaml
+spring.rabbitmq.listener.simple.acknowledge-mode: manual
+```
+
+Os 4 listeners de projeção (`onOrderReceived`, `onFundsReserved`, `onMatchExecuted`, `onOrderCancelled`)
+não especificavam `containerFactory`, herdando o factory padrão com `MANUAL`. Como esses listeners
+**não possuem parâmetro `Channel`** e **nunca chamam `channel.basicAck()`**, todas as mensagens
+consumidas ficavam em estado `unacknowledged` indefinidamente — acumulando durante o ciclo de vida
+do serviço em produção.
+
+O bug era silencioso em testes porque `application-test.yml` define `acknowledge-mode: auto`
+globalmente (simplifica o setup do Command Side). Essa configuração mascarava o problema.
+
+### Solução
+
+Novo bean `autoAckContainerFactory` em `RabbitMQConfig` com `AcknowledgeMode.AUTO`.
+O Spring AMQP chama `basicAck()` automaticamente após o método listener retornar sem exceção.
+
+```java
+// RabbitMQConfig.java
+@Bean
+SimpleRabbitListenerContainerFactory autoAckContainerFactory(
+        ConnectionFactory connectionFactory,
+        MessageConverter jsonMessageConverter) {
+    SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
+    factory.setConnectionFactory(connectionFactory);
+    factory.setMessageConverter(jsonMessageConverter);
+    // AT-1.2.1: projeções não precisam de ACK explícito — são idempotentes (filtro $ne por eventId)
+    factory.setAcknowledgeMode(AcknowledgeMode.AUTO);
+    return factory;
+}
+```
+
+Os 4 `@RabbitListener` de projeção recebem o factory explicitamente:
+
+```java
+// OrderEventProjectionConsumer.java
+@RabbitListener(
+    queues = RabbitMQConfig.QUEUE_ORDER_PROJECTION_RECEIVED,
+    // AT-1.2.1: AUTO ACK — projeção é idempotente (filtro $ne por eventId).
+    // Usando factory explícito para não herdar o MANUAL global do application.yaml,
+    // que causaria acumulação de mensagens unacknowledged no broker em produção.
+    containerFactory = "autoAckContainerFactory"
+)
+public void onOrderReceived(OrderReceivedEvent event) { ... }
+```
+
+### Justificativa de segurança
+
+| Aspecto | Command Side (MANUAL) | Query Side / Projeção (AUTO) |
+|---|---|---|
+| Consumer | `FundsReservedEventConsumer`, etc. | `OrderEventProjectionConsumer` |
+| ACK explícito? | Sim — após commit JPA | Não — Spring AMQP após return |
+| Por quê MANUAL? | Elimina dual write (ACK após commit BD) | N/A |
+| Por quê AUTO? | N/A | Sem `Channel`; projeção idempotente |
+| Risco de duplicata | Zero (idempotência por `processedEvents`) | Baixo — MongoDB rejeita `eventId` duplicado via filtro `$ne` |
+| Risco de perda | Baixo (ACK após BD) | Aceito — degrada Read Model, não corrompe Command Side |
+
+### Estratégia de teste — `ProjectionAckIntegrationTest`
+
+O teste precisava revelar o bug em ambiente isolado. Dois desafios:
+
+1. **`application-test.yml` mascara o bug** (define `auto` globalmente) →
+   `@SpringBootTest(properties = "spring.rabbitmq.listener.simple.acknowledge-mode=manual")`
+   sobrescreve para simular produção.
+
+2. **`RabbitAdmin.getQueueInfo()` não expõe mensagens `unacknowledged`** →
+   uso da **RabbitMQ Management HTTP API** (`/api/queues/%2F/{queue}`) que retorna
+   `messages = messages_ready + messages_unacknowledged`.
+
+```java
+// Simula produção: acknowledge-mode=manual globalmente
+@SpringBootTest(
+    properties = "spring.rabbitmq.listener.simple.acknowledge-mode=manual"
+)
+class ProjectionAckIntegrationTest extends AbstractMongoIntegrationTest {
+
+    private int getQueueTotalMessages(String queueName) throws Exception {
+        // URI.create() evita double-encoding de %2F pelo RestTemplate
+        URI uri = URI.create("http://localhost:" + managementPort
+                + "/api/queues/%2F/" + queueName);
+        String body = restTemplate.getForObject(uri, String.class);
+        JsonNode json = objectMapper.readTree(body);
+        return json.path("messages_ready").asInt()
+             + json.path("messages_unacknowledged").asInt();
+    }
+}
+```
+
+| Teste | ID | Cenário | Asserção |
+|---|---|---|---|
+| `testProjectionReceived_messageIsAcked_queueBecomesEmpty` | TC-ACK-1 | Publica `OrderReceivedEvent` → aguarda `OrderDocument` no MongoDB | Fila `order.projection.received` → `messages = 0` |
+| `testProjectionMatch_messageIsAcked_afterMongoPersistence` | TC-ACK-2 | Publica `OrderReceivedEvent` + `MatchExecutedEvent` | `OrderDocument` com status `FILLED` E `messages = 0` |
+
+### Arquivos alterados
+
+| Arquivo | Tipo | Mudança |
+|---|---|---|
+| `RabbitMQConfig.java` | Atualizado | Bean `autoAckContainerFactory` com `AcknowledgeMode.AUTO` |
+| `OrderEventProjectionConsumer.java` | Atualizado | 4 `@RabbitListener` com `containerFactory = "autoAckContainerFactory"` |
+| `ProjectionAckIntegrationTest.java` | Novo | 2 testes de integração TDD (TC-ACK-1, TC-ACK-2) |
+
+---
+
 ## Referências
 
 - [JUnit 5 Documentation](https://junit.org/junit5/docs/current/user-guide/)
@@ -2718,9 +2832,10 @@ O Spring resolve a ambiguíade do bean pelo `@Primary` — nenhuma alteração e
 ---
 
 **Status**: ✅ Consolidado e Completo  
-**Última atualização**: 2 de março de 2026
+**Última atualização**: 3 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-1.2.1**: Auto ACK em listeners de projeção MongoDB — bean `autoAckContainerFactory` (`AcknowledgeMode.AUTO`) adicionado em `RabbitMQConfig`. Os 4 `@RabbitListener` de `OrderEventProjectionConsumer` passam a declarar `containerFactory` explicitamente, evitando herdar o `MANUAL` global do `application.yaml` (que causava acúmulo de `unacknowledged` no broker). Segurança garantida pela idempotência do `$ne` no MongoDB. Novos testes `ProjectionAckIntegrationTest` (TC-ACK-1, TC-ACK-2) validam via RabbitMQ Management HTTP API que `messages_ready + messages_unacknowledged = 0` após processamento. Adicionada seção 22 neste guia.
 > - **AT-09.1 + AT-09.2**: Saga Timeout Cleanup — `SagaTimeoutCleanupJob` (`@Scheduled`) cancela ordens `PENDING` expiradas com `SAGA_TIMEOUT` + `OrderCancelledEvent` no outbox. `TimeConfig` expondo `Clock.systemUTC()` como bean singleton; substituído por `Clock.fixed` em testes via `@Primary`. Flyway V6 com índice parcial `(created_at) WHERE status = 'PENDING'`. `OrderRepository#findByStatusAndCreatedAtBefore` adicionado. `SagaTimeoutCleanupJobTest` com 4 cenários de integração determinísticos. Adicionada seção 21 neste guia.
 > - **AT-10.3**: Testes de segurança com Spring Security Test — nova classe `WalletSecurityIntegrationTest` com 4 cenários TDD cobrindo o `SecurityFilterChain` real: sem token (401, `@WithAnonymousUser`), token expirado (401, `@MockBean JwtDecoder` + `JwtValidationException`), token de outro usuário (403, `jwt()` post-processor), token do owner (200). `@MockBean JwtDecoder` isola a simulação de autenticação sem depender de Keycloak no CI. Adicionada seção 20 neste guia.
 > - **AT-06.1**: Índice MongoDB `history.eventId` com `sparse: true` — evolução do `idx_history_eventId` criado em AT-05.2. Propriedade `sparse` adicionada em `MongoIndexConfig` para excluir `OrderDocument`s com `history[]` vazia do índice, reduzindo footprint e custo de write. Novo `MongoIndexConfigIntegrationTest` com 5 testes TDD (TC-IDX-1 a TC-IDX-5): existência do índice, propriedade sparse, direção ASC, idempotência de `ensureIndex` e performance < 50ms com 1000 entradas. Prepara AT-06.2 (deduplicação atômica via `updateFirst` + filtro `$ne`).

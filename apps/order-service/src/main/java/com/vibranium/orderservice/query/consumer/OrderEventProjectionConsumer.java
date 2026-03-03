@@ -95,7 +95,13 @@ public class OrderEventProjectionConsumer {
      *
      * @param event Evento publicado por {@code OrderCommandService.placeOrder()}.
      */
-    @RabbitListener(queues = RabbitMQConfig.QUEUE_ORDER_PROJECTION_RECEIVED)
+    @RabbitListener(
+            queues = RabbitMQConfig.QUEUE_ORDER_PROJECTION_RECEIVED,
+            // AT-1.2.1: AUTO ACK — projeção é idempotente (filtro $ne por eventId).
+            // Usando factory explícito para não herdar o MANUAL global do application.yaml,
+            // que causaria acumulação de mensagens unacknowledged no broker em produção.
+            containerFactory = "autoAckContainerFactory"
+    )
     public void onOrderReceived(OrderReceivedEvent event) {
         String orderId = event.orderId().toString();
         String userId  = event.userId().toString();
@@ -167,7 +173,11 @@ public class OrderEventProjectionConsumer {
      *
      * @param event Evento publicado pelo wallet-service.
      */
-    @RabbitListener(queues = RabbitMQConfig.QUEUE_ORDER_PROJECTION_FUNDS)
+    @RabbitListener(
+            queues = RabbitMQConfig.QUEUE_ORDER_PROJECTION_FUNDS,
+            // AT-1.2.1: AUTO ACK — idempotência garantida por $ne no eventId.
+            containerFactory = "autoAckContainerFactory"
+    )
     public void onFundsReserved(FundsReservedEvent event) {
         String orderId = event.orderId().toString();
 
@@ -228,7 +238,12 @@ public class OrderEventProjectionConsumer {
      *
      * @param event Evento publicado por {@code FundsReservedEventConsumer.handleMatch()}.
      */
-    @RabbitListener(queues = RabbitMQConfig.QUEUE_ORDER_PROJECTION_MATCH)
+    @RabbitListener(
+            queues = RabbitMQConfig.QUEUE_ORDER_PROJECTION_MATCH,
+            // AT-1.2.1: AUTO ACK — idempotência garantida por prefixo orderId no eventId
+            // (buyer e seller geram eventIds distintos — veja updateDocumentWithMatch).
+            containerFactory = "autoAckContainerFactory"
+    )
     // AT-05.3 — Atomicidade cross-document: os dois findAndModify (buyer + seller) são
     // envolvidos em uma única sessão MongoDB com startTransaction. Se qualquer um falha,
     // session.abortTransaction() reverte ambos — zero inconsistência parcial.
@@ -314,7 +329,13 @@ public class OrderEventProjectionConsumer {
      *
      * @param event Evento publicado por {@code FundsReservedEventConsumer.cancelOrder()}.
      */
-    @RabbitListener(queues = RabbitMQConfig.QUEUE_ORDER_PROJECTION_CANCELLED)
+    @RabbitListener(
+            queues = RabbitMQConfig.QUEUE_ORDER_PROJECTION_CANCELLED,
+            // AT-1.2.1: AUTO ACK — cancelamentos são eventos terminais; idempotência
+            // garantida por $ne no eventId. Perda de evento é preferível a
+            // acumulação indefinida no broker.
+            containerFactory = "autoAckContainerFactory"
+    )
     public void onOrderCancelled(OrderCancelledEvent event) {
         String orderId = event.orderId().toString();
 
