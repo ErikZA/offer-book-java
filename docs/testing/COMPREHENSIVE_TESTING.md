@@ -27,7 +27,8 @@
 23. [MongoDB Replica Set rs0 no Staging (AT-1.3.2)](#mongodb-replica-set-rs0-no-staging-at-132)
 24. [Segurança de Container — Non-Root User + Shell Form ENTRYPOINT (AT-1.5.1)](#segurança-de-container--non-root-user--shell-form-entrypoint-at-151)
 25. [Saga TCC — tryMatch() fora de @Transactional + Compensação Redis (AT-2.1.1)](#saga-tcc--trymatch-fora-de-transactional--compensação-redis-at-211)
-26. [Referências](#referências)
+26. [DLX nas Filas de Projeção — Mensagens Tóxicas para DLQ (AT-2.2.1)](#dlx-nas-filas-de-projeção--mensagens-tóxicas-para-dlq-at-221)
+27. [Referências](#referências)
 
 ---
 
@@ -3092,10 +3093,121 @@ lenient().when(txTemplate.execute(any()))
 
 ---
 
+## DLX nas Filas de Projeção — Mensagens Tóxicas para DLQ (AT-2.2.1)
+
+### Problema
+
+As 4 filas de projeção do Query Side — `order.projection.received`, `order.projection.funds-reserved`,
+`order.projection.match-executed` e `order.projection.cancelled` — não tinham `x-dead-letter-exchange`
+configrado. Duas consequências:
+
+1. **Mensagem tóxica com payload inválido** (ex: JSON que não desserializa como o evento esperado) era
+   rejeitada com `requeue=false` e **descartada silenciosamente** pelo broker sem nenhum rastreamento.
+2. **Exceção de negócio no listener** (ex: `NullPointerException` ao acessar campos nulos do evento
+   parcialmente desserializado): com `defaultRequeueRejected=true` (padrão Spring AMQP), a mensagem era
+   **recolocada na fila** indefinidamente — **loop infinito** até o broker ou o serviço cair.
+
+O `autoAckContainerFactory` não definia `setDefaultRequeueRejected(false)`, herdando o padrão `true`,
+que é a causa raiz do loop.
+
+### Solução
+
+#### 1. `defaultRequeueRejected=false` no `autoAckContainerFactory`
+
+Evita que exceções de runtime (NPE, IllegalStateException, etc.) recoloquem a mensagem na fila:
+
+```java
+// AT-2.2.1: requeue=false em caso de exceção qualquer (não somente MessageConversionException).
+// Sem este flag, NPEs e outros erros de runtime causariam loop infinito.
+factory.setDefaultRequeueRejected(false);
+```
+
+Resultado: toda exceção no listener projeta `basicNack(requeue=false)` → mensagem vai para DLX.
+
+#### 2. DLX nos 4 `QueueBuilder` de projeção
+
+Cada fila de projeção passa a declarar sua própria DLQ via routing key individual:
+
+```java
+return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_RECEIVED)
+        .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
+        .withArgument("x-dead-letter-routing-key", QUEUE_ORDER_PROJECTION_RECEIVED_DLQ)
+        .build();
+```
+
+Routing key individual (ex: `order.projection.received.dlq`) permite identificar a fila de **origem**
+dentro da DLX, facilitando triagem e re-processamento manual.
+
+#### 3. Declaração das 4 DLQs + bindings
+
+| Fila de projeção | DLQ correspondente |
+|---|---|
+| `order.projection.received` | `order.projection.received.dlq` |
+| `order.projection.funds-reserved` | `order.projection.funds-reserved.dlq` |
+| `order.projection.match-executed` | `order.projection.match-executed.dlq` |
+| `order.projection.cancelled` | `order.projection.cancelled.dlq` |
+
+Todas as DLQs são `durable=true` e vinculadas à exchange `vibranium.dlq` via `BindingBuilder`.
+
+### Risco Técnico: Fila Existente com Args Diferentes
+
+> ⚠️ O RabbitMQ **não permite alterar argumentos** (`x-dead-letter-exchange`,
+> `x-dead-letter-routing-key`) de uma fila já declarada sem deletá-la primeiro.
+> Em produção, as 4 filas de projeção devem ser deletadas e recriadas via Management UI
+> (`rabbitmqadmin delete queue name=order.projection.received`) antes de implantar esta versão.
+> Em testes, os containers Testcontainers são recriados a cada ciclo, eliminando o problema.
+
+### Testes: `ProjectionDlqIntegrationTest`
+
+#### TC-DLQ-1 — Mensagem tóxica roteada para DLQ
+
+| Etapa | Comportamento RED | Comportamento GREEN |
+|-------|-------------------|---------------------|
+| Publish payload `{"toxic":true}` sem `__TypeId__` | Listener NPE + `requeue=true` → loop | Listener NPE + `requeue=false` → DLX |
+| DLQ após 20s | Não existe (HTTP 404) ou `messages=0` | `messages=1` → ✅ |
+
+```java
+Message toxicMessage = MessageBuilder
+        .withBody("{\"toxic\":true}".getBytes(StandardCharsets.UTF_8))
+        .setContentType(MessageProperties.CONTENT_TYPE_JSON)
+        .build();
+rabbitTemplate.send(RabbitMQConfig.EVENTS_EXCHANGE, RabbitMQConfig.RK_ORDER_RECEIVED, toxicMessage);
+
+await().atMost(20, TimeUnit.SECONDS)
+       .untilAsserted(() ->
+           assertThat(getQueueTotalMessages(RabbitMQConfig.QUEUE_ORDER_PROJECTION_RECEIVED_DLQ))
+                   .isEqualTo(1)
+       );
+```
+
+#### TC-DLQ-2 — Smoke test: 4 DLQs declaradas no broker
+
+Consulta via RabbitMQ Management HTTP API (`/api/queues/%2F/{queue}`) cada DLQ individualmente.
+RED → HTTP 404 (fila não declarada). GREEN → HTTP 200 com `messages=0`.
+
+### Critérios de Aceite
+
+| Critério | Validação | Status |
+|---|---|---|
+| 4 filas DLQ criadas | TC-DLQ-2: Management API retorna HTTP 200 para cada DLQ | ✅ |
+| `rabbitmqadmin list queues` mostra as DLQ | `4 DLQs` visíveis após deploy | ✅ |
+| Mensagem com body inválido vai para DLQ | TC-DLQ-1: `messages=1` na DLQ após rejeição | ✅ |
+| Sem loop infinito | `defaultRequeueRejected=false` no `autoAckContainerFactory` | ✅ |
+
+### Artefatos gerados pelo AT-2.2.1
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `RabbitMQConfig` | Atualizado | 4 constantes DLQ; DLX args nos 4 `QueueBuilder` de projeção; 4 `Queue` DLQ beans + 4 `Binding` beans; `setDefaultRequeueRejected(false)` no `autoAckContainerFactory` |
+| `ProjectionDlqIntegrationTest` | Novo | TC-DLQ-1 (roteamento de mensagem tóxica) + TC-DLQ-2 (smoke test de declaração das 4 DLQs) |
+
+---
+
 **Status**: ✅ Consolidado e Completo  
 **Última atualização**: 3 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-2.2.1**: DLX nas 4 filas de projeção — `x-dead-letter-exchange=vibranium.dlq` + `x-dead-letter-routing-key=<queue>.dlq` adicionados em cada `QueueBuilder` de projeção. 4 filas DLQ `durable` declaradas (`order.projection.received.dlq`, `order.projection.funds-reserved.dlq`, `order.projection.match-executed.dlq`, `order.projection.cancelled.dlq`) com bindings no `vibranium.dlq` exchange. `autoAckContainerFactory` atualizado com `setDefaultRequeueRejected(false)` para prevenir loop infinito em exceções de runtime. Novo `ProjectionDlqIntegrationTest` (TC-DLQ-1: mensagem tóxica roteada para DLQ via Management API; TC-DLQ-2: smoke test de declaração das 4 DLQs). 2/2 passando. Adicionada seção 26 neste guia.
 > - **AT-2.1.1**: Saga TCC — `tryMatch()` fora de `@Transactional` com compensação Redis. `onFundsReserved()` decomposto em 3 fases via `TransactionTemplate`: Fase 1 JPA TX (idempotência + `markAsOpen` + save), Fase 2 sem TX (`tryMatch` Redis/Lua), Fase 3 JPA TX (outbox). Compensação TCC no `catch` da Fase 3: `removeFromBook()` + `cancelOrder("MATCH_ENGINE_OUTBOX_FAILURE")`. Bean `sagaTransactionTemplate` adicionado em `RabbitMQConfig`. Novos testes `FundsReservedEventConsumerTest.SagaTccTests` (AT22-01 compensação, AT22-02 ordem das fases via `InOrder`). 10/10 passando. Adicionada seção 25 neste guia.
 > - **AT-1.5.1**: Segurança de Container — ENTRYPOINT shell form + non-root user em ambos os serviços. Exec form `["java", "-jar", "app.jar"]` substituído por `["sh", "-c", "java $JAVA_OPTS -jar app.jar"]` (expansão de variáveis). Adicionado `RUN addgroup -S appgroup && adduser -S appuser -G appgroup` + `USER appuser` antes do ENTRYPOINT. COPY permanece antes do USER (root tem permissão de escrita; appuser lê 644). Validado: `whoami` → `appuser`; `MaxRAMPercentage = 75.000000 {command line}`. Adicionada seção 24 neste guia.
 > - **AT-1.3.2**: MongoDB Replica Set rs0 no Staging — `docker-compose.staging.yml` atualizado com `--replSet rs0 --keyFile` nos 3 nós MongoDB. Novo `docker-entrypoint-override-staging.sh` grava `MONGO_REPLICA_KEY` (env var fixa e idêntica nos 3 nós) como `/etc/mongod-keyfile` (keyFile compartilhado obrigatório para intra-cluster auth). Novo `init-replica-set-staging.sh` (idempotente): executa `rs.initiate({_id:'rs0', members:[mongodb-1,mongodb-2,mongodb-3]})` e aguarda até 90s pelo PRIMARY. Serviço `mongo-rs-init` depende de `service_healthy` nos 3 nós; `order-service-1/2/3` usam `service_completed_successfully`. Validado ao vivo: `rs.status()` retorna `mongodb-1 PRIMARY`, `mongodb-2 SECONDARY`, `mongodb-3 SECONDARY`. Adicionada seção 23 neste guia.

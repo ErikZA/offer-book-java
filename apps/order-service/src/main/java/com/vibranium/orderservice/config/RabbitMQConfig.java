@@ -105,6 +105,21 @@ public class RabbitMQConfig {
     /** Fila de projeção para {@code OrderCancelledEvent} → appenda ORDER_CANCELLED; status → CANCELLED. */
     public static final String QUEUE_ORDER_PROJECTION_CANCELLED = "order.projection.cancelled";
 
+    // Dead Letter Queues das filas de projeção (AT-2.2.1)
+    // Mensagens rejeitadas após desserialização inválida ou erro fatal são roteadas para estas filas.
+
+    /** DLQ para mensagens tóxicas da fila {@code order.projection.received}. */
+    public static final String QUEUE_ORDER_PROJECTION_RECEIVED_DLQ  = "order.projection.received.dlq";
+
+    /** DLQ para mensagens tóxicas da fila {@code order.projection.funds-reserved}. */
+    public static final String QUEUE_ORDER_PROJECTION_FUNDS_DLQ     = "order.projection.funds-reserved.dlq";
+
+    /** DLQ para mensagens tóxicas da fila {@code order.projection.match-executed}. */
+    public static final String QUEUE_ORDER_PROJECTION_MATCH_DLQ     = "order.projection.match-executed.dlq";
+
+    /** DLQ para mensagens tóxicas da fila {@code order.projection.cancelled}. */
+    public static final String QUEUE_ORDER_PROJECTION_CANCELLED_DLQ = "order.projection.cancelled.dlq";
+
     // Routing keys dos eventos publicados pelo order-service (usadas nas projection bindings)
     /** Routing key do {@code OrderReceivedEvent} — publicado em {@code OrderCommandService.placeOrder()}. */
     public static final String RK_ORDER_RECEIVED    = "order.events.order-received";
@@ -312,15 +327,23 @@ public class RabbitMQConfig {
     //
     // Cada fila abaixo recebe uma cópia independente do evento via topic exchange
     // (fanout pattern). O consumer de projeção constrói e mantém o OrderDocument.
-    // Filas sem DLX: se a projeção falhar o evento deve ser re-tentado via
-    // listener retry (configurado em application.yaml), não descartado.
+    //
+    // AT-2.2.1: DLX configurada em todas as filas de projeção para capturar mensagens
+    // tóxicas (payload inválido / NullPointerException no listener) após esgotamento
+    // das tentativas. Sem DLX, mensagens não-desserializáveis causavam loop infinito
+    // quando defaultRequeueRejected=true (padrão do Spring AMQP), ou se perdiam
+    // silenciosamente com requeue=false. As DLQs correspondentes permitem inspeção
+    // e re-processamento manual via rabbitmqadmin ou Management UI.
     // -------------------------------------------------------------------------
 
     @Bean
     Queue orderProjectionReceivedQueue() {
-        // Sem DLX: falhas de projeção são re-tentadas; a perda de evento aqui significa
-        // documento incompleto no Mongo, mas não afeta o Command Side.
-        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_RECEIVED).build();
+        // AT-2.2.1: DLX configurada para capturar mensagens tóxicas (payload inválido).
+        // Routing key individual por fila permite diferenciar a origem na DLQ.
+        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_RECEIVED)
+                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-routing-key", QUEUE_ORDER_PROJECTION_RECEIVED_DLQ)
+                .build();
     }
 
     @Bean
@@ -335,7 +358,11 @@ public class RabbitMQConfig {
 
     @Bean
     Queue orderProjectionFundsQueue() {
-        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_FUNDS).build();
+        // AT-2.2.1: DLX para roteamento de mensagens tóxicas (FundsReservedEvent inválido).
+        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_FUNDS)
+                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-routing-key", QUEUE_ORDER_PROJECTION_FUNDS_DLQ)
+                .build();
     }
 
     @Bean
@@ -352,7 +379,11 @@ public class RabbitMQConfig {
 
     @Bean
     Queue orderProjectionMatchQueue() {
-        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_MATCH).build();
+        // AT-2.2.1: DLX para roteamento de mensagens tóxicas (MatchExecutedEvent inválido).
+        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_MATCH)
+                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-routing-key", QUEUE_ORDER_PROJECTION_MATCH_DLQ)
+                .build();
     }
 
     @Bean
@@ -367,7 +398,11 @@ public class RabbitMQConfig {
 
     @Bean
     Queue orderProjectionCancelledQueue() {
-        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_CANCELLED).build();
+        // AT-2.2.1: DLX para roteamento de mensagens tóxicas (OrderCancelledEvent inválido).
+        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_CANCELLED)
+                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-routing-key", QUEUE_ORDER_PROJECTION_CANCELLED_DLQ)
+                .build();
     }
 
     @Bean
@@ -378,6 +413,86 @@ public class RabbitMQConfig {
                 .bind(orderProjectionCancelledQueue)
                 .to(eventsExchange)
                 .with(RK_ORDER_CANCELLED);
+    }
+
+    // -------------------------------------------------------------------------
+    // Dead Letter Queues das filas de projeção (AT-2.2.1)
+    //
+    // Cada DLQ captura as mensagens rejeitadas da fila correspondente.
+    // Binding: vibranium.dlq exchange → DLQ queue com routing key = nome da DLQ.
+    // Mensagens ficam nestas filas até intervenção manual (inspeção / re-processamento).
+    // -------------------------------------------------------------------------
+
+    /**
+     * DLQ para mensagens tóxicas de {@code order.projection.received}.
+     *
+     * <p>Captura payloads inválidos que causam {@code MessageConversionException}
+     * ou {@code NullPointerException} no listener {@code onOrderReceived}.
+     * O Spring AMQP emite {@code basicNack(requeue=false)} após o {@code autoAckContainerFactory}
+     * com {@code defaultRequeueRejected=false} — a mensagem é então encaminhada
+     * pela DLX {@code vibranium.dlq} com routing key {@code order.projection.received.dlq}.</p>
+     */
+    @Bean
+    Queue orderProjectionReceivedDlq() {
+        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_RECEIVED_DLQ).build();
+    }
+
+    @Bean
+    Binding orderProjectionReceivedDlqBinding(
+            @Qualifier("orderProjectionReceivedDlq") Queue orderProjectionReceivedDlq,
+            @Qualifier("dlqExchange")                DirectExchange dlqExchange) {
+        return BindingBuilder
+                .bind(orderProjectionReceivedDlq)
+                .to(dlqExchange)
+                .with(QUEUE_ORDER_PROJECTION_RECEIVED_DLQ);
+    }
+
+    /** DLQ para mensagens tóxicas de {@code order.projection.funds-reserved}. */
+    @Bean
+    Queue orderProjectionFundsDlq() {
+        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_FUNDS_DLQ).build();
+    }
+
+    @Bean
+    Binding orderProjectionFundsDlqBinding(
+            @Qualifier("orderProjectionFundsDlq") Queue orderProjectionFundsDlq,
+            @Qualifier("dlqExchange")             DirectExchange dlqExchange) {
+        return BindingBuilder
+                .bind(orderProjectionFundsDlq)
+                .to(dlqExchange)
+                .with(QUEUE_ORDER_PROJECTION_FUNDS_DLQ);
+    }
+
+    /** DLQ para mensagens tóxicas de {@code order.projection.match-executed}. */
+    @Bean
+    Queue orderProjectionMatchDlq() {
+        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_MATCH_DLQ).build();
+    }
+
+    @Bean
+    Binding orderProjectionMatchDlqBinding(
+            @Qualifier("orderProjectionMatchDlq") Queue orderProjectionMatchDlq,
+            @Qualifier("dlqExchange")             DirectExchange dlqExchange) {
+        return BindingBuilder
+                .bind(orderProjectionMatchDlq)
+                .to(dlqExchange)
+                .with(QUEUE_ORDER_PROJECTION_MATCH_DLQ);
+    }
+
+    /** DLQ para mensagens tóxicas de {@code order.projection.cancelled}. */
+    @Bean
+    Queue orderProjectionCancelledDlq() {
+        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_CANCELLED_DLQ).build();
+    }
+
+    @Bean
+    Binding orderProjectionCancelledDlqBinding(
+            @Qualifier("orderProjectionCancelledDlq") Queue orderProjectionCancelledDlq,
+            @Qualifier("dlqExchange")                 DirectExchange dlqExchange) {
+        return BindingBuilder
+                .bind(orderProjectionCancelledDlq)
+                .to(dlqExchange)
+                .with(QUEUE_ORDER_PROJECTION_CANCELLED_DLQ);
     }
 
     // -------------------------------------------------------------------------
@@ -476,6 +591,11 @@ public class RabbitMQConfig {
         // Adequado para projeções idempotentes onde mensagem perdida é preferível
         // a mensagem acumulada indefinidamente no broker sem confirmação.
         factory.setAcknowledgeMode(AcknowledgeMode.AUTO);
+        // AT-2.2.1: requeue=false em caso de exceção qualquer (não somente MessageConversionException).
+        // Sem este flag, NPEs e outros erros de runtime causariam loop infinito ao recolocar a
+        // mensagem na fila indefinidamente. Com false, a mensagem é rejeitada e roteada para
+        // a DLX configurada em cada fila de projeção.
+        factory.setDefaultRequeueRejected(false);
         return factory;
     }
 
