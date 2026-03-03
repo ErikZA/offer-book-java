@@ -31,7 +31,8 @@
 27. [DLX na Fila wallet.keycloak.events — DLQ para Registro Keycloak (AT-2.2.2)](#dlx-na-fila-walletkeycloakevents--dlq-para-registro-keycloak-at-222)
 28. [Limpeza de Tabelas de Suporte — OutboxCleanupJob e IdempotencyKeyCleanupJob (AT-2.3.1)](#limpeza-de-tabelas-de-suporte--outboxcleanupjob-e-idempotencykeycleanupjob-at-231)
 29. [PRICE_PRECISION 10^8 — Precisão de Preço com 8 Casas Decimais (AT-3.2.1)](#price_precision-108--precisão-de-preço-com-8-casas-decimais-at-321)
-30. [Referências](#referências)
+30. [Ownership Check em GET /orders/{orderId} — Proteção IDOR/BOLA (AT-4.1.1)](#ownership-check-em-get-ordersorderid--proteção-idorbola-at-411)
+31. [Referências](#referências)
 
 ---
 
@@ -3542,10 +3543,104 @@ void testPricePrecision_8DecimalPlaces_differentiatedInBook() {
 
 ---
 
+## Ownership Check em GET /orders/{orderId} — Proteção IDOR/BOLA (AT-4.1.1)
+
+### Problema
+
+Qualquer usuário autenticado podia ler qualquer `OrderDocument` do MongoDB bastando conhecer (ou adivinhar) um `orderId`. Vulnerabilidade classificada como **BOLA — Broken Object Level Authorization** no OWASP API Security Top 10 — crítica em sistema financeiro onde ordens contêm preço, quantidade, tipo e status da posição do usuário.
+
+### Solução
+
+Aplicar verificação de ownership no método `getOrder()` do `OrderQueryController`, seguindo o padrão já estabelecido no `WalletController` (AT-10.2):
+
+```java
+// OrderQueryController.java (AT-4.1.1)
+@GetMapping("/{orderId}")
+public ResponseEntity<OrderDocument> getOrder(
+        @PathVariable String orderId,
+        @AuthenticationPrincipal Jwt jwt) {
+
+    return orderHistoryRepository.findById(orderId)
+            .map(order -> {
+                // AT-4.1.1: jwt.sub deve coincidir com order.userId
+                if (jwt != null && !hasAdminRole(jwt)
+                        && !order.getUserId().equals(jwt.getSubject())) {
+                    throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                            "Acesso negado: ordem não pertence ao usuário autenticado");
+                }
+                return ResponseEntity.ok(order);
+            })
+            .orElse(ResponseEntity.notFound().build());
+}
+
+private boolean hasAdminRole(Jwt jwt) {
+    List<String> roles = jwt.getClaimAsStringList("roles");
+    return roles != null && roles.contains("ROLE_ADMIN");
+}
+```
+
+**Fluxo de decisão:**
+
+```
+GET /api/v1/orders/{orderId}
+       │
+       ▼
+ findById(orderId)
+       │
+   não encontrado ──► 404 Not Found
+       │
+   encontrado
+       │
+   jwt.sub == order.userId? ─── SIM ──► 200 OK
+       │
+       NÃO
+       │
+   hasAdminRole(jwt)? ─── SIM ──► 200 OK (admin bypass)
+       │
+       NÃO
+       │
+       ▼
+   403 Forbidden
+```
+
+### Admin Bypass
+
+Usuários com `ROLE_ADMIN` no claim `roles` do JWT ignoram o filtro de ownership — necessário para suporte, auditoria e operações internas. O claim é populado pelo Keycloak via mapeamento de realm roles no client scope (mesmo mecanismo do `WalletController`).
+
+### Testes (TDD RED → GREEN)
+
+Adicionados ao `OrderQueryControllerTest`:
+
+| Teste | Cenário | Resultado esperado |
+|---|---|---|
+| `testGetOrderById_differentUser_returns403` | JWT de usuário B lê ordem de usuário A | `403 Forbidden` |
+| `testGetOrderById_sameUser_returns200` | JWT do dono da ordem | `200 OK` + orderId correto |
+| `testGetOrderById_adminRole_returns200` | JWT com `roles=["ROLE_ADMIN"]` de outro usuário | `200 OK` (admin bypass) |
+
+**Resultado:** `Tests run: 3, Failures: 0 — BUILD SUCCESS`
+
+### Critérios de Aceite
+
+| Critério | Status |
+|---|---|
+| JWT subject comparado com `OrderDocument.userId` | ✅ `order.getUserId().equals(jwt.getSubject())` |
+| Admin bypass via claim `realm_access.roles` contendo `ADMIN` | ✅ `hasAdminRole()` verifica claim `roles` |
+| Retorna 403 com mensagem descritiva | ✅ `"Acesso negado: ordem não pertence ao usuário autenticado"` |
+
+### Artefatos alterados pelo AT-4.1.1
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `OrderQueryController.java` | Alterado | `getOrder()` recebe `@AuthenticationPrincipal Jwt`; ownership check + `hasAdminRole()`; novos imports `HttpStatus`, `ResponseStatusException`, `java.util.List` |
+| `OrderQueryControllerTest.java` | Alterado | TC-8a/b/c — 3 novos testes de IDOR adicionados ao final da classe |
+
+---
+
 **Status**: ✅ Consolidado e Completo  
 **Última atualização**: 3 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-4.1.1**: Ownership check em `GET /orders/{orderId}` — proteção IDOR/BOLA (OWASP API Security Top 10). `getOrder()` no `OrderQueryController` agora recebe `@AuthenticationPrincipal Jwt jwt` e compara `jwt.getSubject()` com `OrderDocument.userId` após buscar o documento no MongoDB. Se divergirem e o token não contiver `ROLE_ADMIN`, lança `ResponseStatusException(HttpStatus.FORBIDDEN)` com mensagem descritiva. Admin bypass: claim `roles` com `ROLE_ADMIN` ignora o filtro de ownership (mesmo padrão do `WalletController` AT-10.2). Guard `jwt != null` preservado para compatibilidade com `@WithMockUser` em testes. 3 novos testes TDD em `OrderQueryControllerTest`: TC-8a (usuário diferente → 403), TC-8b (dono → 200), TC-8c (admin → 200 bypass). `Tests run: 3, Failures: 0 — BUILD SUCCESS`. Adicionada seção 30 neste guia.
 > - **AT-3.2.1**: `PRICE_PRECISION` aumentada de `1_000_000L` para `100_000_000L` no `RedisMatchEngineAdapter`. Com a constante anterior, preços com 7+ casas decimais (ex: `0.00000001` e `0.00000002`) colapsavam para score `0` no Redis Sorted Set — indistinguíveis, quebrando a ordenação do livro para ativos de precisão satoshi. Com `10^8`, os scores são `1` e `2` (exatos, dentro do limite IEEE-754 double $2^{53}$). `match_engine.lua` usa `tonumber()` — nenhuma alteração necessária no Lua. Novo TC-PP-1 em `MatchEngineRedisIntegrationTest` (TDD RED → GREEN): verifica scores `1.0`/`2.0` e match exato com `ask1OrderId`. `priceToScore` helper de teste atualizado para consistência. 10/10 testes passam, BUILD SUCCESS. Adicionada seção 29 neste guia.
 > - **AT-2.3.1**: Limpeza de tabelas de suporte no wallet-service — `OutboxCleanupJob` (`@Scheduled cron domingos 03:00 UTC`) e `IdempotencyKeyCleanupJob` (`@Scheduled cron domingos 04:00 UTC`), ambos com `@Transactional` e log da quantidade de registros removidos. Bean `TimeConfig` (novo) expõe `Clock.systemUTC()` singleton — substituível por `Clock.fixed(...)` em testes. Métodos `deleteByProcessedTrueAndCreatedAtBefore` e `deleteByProcessedAtBefore` adicionados nos respectivos repositórios via `@Modifying @Query` (DELETE em lote sem fetch). `WalletServiceApplication` atualizado com `@EnableScheduling`. `application.yaml` com `app.cleanup.outbox.cron` e `app.cleanup.idempotency.cron`. 4 novos testes unitários (`WalletOutboxCleanupJobTest` TC-OCJ-1/2, `WalletIdempotencyCleanupJobTest` TC-IKJ-1/2) — 4/4 passando. `mvn clean package` 38 testes, BUILD SUCCESS. Adicionada seção 28 neste guia.
 > - **AT-2.2.2**: DLX na fila `wallet.keycloak.events` — `x-dead-letter-exchange=vibranium.dlq` + `x-dead-letter-routing-key=wallet.keycloak.events.dlq` adicionados no `walletKeycloakEventsQueue()`. Nova fila DLQ `wallet.keycloak.events.dlq` (`durable`) declarada com binding no `vibranium.dlq` exchange. `AbstractIntegrationTest.resetState()` atualizado com purge da DLQ. Novo `KeycloakDlqIntegrationTest` (TC-KC-DLQ-1: estrutural via Management HTTP API; TC-KC-DLQ-2: `@MockBean WalletService` lança `RuntimeException` → listener NACK → mensagem roteada para DLQ com header `x-death`). 2/2 passando. Adicionada seção 27 neste guia.
