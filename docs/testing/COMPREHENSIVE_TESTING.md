@@ -33,7 +33,8 @@
 29. [PRICE_PRECISION 10^8 — Precisão de Preço com 8 Casas Decimais (AT-3.2.1)](#price_precision-108--precisão-de-preço-com-8-casas-decimais-at-321)
 30. [Ownership Check em GET /orders/{orderId} — Proteção IDOR/BOLA (AT-4.1.1)](#ownership-check-em-get-ordersorderid--proteção-idorbola-at-411)
 31. [@PreAuthorize + Pageable em GET /wallets — Controle de Acesso Admin (AT-4.2.1)](#preauthorize--pageable-em-get-wallets--controle-de-acesso-admin-at-421)
-32. [Referências](#referências)
+32. [Externalização de Senhas via Variáveis de Ambiente — Compose Files (AT-4.3.1)](#externalização-de-senhas-via-variáveis-de-ambiente--compose-files-at-431)
+33. [Referências](#referências)
 
 ---
 
@@ -3795,10 +3796,125 @@ Testes pré-existentes atualizados para compatibilidade com a nova resposta pagi
 
 ---
 
+## Externalização de Senhas via Variáveis de Ambiente — Compose Files (AT-4.3.1)
+
+### Problema
+
+`infra/docker-compose.yml` (produção) e `infra/docker-compose.staging.yml` (staging multi-réplica) continham senhas literais hardcoded — `postgres123`, `admin123`, `secret-cookie`, `guest`, `VibraniumStagingRS0SharedKeyForReplicaSetAuth2026`, etc.  
+Qualquer leitura do repositório expunha credenciais reais, violando o princípio de _secrets externalisation_ (12-Factor App, item III).
+
+> Referência de boas práticas: `infra/docker-compose.dev.yml` já seguia o padrão `${VAR:?msg}` / `${VAR:-default}` e foi usado como modelo.
+
+---
+
+### Solução
+
+Todas as senhas substituídas pela sintaxe Docker Compose de variável obrigatória ou com _fallback_:
+
+| Sintaxe | Comportamento | Usado para |
+|---|---|---|
+| `${VAR:?mensagem}` | `docker compose up` falha imediatamente se `VAR` não estiver definida | Todas as senhas reais |
+| `${VAR:-default}` | Usa `default` se `VAR` não estiver definida | Nomes de usuário não sensíveis (ex: `RABBITMQ_DEFAULT_USER`) |
+
+#### docker-compose.yml — credenciais substituídas
+
+```yaml
+# postgresql
+POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copie .env.example para .env}
+
+# kong-db-migration + kong
+KONG_PG_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copie .env.example para .env}
+
+# keycloak
+KC_DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copie .env.example para .env}
+KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required — copie .env.example para .env}
+KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required — copie .env.example para .env}
+KK_TO_RMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
+
+# rabbitmq
+RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
+```
+
+#### docker-compose.staging.yml — credenciais substituídas
+
+```yaml
+# mongodb-1/2/3 + mongo-rs-init
+MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required — copie .env.example para .env}
+MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?MONGO_REPLICA_KEY is required — copie .env.example para .env}
+# healthcheck inline (mongodb://admin:admin123 → parametrizado)
+
+# postgres-primary + replica-1 + replica-2
+POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copie .env.example para .env}
+
+# rabbitmq-1/2/3
+RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
+RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?RABBITMQ_ERLANG_COOKIE is required — copie .env.example para .env}
+
+# order-service-1/2/3 (URI inline + SPRING_RABBITMQ_PASSWORD)
+SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:?...}@.../...
+SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
+
+# wallet-service-1/2/3
+SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
+
+# keycloak-db + keycloak
+KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?KEYCLOAK_DB_PASSWORD is required — copie .env.example para .env}
+KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required — copie .env.example para .env}
+KK_TO_RMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
+
+# kong-database + kong-migration + kong
+POSTGRES_PASSWORD: ${KONG_DB_PASSWORD:?KONG_DB_PASSWORD is required — copie .env.example para .env}
+KONG_PG_PASSWORD: ${KONG_DB_PASSWORD:?KONG_DB_PASSWORD is required — copie .env.example para .env}
+```
+
+---
+
+### `.env.example` atualizado
+
+Novo header referencia os três compose files. Novas entradas de staging adicionadas:
+
+```dotenv
+# [staging] Chave compartilhada entre os 3 nós do replica set rs0.
+# Gerar com: openssl rand -base64 756 | tr -d '\n'
+MONGO_REPLICA_KEY=<CHANGE_ME_generate_with_openssl_rand>
+
+# [staging] Erlang cookie compartilhado pelo cluster de 3 nós.
+# Gerar com: openssl rand -hex 32
+RABBITMQ_ERLANG_COOKIE=<CHANGE_ME_generate_with_openssl_rand>
+
+# [staging] Senha do banco Postgres dedicado ao Kong em staging.
+KONG_DB_PASSWORD=<CHANGE_ME>
+```
+
+> **`.gitignore`**: `.env` já estava listado — nenhuma alteração necessária.
+
+---
+
+### Critérios de aceite
+
+| Critério | Verificação | Status |
+|---|---|---|
+| Zero senhas literais em `docker-compose.yml` | `grep 'postgres123\|admin123\|guest$\|KK_TO_RMQ_PASSWORD: guest' infra/docker-compose.yml` → 0 matches | ✅ |
+| Zero senhas literais em `docker-compose.staging.yml` | `grep 'postgres123\|admin123\|secret-cookie\|VibraniumStagingRS0\|guest$' infra/docker-compose.staging.yml` → 0 matches | ✅ |
+| `.env.example` criado/atualizado com todos os placeholders | Arquivo presente na raiz com `<CHANGE_ME>` explicativos | ✅ |
+| `.env` no `.gitignore` | `grep '^.env$' .gitignore` → match | ✅ |
+
+### Artefatos alterados pelo AT-4.3.1
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `infra/docker-compose.yml` | Alterado | 9 credenciais hardcoded substituídas por `${VAR:?msg}` / `${VAR:-default}` |
+| `infra/docker-compose.staging.yml` | Alterado | ~25 credenciais hardcoded substituídas (MongoDB ×3 nós, Postgres ×3, RabbitMQ ×3, Keycloak, Kong, order-service ×3, wallet-service ×3) |
+| `.env.example` | Alterado | Header expandido para 3 compose files; variáveis de staging adicionadas (`MONGO_REPLICA_KEY`, `RABBITMQ_ERLANG_COOKIE`, `KONG_DB_PASSWORD`) com dicas `openssl rand` |
+
+---
+
 **Status**: ✅ Consolidado e Completo  
 **Última atualização**: 3 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-4.3.1**: Externalização de senhas via variáveis de ambiente nos compose files de produção e staging. `infra/docker-compose.yml`: 9 credenciais substituídas — `POSTGRES_PASSWORD`, `KONG_PG_PASSWORD` (×2), `KC_DB_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD`/`KC_BOOTSTRAP_ADMIN_PASSWORD`, `RABBITMQ_DEFAULT_PASS`, `KK_TO_RMQ_PASSWORD`. `infra/docker-compose.staging.yml`: ~25 credenciais substituídas cobrindo MongoDB (×3 nós + healthchecks inline + mongo-rs-init), PostgreSQL (×3 réplicas), RabbitMQ (×3 nós incluindo `RABBITMQ_ERLANG_COOKIE: secret-cookie`), order-service (×3 — URI inline `admin:admin123` + `SPRING_RABBITMQ_PASSWORD`), wallet-service (×3 — `SPRING_DATASOURCE_PASSWORD` + `SPRING_RABBITMQ_PASSWORD`), Keycloak-DB, Keycloak (`KC_DB_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD`, `KK_TO_RMQ_PASSWORD`), kong-database, kong-migration e kong (`KONG_PG_PASSWORD`). Sintaxe `${VAR:?msg}` para falha rápida em variáveis obrigatórias; `${VAR:-default}` para nomes de usuário sem segredo. `.env.example` expandido: header referencia os 3 compose files; novas entradas de staging `MONGO_REPLICA_KEY` (gerado via `openssl rand -base64 756`), `RABBITMQ_ERLANG_COOKIE` (via `openssl rand -hex 32`) e `KONG_DB_PASSWORD`. `.gitignore`: `.env` já listado — sem alteração. Verificação FASE GREEN: `grep` retornou 0 matches de senhas literais em ambos os arquivos. Adicionada seção 32 neste guia.
 > - **AT-4.2.1**: `@PreAuthorize("hasRole('ADMIN')")` + `Pageable` em `GET /wallets` do wallet-service. `@EnableMethodSecurity` adicionado ao `SecurityConfig` (sem isso, `@PreAuthorize` é ignorada silenciosamente). `WalletController.listAll()` refatorado para aceitar `Pageable` e retornar `Page<WalletResponse>`. `WalletService.findAll(Pageable)` usa `walletRepository.findAll(pageable).map(WalletResponse::from)` — `JpaRepository` herda `PagingAndSortingRepository`, nenhuma alteração no repositório. Resposta inclui `content`, `totalElements`, `totalPages`, `size`, `number`. Novos testes TDD: TC-LA-1 (ROLE_USER → 403), TC-LA-2 (ROLE_ADMIN → 200, Page fields), TC-LA-3 (default size=20, page=0). Testes existentes migrados para `$.content[*]`. `SecurityUnauthorizedTest` atualizado com `@WithMockUser(roles = "ADMIN")` no teste de regressão. `Tests run: 131, Failures: 0` (erros restantes são pré-existentes). Adicionada seção 31 neste guia.
 > - **AT-4.1.1**: Ownership check em `GET /orders/{orderId}` — proteção IDOR/BOLA (OWASP API Security Top 10). `getOrder()` no `OrderQueryController` agora recebe `@AuthenticationPrincipal Jwt jwt` e compara `jwt.getSubject()` com `OrderDocument.userId` após buscar o documento no MongoDB. Se divergirem e o token não contiver `ROLE_ADMIN`, lança `ResponseStatusException(HttpStatus.FORBIDDEN)` com mensagem descritiva. Admin bypass: claim `roles` com `ROLE_ADMIN` ignora o filtro de ownership (mesmo padrão do `WalletController` AT-10.2). Guard `jwt != null` preservado para compatibilidade com `@WithMockUser` em testes. 3 novos testes TDD em `OrderQueryControllerTest`: TC-8a (usuário diferente → 403), TC-8b (dono → 200), TC-8c (admin → 200 bypass). `Tests run: 3, Failures: 0 — BUILD SUCCESS`. Adicionada seção 30 neste guia.
 > - **AT-3.2.1**: `PRICE_PRECISION` aumentada de `1_000_000L` para `100_000_000L` no `RedisMatchEngineAdapter`. Com a constante anterior, preços com 7+ casas decimais (ex: `0.00000001` e `0.00000002`) colapsavam para score `0` no Redis Sorted Set — indistinguíveis, quebrando a ordenação do livro para ativos de precisão satoshi. Com `10^8`, os scores são `1` e `2` (exatos, dentro do limite IEEE-754 double $2^{53}$). `match_engine.lua` usa `tonumber()` — nenhuma alteração necessária no Lua. Novo TC-PP-1 em `MatchEngineRedisIntegrationTest` (TDD RED → GREEN): verifica scores `1.0`/`2.0` e match exato com `ask1OrderId`. `priceToScore` helper de teste atualizado para consistência. 10/10 testes passam, BUILD SUCCESS. Adicionada seção 29 neste guia.
