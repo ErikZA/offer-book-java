@@ -2,8 +2,8 @@
 
 # Script para iniciar o Keycloak e configurar realm/clients
 
-# 1. Criar realm "vibranium"
-#    Nome: vibranium
+# 1. Criar realm "orderbook-realm"
+#    Nome: orderbook-realm
 #    Enabled: true
 
 # 2. Criar cliente "api-gateway"
@@ -36,4 +36,4 @@
 # Password: admin123
 
 echo "Keycloak está pronto em http://localhost:8180"
-echo "Realm OpenID Connect URL: http://keycloak:8080/realms/vibranium/.well-known/openid-configuration"
+echo "Realm OpenID Connect URL: http://keycloak:8080/realms/orderbook-realm/.well-known/openid-configuration"

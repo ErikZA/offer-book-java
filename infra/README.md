@@ -17,7 +17,7 @@ infra/
 │   ├── Dockerfile.kong-init    # Kong-init: deck sync de configuração declarativa
 │   └── Dockerfile.jwks-rotator # ⭐ Sidecar JWKS rotator (AT-13.1): Alpine + curl + jq
 ├── keycloak/
-│   ├── realm-export.json       # Realm "vibranium" (clientes, roles, mappers)
+│   ├── realm-export.json       # Realm "orderbook-realm" (clientes, roles, mappers)
 │   ├── keycloak-setup.sh       # Provisionamento pós-subida (usuários, grupos)
 │   └── keycloak-to-rabbit-3.0.5.jar  # Plugin: eventos Keycloak → RabbitMQ
 ├── kong/
