@@ -9,7 +9,7 @@ Os arquivos Docker Compose foram reorganizados do diretório legado `docker/` pa
 infra/
 ├── docker-compose.yml          # Infra-only (Kong + Keycloak + PostgreSQL + RabbitMQ + Redis-Kong + jwks-rotator)
 ├── docker-compose.dev.yml      # Dev completo (infra + order-service + wallet-service hot-reload)
-├── docker-compose.staging.yml  # Staging com réplicas (3× MongoDB rs0, PostgreSQL, Redis, RabbitMQ + Redis-Kong)
+├── docker-compose.staging.yml  # Staging com réplicas (3× MongoDB rs0, PostgreSQL, Redis, RabbitMQ + Redis-Kong + kong-init)
 ├── docker/
 │   ├── Dockerfile              # Imagem base para apps (build multi-stage Maven)
 │   ├── Dockerfile.keycloak     # Keycloak 22 + plugin keycloak-to-rabbit-3.0.5.jar
@@ -76,12 +76,19 @@ docker compose -f infra/docker-compose.staging.yml up mongo-rs-init
 # Apenas infra base (recomendado para validação sem apps)
 docker compose -f infra/docker-compose.staging.yml up -d \
   mongodb-1 mongodb-2 mongodb-3 mongo-rs-init \
-  postgres-primary redis-1 rabbitmq-1 keycloak-db keycloak kong-database kong-migration redis-kong kong
+  postgres-primary redis-1 rabbitmq-1 keycloak-db keycloak kong-database kong-migration redis-kong kong kong-init
 
 # Stack completo (requer imagens pré-buildadas: order-service:latest, wallet-service:latest)
 docker compose -f infra/docker-compose.staging.yml up -d
 ```
 
+> **Kong Init (AT-5.1.4)** — Em staging, o serviço `kong-init` (container de curta duração) provisiona
+> automaticamente 2 services (`order-service`, `wallet-service`), 3 routes e 9 plugins
+> (`jwt` + `rate-limiting` + `cors` × 3 rotas) via `kong-setup.sh` (idempotente via PUT).
+> Aguarda `kong`, `keycloak` e `redis-kong` estarem `healthy` antes de executar.
+> Rate-limiting usa `redis-kong:6379 db=1`. Consumer `keycloak-realm-consumer` registrado
+> com credencial JWT RS256 (JWKS do Keycloak). Após subir: `curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/v1/orders` deve retornar `401` (não `404`).
+>
 > **PostgreSQL Streaming Replication (AT-5.1.3)** — Em staging, `postgres-primary` opera com
 > `wal_level=replica` e cria o usuário `replicator`. As réplicas (`postgres-replica-1/2`) usam
 > `pg-replica-entrypoint.sh` para clonar o primary via `pg_basebackup` e iniciar como

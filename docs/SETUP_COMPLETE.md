@@ -18,6 +18,7 @@
 ✅ US-008 — Máquina de Estados Segura no Agregado Order
 ✅ AT-13.1 — Rotação automática de JWKS no Kong via sidecar (zero downtime)
 ✅ AT-5.1.3 — PostgreSQL Streaming Replication (1 primary + 2 hot standbys)
+✅ AT-5.1.4 — Kong Init adicionado ao staging (services, routes, plugins, consumer JWT)
 ```
 
 ### Implementações recentes
@@ -59,6 +60,9 @@
 | **BUG wallet-service-2/3** (AT-5.1.3) | ✅ | Corrigido: apontavam para réplicas (read-only); agora apontam para `postgres-primary` |
 | **`wallet-service-1` depends_on** (AT-5.1.3) | ✅ | Corrigido: `service_started` → `service_healthy` para garantir schema criado no boot |
 | **`AT-5.1.3-pg-streaming-replication-validation.sh`** | ✅ | 5 TCs: `wal_level`, `pg_stat_replication` (2 replicas), `hot_standby`, rejeição de writes, URLs |
+| **`kong-init`** service (AT-5.1.4) | ✅ | Adicionado ao `docker-compose.staging.yml`; provisiona 2 services + 3 routes + 9 plugins + consumer JWT RS256 |
+| **`KEYCLOAK_REALM: orderbook-realm`** (AT-5.1.4) | ✅ | Alinhado com `realm-export.json`; `KEYCLOAK_ISSUER` usa `localhost:8080` (porta mapeada no staging) |
+| **`restart: 'no'`** (AT-5.1.4) | ✅ | Init-container pattern — executa uma vez e sai; `depends_on` kong/keycloak/redis-kong com `service_healthy` |
 ---
 
 ## 🎯 O Que Foi Realizado
