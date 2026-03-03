@@ -954,6 +954,49 @@ services:
             retries: 5
             start_period: 30s
 
+    # ================== Kong Init (Staging) ==================
+    # Container de curta duração: provisiona services, routes, plugins JWT RS256,
+    # rate-limiting Redis e credencial JWKS no Kong via Admin API.
+    # Executa kong/kong-setup.sh (264 linhas, 100% idempotente via PUT).
+    # Equivalente ao kong-init do compose de produção (infra/docker-compose.yml L348).
+    kong-init:
+        build:
+            # Build context = infra/ — acessa kong/kong-setup.sh e docker/Dockerfile.kong-init
+            context: .
+            dockerfile: docker/Dockerfile.kong-init
+        container_name: vibranium-kong-init-staging
+        restart: 'no'
+        environment:
+            KONG_ADMIN_URL: http://kong:8001
+            KEYCLOAK_URL: http://keycloak:8080
+            KEYCLOAK_REALM: orderbook-realm
+            KONG_CONSUMER_NAME: keycloak-realm-consumer
+            # Em staging o Keycloak está mapeado para localhost:8080 (porta 8080:8080).
+            # O `iss` dos JWTs emitidos usa o hostname acessível ao cliente — em staging
+            # é localhost:8080. Em ambiente com DNS público, substituir pela URL externa.
+            KEYCLOAK_ISSUER: http://localhost:8080/realms/orderbook-realm
+        depends_on:
+            kong:
+                condition: service_healthy
+            keycloak:
+                condition: service_healthy
+            redis-kong:
+                condition: service_healthy
+        networks:
+            - vibranium-staging-network
+        deploy:
+            resources:
+                limits:
+                    memory: 128M
+                reservations:
+                    cpus: '0.25'
+        logging:
+            driver: 'json-file'
+            options:
+                max-size: '10m'
+                max-file: '3'
+                labels: 'service=kong-init-staging'
+
 networks:
     vibranium-staging-network:
         driver: bridge
