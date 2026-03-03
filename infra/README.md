@@ -85,8 +85,10 @@ docker compose -f infra/docker-compose.staging.yml up -d
 > **PostgreSQL Streaming Replication (AT-5.1.3)** — Em staging, `postgres-primary` opera com
 > `wal_level=replica` e cria o usuário `replicator`. As réplicas (`postgres-replica-1/2`) usam
 > `pg-replica-entrypoint.sh` para clonar o primary via `pg_basebackup` e iniciar como
-> `hot_standby` (somente leitura). Todos os `wallet-service` apontam para `postgres-primary`
-> para escrita. Para validar: `bash tests/AT-5.1.3-pg-streaming-replication-validation.sh`.
+> `hot_standby` (somente leitura). Todos os `wallet-service` (1, 2 e 3) apontam para
+> `postgres-primary` para escrita — a `condition: service_healthy` no `depends_on` garante
+> que o `initdb` + scripts de init + schema `vibranium` estejam prontos antes do Flyway conectar.
+> Para validar: `bash tests/AT-5.1.3-pg-streaming-replication-validation.sh`.
 >
 > **⚠️ Primeiro boot:** apague os volumes das réplicas antes de subir:
 > ```bash

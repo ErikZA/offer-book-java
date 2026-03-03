@@ -68,6 +68,7 @@ Alternativa ao test-runner Maven para validações de infra:
 |--------|-----------|
 | `AT-12.1-rate-limiting-redis-validation.sh` | Valida `policy=redis` em todos os plugins rate-limiting |
 | `AT-13.1-jwks-rotation-validation.sh` | ⭐ Valida rotação automática JWKS: artefatos, 401→200, idempotência (10 testes) |
+| `AT-5.1.3-pg-streaming-replication-validation.sh` | ⭐ Valida PostgreSQL Streaming Replication: `wal_level`, `pg_stat_replication` (2 réplicas), `hot_standby`, rejeição de writes nas réplicas, URLs dos wallet-services (5 testes) |
 
 ```bash
 # Executar validação JWKS rotation (requer infra de teste ativa)
@@ -78,6 +79,11 @@ chmod +x tests/AT-13.1-jwks-rotation-validation.sh
 KONG_ADMIN_URL=http://localhost:8001 \
 KEYCLOAK_URL=http://localhost:8180 \
 ./tests/AT-13.1-jwks-rotation-validation.sh
+
+# Executar validação PostgreSQL Streaming Replication (requer staging ativo)
+# Pré-requisito: docker compose -f infra/docker-compose.staging.yml up -d
+chmod +x tests/AT-5.1.3-pg-streaming-replication-validation.sh
+./tests/AT-5.1.3-pg-streaming-replication-validation.sh
 ```
 
 ## ⚠️ Observações técnicas
