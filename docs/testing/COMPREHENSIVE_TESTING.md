@@ -36,7 +36,8 @@
 32. [Externalização de Senhas via Variáveis de Ambiente — Compose Files (AT-4.3.1)](#externalização-de-senhas-via-variáveis-de-ambiente--compose-files-at-431)
 33. [Multi-Match Loop Atômico no Lua EVAL — Consumo de Liquidez Total (AT-3.1.1)](#multi-match-loop-atômico-no-lua-eval--consumo-de-liquidez-total-at-311)
 34. [@JsonIgnoreProperties em Todos os Records — Forward Compatibility (AT-5.2.1)](#jsonignoreproperties-em-todos-os-records--forward-compatibility-at-521)
-35. [Referências](#referências)
+35. [Inicialização do Redis Cluster no Staging — redis-cluster-init (AT-5.1.1)](#inicialização-do-redis-cluster-no-staging--redis-cluster-init-at-511)
+36. [Referências](#referências)
 
 ---
 
@@ -4157,10 +4158,175 @@ mvn test -pl apps/order-service -Dtest=RedisMatchEngineAdapterParseResultTest
 
 ---
 
+## Inicialização do Redis Cluster no Staging — redis-cluster-init (AT-5.1.1)
+
+### Problema
+
+Os 3 nós Redis em `docker-compose.staging.yml` foram configurados com `--cluster-enabled yes`, mas
+**nunca executavam `redis-cli --cluster create`**. O resultado era que cada nó iniciava isolado — sem
+slot map distribuído — e o comando `redis-cli -h redis-1 cluster info` retornava `cluster_state:fail`.
+Nenhuma chave podia ser escrita e scripts Lua (`EVAL`) falhavam imediatamente com:
+
+```
+CLUSTERDOWN Hash slot not served
+```
+
+Dois problemas adicionais:
+
+1. **Sem `healthcheck`** nos 3 nós Redis — o `depends_on` dos order-services usava `condition: service_started`,
+   que não aguarda o Redis aceitar conexões reais. O daemon pode ainda não estar pronto, causando
+   `ConnectionRefusedException` no boot do Spring diretamente.
+2. **`depends_on: - redis-1`** nos nós `redis-2` / `redis-3` — sintaxe de lista sem `condition: service_healthy`
+   não respeita o healthcheck; redis-2 poderia iniciar antes de redis-1 estar aceitando conexões, quebrando
+   o handshake de cluster.
+
+### Solução
+
+#### 1. Healthchecks nos 3 nós Redis
+
+```yaml
+healthcheck:
+    # redis-cli PING retorna "PONG" → exit 0; qualquer erro → exit 1.
+    # retries: 10 × interval: 5s = até 50s de espera antes de marcar unhealthy.
+    test: ['CMD', 'redis-cli', '-p', '6379', 'ping']
+    interval: 5s
+    timeout: 3s
+    retries: 10
+```
+
+#### 2. `depends_on: condition: service_healthy` em redis-2 e redis-3
+
+```yaml
+# redis-2 e redis-3
+depends_on:
+    redis-1:
+        condition: service_healthy
+```
+
+Garante que redis-2 e redis-3 só sobem após redis-1 estar totalmente pronto — elimina condição de
+corrida no handshake gossip de cluster.
+
+#### 3. Serviço `redis-cluster-init`
+
+Container de curta duração (`restart: 'no'`) que, após todos os 3 nós estarem `service_healthy`,
+executa `redis-cli --cluster create` e encerra com código 0:
+
+```yaml
+redis-cluster-init:
+    image: redis:7-alpine
+    container_name: vibranium-redis-cluster-init
+    command: >
+        sh -c '
+          redis-cli --cluster create
+            redis-1:6379
+            redis-2:6379
+            redis-3:6379
+            --cluster-replicas 0
+            --cluster-yes
+          redis-cli -h redis-1 -p 6379 cluster info | grep cluster_state
+        '
+    depends_on:
+        redis-1:
+            condition: service_healthy
+        redis-2:
+            condition: service_healthy
+        redis-3:
+            condition: service_healthy
+    restart: 'no'
+```
+
+- `--cluster-replicas 0`: 3 primários sem réplicas — adequado para staging.
+- `--cluster-yes`: responde automaticamente ao prompt de confirmação — obrigatório para execução não interativa.
+- Nós referenciados pelos nomes DNS internos Docker; portas 6380/6381 são apenas para acesso externo do host.
+  Dentro da rede `vibranium-staging-network` todos os 3 escutam na porta **6379**.
+- O `command` termina com `cluster info | grep cluster_state`, que imprime `cluster_state:ok` nos logs
+  se o cluster foi formado com sucesso.
+
+#### 4. `order-service-1` depende de `redis-cluster-init`
+
+```yaml
+order-service-1:
+    depends_on:
+        mongo-rs-init:
+            condition: service_completed_successfully
+        # AT-5.1.1: aguarda o cluster Redis estar com slot map válido
+        # antes do spring boot tentar submeter scripts Lua (EVAL).
+        redis-cluster-init:
+            condition: service_completed_successfully
+        rabbitmq-1:
+            condition: service_started
+```
+
+`service_completed_successfully` garante que `redis-cluster-init` saiu com **código 0** (todos os
+16384 slots atribuídos) antes de qualquer instância do order-service tentar se conectar ao Redis.
+
+### Risco Técnico — Hash Tags `{vibranium}`
+
+Todas as chaves do motor de match usam a hash tag `{vibranium}`:
+
+```
+{vibranium}:asks:BTC/BRL
+{vibranium}:bids:BTC/BRL
+{vibranium}:order:{orderId}
+```
+
+A hash tag força o Redis Cluster a encaminhar **todas** essas chaves para o mesmo slot e,
+consequentemente, para o **mesmo nó primário**:
+
+| Consequência | Impacto em Staging |
+|---|---|
+| Motor de match sempre acessa 1 dos 3 nós | Os outros 2 ficam ociosos para essas chaves — aceitável |
+| `CRC16("{vibranium}") % 16384 = slot 7638` — nó determinístico | Slot fixo após `--cluster create` |
+| Lua `EVAL` com múltiplas keys no mesmo slot | ✅ Válido — `EVAL` exige todas as keys no mesmo slot |
+
+Em produção real, se a carga do motor de match escalar, o padrão deve ser revisado para substituir
+a hash tag `{vibranium}` por hashing por par de negociação (`{BTC/BRL}`).
+
+### Fase RED → GREEN
+
+#### FASE RED
+
+```bash
+docker compose -f infra/docker-compose.staging.yml up redis-1 redis-2 redis-3 -d
+docker exec vibranium-redis-1 redis-cli cluster info
+# → cluster_state:fail
+# → cluster_slots_assigned:0
+```
+
+#### FASE GREEN
+
+```bash
+docker compose -f infra/docker-compose.staging.yml up redis-1 redis-2 redis-3 redis-cluster-init -d
+# Aguarda vibranium-redis-cluster-init exited (0)
+docker exec vibranium-redis-1 redis-cli cluster info | grep cluster_state
+# → cluster_state:ok
+docker exec vibranium-redis-1 redis-cli cluster info | grep cluster_slots_assigned
+# → cluster_slots_assigned:16384
+```
+
+### Critérios de Aceite
+
+| # | Critério | Verificação | Status |
+|---|---|---|---|
+| 1 | `cluster_state:ok` em redis-1 | `redis-cli -h redis-1 cluster info \| grep cluster_state` | ✅ |
+| 2 | `cluster_slots_assigned:16384` | `redis-cli cluster info` | ✅ |
+| 3 | Order-service sobe **após** cluster formado | `depends_on: redis-cluster-init: service_completed_successfully` | ✅ |
+| 4 | Scripts Lua executam sem `CLUSTERDOWN` | `EVAL` via `RedisMatchEngineAdapter.tryMatch()` bem-sucedido | ✅ |
+| 5 | redis-2/redis-3 aguardam redis-1 saudável | `condition: service_healthy` | ✅ |
+
+### Artefatos alterados pelo AT-5.1.1
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `infra/docker-compose.staging.yml` | Alterado | Healthchecks adicionados a redis-1/2/3 (CMD `redis-cli ping`, interval 5s, retries 10); `depends_on` de redis-2/redis-3 corrigido para `condition: service_healthy`; novo serviço `redis-cluster-init` (`restart: 'no'`, depende dos 3 nós `service_healthy`); `order-service-1.depends_on` atualizado: `redis-1: service_started` substituído por `redis-cluster-init: service_completed_successfully` |
+
+---
+
 **Status**: ✅ Consolidado e Completo  
 **Última atualização**: 3 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-5.1.1**: Inicialização do Redis Cluster no Staging — `infra/docker-compose.staging.yml` atualizado com healthchecks (`redis-cli ping`) nos 3 nós Redis; `depends_on` de redis-2/redis-3 corrigido de sintaxe de lista para `condition: service_healthy`; novo serviço `redis-cluster-init` (container de curta duração `restart: 'no'`, imagem `redis:7-alpine`, executa `redis-cli --cluster create redis-1:6379 redis-2:6379 redis-3:6379 --cluster-replicas 0 --cluster-yes`, depende dos 3 nós com `service_healthy`); `order-service-1.depends_on` atualizado: substituição de `redis-1: service_started` por `redis-cluster-init: service_completed_successfully`. Risco documentado: hash tag `{vibranium}` concentra todos os slots do motor de match em 1 dos 3 nós — comportamento intencional para garantir atomicidade do `EVAL` Lua multi-key. FASE RED: `cluster_state:fail`, `cluster_slots_assigned:0`. FASE GREEN: `cluster_state:ok`, `cluster_slots_assigned:16384`. Adicionada seção 35 neste guia.
 > - **AT-5.2.1**: `@JsonIgnoreProperties(ignoreUnknown = true)` adicionado a todos os 18 records de `common-contracts` (13 eventos + 5 comandos). A anotação em nível de tipo sobrepõe `FAIL_ON_UNKNOWN_PROPERTIES=true` do mapper — records são auto-protegidos contra campos futuros independente da configuração do consumer. `ContractSchemaVersionTest` ampliado com Cenário 4 (`ForwardCompatAnnotation`): novo teste `testForwardCompat_withDefaultObjectMapper_unknownFieldsIgnored()` usa `new ObjectMapper().registerModule(new JavaTimeModule())` sem config global de `FAIL_ON_UNKNOWN_PROPERTIES` e asserta `doesNotThrowAnyException()`; teste `givenJsonWithUnknownField_withStrictMapper_*` atualizado para refletir que a anotação sobrepõe o mapper estrito. 18 arquivos alterados (imports + anotação), 64 testes, 0 falhas, BUILD SUCCESS. Adicionada seção 34 neste guia.
 > - **AT-3.1.1**: Multi-Match Loop Atômico no Lua EVAL — `match_engine.lua` refatorado de `LIMIT 0 1` para loop `while remainingQty > 0 and iterations < MAX_MATCHES` (MAX=100). Protocolo de retorno novo: array plano `{STATUS, N, v₁, q₁, f₁, r₁, …}` com STATUS ∈ {MULTI_MATCH, PARTIAL, NO_MATCH}; formato `MATCH` legado suportado por retrocompatibilidade. `RedisMatchEngineAdapter.tryMatch()` e `parseResult()` passaram a retornar `List<MatchResult>`; helper `parseSingleMatchEntry()` extraiu lógica compartilhada. `FundsReservedEventConsumer.handleMatches()` itera a lista, emite `MatchExecutedEvent` por contraparte e um único evento de fill ao final (`OrderFilledEvent` ou `OrderPartiallyFilledEvent` baseado no status final da ordem). 7 arquivos alterados: Lua script, adapter, consumer, 2 testes unitários e 2 testes de integração. Novos testes: `MultiMatchFormatTests` (4 casos), `PartialFormatTests` (2 casos), TC-MM-1..4 em `MatchEngineRedisIntegrationTest`. 157 testes executados, zero regressões introduzidas. Adicionada seção 33 neste guia.
 > - **AT-4.3.1**: Externalização de senhas via variáveis de ambiente nos compose files de produção e staging. `infra/docker-compose.yml`: 9 credenciais substituídas — `POSTGRES_PASSWORD`, `KONG_PG_PASSWORD` (×2), `KC_DB_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD`/`KC_BOOTSTRAP_ADMIN_PASSWORD`, `RABBITMQ_DEFAULT_PASS`, `KK_TO_RMQ_PASSWORD`. `infra/docker-compose.staging.yml`: ~25 credenciais substituídas cobrindo MongoDB (×3 nós + healthchecks inline + mongo-rs-init), PostgreSQL (×3 réplicas), RabbitMQ (×3 nós incluindo `RABBITMQ_ERLANG_COOKIE: secret-cookie`), order-service (×3 — URI inline `admin:admin123` + `SPRING_RABBITMQ_PASSWORD`), wallet-service (×3 — `SPRING_DATASOURCE_PASSWORD` + `SPRING_RABBITMQ_PASSWORD`), Keycloak-DB, Keycloak (`KC_DB_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD`, `KK_TO_RMQ_PASSWORD`), kong-database, kong-migration e kong (`KONG_PG_PASSWORD`). Sintaxe `${VAR:?msg}` para falha rápida em variáveis obrigatórias; `${VAR:-default}` para nomes de usuário sem segredo. `.env.example` expandido: header referencia os 3 compose files; novas entradas de staging `MONGO_REPLICA_KEY` (gerado via `openssl rand -base64 756`), `RABBITMQ_ERLANG_COOKIE` (via `openssl rand -hex 32`) e `KONG_DB_PASSWORD`. `.gitignore`: `.env` já listado — sem alteração. Verificação FASE GREEN: `grep` retornou 0 matches de senhas literais em ambos os arquivos. Adicionada seção 32 neste guia.

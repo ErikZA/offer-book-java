@@ -205,6 +205,9 @@ services:
         container_name: vibranium-redis-1
         ports:
             - '6379:6379'
+        # --cluster-enabled yes: liga o modo cluster; o slot map é criado por redis-cluster-init.
+        # --cluster-node-timeout 5000: um nó é considerado falho após 5 s sem heartbeat.
+        # --cluster-config-file: cada nó persiste seu view do cluster em /data/nodes.conf.
         command: redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379
         volumes:
             - redis_1_data:/data
@@ -216,6 +219,14 @@ services:
                     memory: 512M
                 reservations:
                     cpus: '0.5'
+        healthcheck:
+            # redis-cli PING retorna "PONG" → exit 0; qualquer outro resultado → exit 1.
+            # interval/retries conservadores para evitar que redis-cluster-init dispare
+            # antes dos nós estarem prontos para receber conexões.
+            test: ['CMD', 'redis-cli', '-p', '6379', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 10
 
     redis-2:
         image: redis:7-alpine
@@ -233,8 +244,14 @@ services:
                     memory: 512M
                 reservations:
                     cpus: '0.5'
+        healthcheck:
+            test: ['CMD', 'redis-cli', '-p', '6379', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 10
         depends_on:
-            - redis-1
+            redis-1:
+                condition: service_healthy
 
     redis-3:
         image: redis:7-alpine
@@ -252,8 +269,61 @@ services:
                     memory: 512M
                 reservations:
                     cpus: '0.5'
+        healthcheck:
+            test: ['CMD', 'redis-cli', '-p', '6379', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 10
         depends_on:
-            - redis-1
+            redis-1:
+                condition: service_healthy
+
+    # ================== Redis Cluster Init ==================
+    # Container de curta duração: executa `redis-cli --cluster create` com os 3 nós e sai
+    # com código 0 após o cluster estar formado (16384 hash slots distribuídos).
+    # --cluster-replicas 0: sem replicas — staging usa 3 primários sem redundância interna.
+    # Os order-services aguardam service_completed_successfully para garantir que comandos
+    # Lua (EVAL) sejam executados contra um cluster com slot map válido.
+    #
+    # Risco — hash tags {vibranium}: todas as chaves do motor de match usam a hash tag
+    # {vibranium}, o que força todos os slots para o mesmo nó. Isso é INTENCIONAL para
+    # garantir que o script Lua multi-key seja executado atomicamente em um único shard.
+    # Com --cluster-replicas 0 e 3 primários, o slot {vibranium} cai em apenas 1 dos 3
+    # nós — os outros 2 ficarão ociosos para essas chaves (aceitável em staging).
+    redis-cluster-init:
+        image: redis:7-alpine
+        container_name: vibranium-redis-cluster-init
+        # Cada nó deve ser referenciado pelo nome DNS interno que outros containers usam
+        # para se conectar — NÃO pelas portas do host (6380/6381 são apenas para acesso externo).
+        # Todos os 3 containers escutam na porta 6379 dentro da rede Docker.
+        command: >
+            sh -c '
+              echo "Aguardando nós Redis estarem prontos..."
+              redis-cli --cluster create
+                redis-1:6379
+                redis-2:6379
+                redis-3:6379
+                --cluster-replicas 0
+                --cluster-yes
+              echo "Cluster criado! Verificando estado:"
+              redis-cli -h redis-1 -p 6379 cluster info | grep cluster_state
+            '
+        networks:
+            - vibranium-staging-network
+        depends_on:
+            redis-1:
+                condition: service_healthy
+            redis-2:
+                condition: service_healthy
+            redis-3:
+                condition: service_healthy
+        deploy:
+            resources:
+                limits:
+                    memory: 64M
+                reservations:
+                    cpus: '0.1'
+        restart: 'no'
 
     # ================== RabbitMQ (3 Replicas) ==================
     rabbitmq-1:
@@ -364,8 +434,11 @@ services:
             # antes de conectar — evita falha de MongoTransactionManager no boot.
             mongo-rs-init:
                 condition: service_completed_successfully
-            redis-1:
-                condition: service_started
+            # Aguarda o cluster Redis ser inicializado (16384 slots distribuídos) antes de
+            # subir o order-service — garante que scripts Lua (EVAL) não falhem com
+            # CLUSTERDOWN: Hash slot not served no primeiro startup.
+            redis-cluster-init:
+                condition: service_completed_successfully
             rabbitmq-1:
                 condition: service_started
         networks:
