@@ -111,12 +111,12 @@ src/main/java/com/vibranium/orderservice/
 
 O Read Model MongoDB é populado por 4 filas dedicadas, cada uma consumindo um tipo de evento:
 
-| Fila de Projeção                       | Binding (Routing Key)                         | Consumer                              |
-|----------------------------------------|-----------------------------------------------|---------------------------------------|
-| `order.projection.received`             | `order.events.order-received`                 | `onOrderReceived` → cria doc PENDING  |
-| `order.projection.funds-reserved`       | `wallet.events.funds-reserved`                | `onFundsReserved` → status → OPEN     |
-| `order.projection.match-executed`       | `order.events.match-executed`                 | `onMatchExecuted` → FILLED/PARTIAL    |
-| `order.projection.cancelled`            | `order.events.order-cancelled`                | `onOrderCancelled` → status CANCELLED |
+| Fila de Projeção                       | Binding (Routing Key)                         | Consumer                              | DLX? |
+|----------------------------------------|-----------------------------------------------|---------------------------------------|------|
+| `order.projection.received`             | `order.events.order-received`                 | `onOrderReceived` → cria doc PENDING  | ✅    |
+| `order.projection.funds-reserved`       | `wallet.events.funds-reserved`                | `onFundsReserved` → status → OPEN     | ✅    |
+| `order.projection.match-executed`       | `order.events.match-executed`                 | `onMatchExecuted` → FILLED/PARTIAL    | ✅    |
+| `order.projection.cancelled`            | `order.events.order-cancelled`                | `onOrderCancelled` → status CANCELLED | ✅    |
 
 > **Fanout Pattern:** As filas de projeção compartilham a mesma fila `vibranium.events`
 > TopicExchange com as filas do Command Side. Isso garante que o Read Model receba os mesmos
@@ -130,13 +130,52 @@ O Read Model MongoDB é populado por 4 filas dedicadas, cada uma consumindo um t
 > via filtro `$ne` no MongoDB, portanto AUTO ACK é seguro: a perda de um evento degrada o Read Model
 > mas não corrompe os dados do Command Side.
 
+> **DLX nas filas de projeção — AT-2.2.1:** Cada fila de projeção possui
+> `x-dead-letter-exchange=vibranium.dlq` com routing key individual (`<queue>.dlq`).
+> O `autoAckContainerFactory` define `defaultRequeueRejected=false`, garantindo que qualquer
+> exceção não capturada (NPE, `MessageConversionException`, etc.) emita `basicNack(requeue=false)`
+> — sem esse flag, erros de runtime causariam loop infinito de re-enqueue. Mensagens tóxicas
+> são roteadas para as DLQs correspondentes para inspeção e re-processamento manual:
+>
+> | DLQ de Projeção | Origem |
+> |---|---|
+> | `order.projection.received.dlq` | `order.projection.received` |
+> | `order.projection.funds-reserved.dlq` | `order.projection.funds-reserved` |
+> | `order.projection.match-executed.dlq` | `order.projection.match-executed` |
+> | `order.projection.cancelled.dlq` | `order.projection.cancelled` |
+>
+> ⚠️ **Nota operacional:** o RabbitMQ não permite alterar argumentos de fila existente.
+> Antes de implantar esta versão, delete e recrie as 4 filas de projeção:
+> ```bash
+> rabbitmqadmin delete queue name=order.projection.received
+> rabbitmqadmin delete queue name=order.projection.funds-reserved
+> rabbitmqadmin delete queue name=order.projection.match-executed
+> rabbitmqadmin delete queue name=order.projection.cancelled
+> ```
+
 ### Dead Letter Queue (DLQ)
 
-Filas com `x-dead-letter-exchange=vibranium.dlq` e `x-dead-letter-routing-key=order.dead-letter`
-enviam mensagens para `order.dead-letter` após o número máximo de tentativas de retry.
+Filas com `x-dead-letter-exchange=vibranium.dlq` enviam mensagens rejeitadas para DLQs específicas
+após o número máximo de tentativas de retry.
 
-O binding `vibranium.dlq → order.dead-letter` é declarado explicitamente em `RabbitMQConfig.deadLetterBinding()`.
-Sem esse binding, mensagens mortas seriam descartadas silenciosamente (unroutable).
+#### DLQ do Command Side
+
+Filas do Command Side usam `x-dead-letter-routing-key=order.dead-letter`, roteando para a fila
+`order.dead-letter`. O binding `vibranium.dlq → order.dead-letter` é declarado em
+`RabbitMQConfig.deadLetterBinding()`. Sem esse binding, mensagens mortas seriam descartadas
+silenciosamente (unroutable).
+
+#### DLQs do Query Side / Projeção (AT-2.2.1)
+
+Cada fila de projeção possui routing key individual, permitindo identificar a origem da mensagem
+toxíca dentro da DLX:
+
+| Fila de Projeção | DLQ | Routing Key na DLX |
+|---|---|---|
+| `order.projection.received` | `order.projection.received.dlq` | `order.projection.received.dlq` |
+| `order.projection.funds-reserved` | `order.projection.funds-reserved.dlq` | `order.projection.funds-reserved.dlq` |
+| `order.projection.match-executed` | `order.projection.match-executed.dlq` | `order.projection.match-executed.dlq` |
+| `order.projection.cancelled` | `order.projection.cancelled.dlq` | `order.projection.cancelled.dlq` |
 
 **Configuração de retry** (em `application.yaml`):
 ```yaml
@@ -225,6 +264,9 @@ mvn test -pl apps/order-service -Dtest=RoutingKeyLiteralTest
 
 # Apenas o SagaTimeoutCleanupJob (AT-09.1/AT-09.2)
 mvn test -pl apps/order-service -Dtest=SagaTimeoutCleanupJobTest
+
+# Apenas os testes de DLX/DLQ nas filas de projeção (AT-2.2.1)
+mvn test -pl apps/order-service -Dtest=ProjectionDlqIntegrationTest
 ```
 
 ## 🧪 Cobertura de Testes de Integração
@@ -240,6 +282,8 @@ mvn test -pl apps/order-service -Dtest=SagaTimeoutCleanupJobTest
 | `MatchEngineRedisIntegrationTest` | Integração | Script Lua atômico no Sorted Set Redis | — |
 | **`RedisKeyFormatIT`** | **Integração (Spring Context)** | **FASE RED → GREEN: keys com hash tag `{vibranium}` injetadas via `@Value`** | **AT-11.1** |
 | **`RedisClusterHashTagIT`** | **Integração (CRC16 + Testcontainers Cluster)** | **CRC16 slot equality; CROSSSLOT antes e sem erro após hash tags em cluster real** | **AT-11.1** |
+| **`ProjectionAckIntegrationTest`** | **Integração (AMQP ACK)** | **AUTO ACK em listeners de projeção: fila esvazia após ACK automático (Management API)** | **AT-1.2.1** |
+| **`ProjectionDlqIntegrationTest`** | **Integração (DLQ)** | **TC-DLQ-1: payload tóxico roteado para DLQ; TC-DLQ-2: smoke test das 4 DLQs de projeção** | **AT-2.2.1** |
 | `OrderQueryControllerTest` | Integração REST | Read Model MongoDB — paginação e detalhe | — |
 | **`RoutingKeyLiteralTest`** | **Guarda Arquitetural** | **Impede strings literais de routing key fora de `RabbitMQConfig`** | **AT-02.2** |
 | **`TracingW3CPropagationIntegrationTest`** | **Integração (Tracing)** | **RED→GREEN: header W3C `traceparent` injetado pelo `RabbitTemplate` após AT-14.1** | **AT-14.1** |
