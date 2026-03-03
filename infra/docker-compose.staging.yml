@@ -654,8 +654,12 @@ services:
             SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
             SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
         depends_on:
+            # service_healthy garante que initdb + pg-primary-init.sh + init-postgres.sql
+            # já foram executados (schema vibranium criado) antes do Flyway conectar.
+            # service_started seria insuficiente — o HikariCP tentaria conectar antes
+            # do banco estar pronto, causando falha no primeiro boot.
             postgres-primary:
-                condition: service_started
+                condition: service_healthy
             # Aguarda cluster RabbitMQ completo (ha-all policy ativa) antes de conectar —
             # garante que filas criadas no boot já são espelhadas nos 3 nós.
             rabbitmq-cluster-init:

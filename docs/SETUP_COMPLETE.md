@@ -6,7 +6,7 @@
 
 ---
 
-## 📊 Status Atual (02/03/2026)
+## 📊 Status Atual (03/03/2026)
 
 ```
 ✅ wallet-service  —  57/57 testes GREEN  (BUILD SUCCESS)
@@ -17,6 +17,7 @@
 ✅ US-007 — Docker Compose Completo com Microsserviços + common-utils
 ✅ US-008 — Máquina de Estados Segura no Agregado Order
 ✅ AT-13.1 — Rotação automática de JWKS no Kong via sidecar (zero downtime)
+✅ AT-5.1.3 — PostgreSQL Streaming Replication (1 primary + 2 hot standbys)
 ```
 
 ### Implementações recentes
@@ -51,6 +52,13 @@
 | **`jwks-rotator`** service (AT-13.1) | ✅ | Serviço `docker-compose.yml`; healthcheck via state file; `unless-stopped` |
 | **`jwks-rotator-test`** service (AT-13.1) | ✅ | Serviço de teste com `ROTATION_INTERVAL=30s` para validação rápida |
 | **`AT-13.1-jwks-rotation-validation.sh`** | ✅ | 10 testes TDD FASE RED→GREEN: artefatos, rotação forçada KC, 401→200, idempotência |
+| **`pg-primary-init.sh`** (AT-5.1.3) | ✅ | Cria usuário `replicator` (REPLICATION) e configura `pg_hba.conf` para replicação |
+| **`pg-replica-entrypoint.sh`** (AT-5.1.3) | ✅ | Entrypoint: `pg_basebackup` + `standby.signal` + `primary_conninfo` (hot_standby) |
+| **`postgres-primary`** (AT-5.1.3) | ✅ | `wal_level=replica`, `max_wal_senders=3`, `max_replication_slots=2`, `wal_keep_size=64` |
+| **`postgres-replica-1/2`** (AT-5.1.3) | ✅ | Hot standbys via `pg-replica-entrypoint.sh`; `depends_on: service_healthy` |
+| **BUG wallet-service-2/3** (AT-5.1.3) | ✅ | Corrigido: apontavam para réplicas (read-only); agora apontam para `postgres-primary` |
+| **`wallet-service-1` depends_on** (AT-5.1.3) | ✅ | Corrigido: `service_started` → `service_healthy` para garantir schema criado no boot |
+| **`AT-5.1.3-pg-streaming-replication-validation.sh`** | ✅ | 5 TCs: `wal_level`, `pg_stat_replication` (2 replicas), `hot_standby`, rejeição de writes, URLs |
 ---
 
 ## 🎯 O Que Foi Realizado
