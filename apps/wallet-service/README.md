@@ -59,6 +59,7 @@ src/
     │       ├── WalletBalanceUpdateIntegrationTest.java
     │       ├── OutboxPublisherIntegrationTest.java
 │       ├── ReserveFundsDlqIntegrationTest.java       # AT-07.1 — DLQ routing para reserve-funds
+│       ├── KeycloakDlqIntegrationTest.java           # AT-2.2.2 — DLQ routing para wallet.keycloak.events
 │       ├── DebeziumJdbcOffsetMigrationTest.java      # AT-08.1 RED — tabela wallet_outbox_offset
 │       └── DebeziumRestartIdempotencyTest.java       # AT-08.1 RED→GREEN — idempotência pós-restart
 │   └── security/
@@ -164,20 +165,34 @@ public void onUserRegistered(KeycloakEvent event) {
 ### Topologia RabbitMQ
 
 ```
+Exchange: keycloak.events (topic)
+  └─ KK.EVENT.CLIENT.# → Queue: wallet.keycloak.events
+       └─ x-dead-letter-exchange: vibranium.dlq
+       └─ x-dead-letter-routing-key: wallet.keycloak.events.dlq
+
 Exchange: wallet.commands (topic)
   ├─ wallet.command.reserve-funds → Queue: wallet.commands.reserve-funds
   │    └─ x-dead-letter-exchange: vibranium.dlq
   │    └─ x-dead-letter-routing-key: wallet.commands.reserve-funds.dlq
+  ├─ wallet.command.release-funds → Queue: wallet.commands.release-funds
+  │    └─ x-dead-letter-exchange: vibranium.dlq
+  │    └─ x-dead-letter-routing-key: wallet.commands.release-funds.dlq
   └─ wallet.command.settle-funds  → Queue: wallet.commands
 
 Exchange: vibranium.dlq (direct) — Dead Letter Exchange
-  └─ wallet.commands.reserve-funds.dlq → Queue: wallet.commands.reserve-funds.dlq
+  ├─ wallet.keycloak.events.dlq        → Queue: wallet.keycloak.events.dlq
+  ├─ wallet.commands.reserve-funds.dlq → Queue: wallet.commands.reserve-funds.dlq
+  └─ wallet.commands.release-funds.dlq → Queue: wallet.commands.release-funds.dlq
 ```
 
-> **AT-07.1 — DLQ:** Mensagens de `ReserveFundsCommand` NACKed com `requeue=false`
-> (falha permanente: erro de deserialização, estado inválido da wallet, NPE)
-> são automaticamente roteadas para `wallet.commands.reserve-funds.dlq`
-> via o exchange `vibranium.dlq`. Nenhum comando financeiro é perdido silenciosamente.
+> **AT-2.2.2 — DLQ Keycloak:** Mensagens de registro Keycloak NACKed com `requeue=false`
+> (ausência de `messageId` ou falha inesperada em `createWallet()`) são roteadas para
+> `wallet.keycloak.events.dlq` via `vibranium.dlq`. Nenhum evento de criação de wallet é perdido silenciosamente.
+
+> **AT-07.1 — DLQ Reserve/Release:** Mensagens de `ReserveFundsCommand` e `ReleaseFundsCommand`
+> NACKed com `requeue=false` (falha permanente: erro de deserialização, estado inválido, NPE)
+> são automaticamente roteadas para as respectivas DLQs via `vibranium.dlq`.
+> Nenhum comando financeiro é perdido silenciosamente.
 
 ### Eventos Publicados
 - `WalletCreatedEvent` — carteira criada via onboarding Keycloak

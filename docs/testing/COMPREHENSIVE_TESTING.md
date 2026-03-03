@@ -28,7 +28,8 @@
 24. [Segurança de Container — Non-Root User + Shell Form ENTRYPOINT (AT-1.5.1)](#segurança-de-container--non-root-user--shell-form-entrypoint-at-151)
 25. [Saga TCC — tryMatch() fora de @Transactional + Compensação Redis (AT-2.1.1)](#saga-tcc--trymatch-fora-de-transactional--compensação-redis-at-211)
 26. [DLX nas Filas de Projeção — Mensagens Tóxicas para DLQ (AT-2.2.1)](#dlx-nas-filas-de-projeção--mensagens-tóxicas-para-dlq-at-221)
-27. [Referências](#referências)
+27. [DLX na Fila wallet.keycloak.events — DLQ para Registro Keycloak (AT-2.2.2)](#dlx-na-fila-walletkeycloakevents--dlq-para-registro-keycloak-at-222)
+28. [Referências](#referências)
 
 ---
 
@@ -3203,10 +3204,137 @@ RED → HTTP 404 (fila não declarada). GREEN → HTTP 200 com `messages=0`.
 
 ---
 
+## DLX na Fila wallet.keycloak.events — DLQ para Registro Keycloak (AT-2.2.2)
+
+### Problema
+
+A fila `wallet.keycloak.events` — consumida pelo `KeycloakRabbitListener` para criar wallets
+automaticamente no evento `REGISTER` do Keycloak — não possuía `x-dead-letter-exchange` configurado.
+
+O listener usa ACK manual e executa `channel.basicNack(deliveryTag, false, false)` em dois cenários:
+
+1. **Mensagem sem `messageId`** — impossível garantir idempotência.
+2. **Exceção inesperada em `createWallet()`** — ex: falha de banco, constraint violation, estado inválido.
+
+Sem DLX, qualquer NACK resulta em **descarte silencioso** pelo broker: o usuário foi registrado no Keycloak
+mas **nenhuma wallet é criada**, e a falha não pode ser auditada nem re-processada.
+
+### Solução
+
+#### 1. DLX args no `walletKeycloakEventsQueue()`
+
+```java
+@Bean
+public Queue walletKeycloakEventsQueue() {
+    return QueueBuilder.durable(QUEUE_KEYCLOAK_EVENTS)
+            // Encaminha NACKs definitivos (requeue=false) para o exchange DLX
+            .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
+            // Routing key determinística na DLQ — identifica a fila de origem
+            .withArgument("x-dead-letter-routing-key", QUEUE_KEYCLOAK_EVENTS_DLQ)
+            .build();
+}
+```
+
+#### 2. Declaração da DLQ + binding
+
+```java
+@Bean
+public Queue walletKeycloakEventsDlQueue() {
+    return QueueBuilder.durable(QUEUE_KEYCLOAK_EVENTS_DLQ).build();
+}
+
+@Bean
+public Binding walletKeycloakEventsDlqBinding(
+        @Qualifier("walletKeycloakEventsDlQueue") Queue walletKeycloakEventsDlQueue,
+        @Qualifier("dlqExchange")                 DirectExchange dlqExchange) {
+    return BindingBuilder
+            .bind(walletKeycloakEventsDlQueue)
+            .to(dlqExchange)
+            .with(QUEUE_KEYCLOAK_EVENTS_DLQ);
+}
+```
+
+#### Topologia atualizada
+
+```
+Exchange: keycloak.events (topic)
+  └─ KK.EVENT.CLIENT.# → Queue: wallet.keycloak.events
+       └─ x-dead-letter-exchange: vibranium.dlq
+       └─ x-dead-letter-routing-key: wallet.keycloak.events.dlq
+
+Exchange: vibranium.dlq (direct)
+  ├─ wallet.keycloak.events.dlq        → Queue: wallet.keycloak.events.dlq  ← NOVO
+  ├─ wallet.commands.reserve-funds.dlq → Queue: wallet.commands.reserve-funds.dlq
+  └─ wallet.commands.release-funds.dlq → Queue: wallet.commands.release-funds.dlq
+```
+
+### Risco Técnico: Fila Existente com Args Diferentes
+
+> ⚠️ O RabbitMQ **não permite alterar argumentos** de uma fila já declarada sem deletá-la primeiro.
+> Em produção, a fila `wallet.keycloak.events` deve ser deletada e recriada antes do deploy.
+> Em testes, containers Testcontainers são recriados a cada ciclo — sem impacto.
+
+### Testes: `KeycloakDlqIntegrationTest`
+
+#### TC-KC-DLQ-1 — Validação estrutural: DLX args na fila
+
+Consulta a Management HTTP API (`/api/queues/%2F/wallet.keycloak.events`) e verifica:
+
+| Campo | Valor esperado |
+|---|---|
+| `arguments.x-dead-letter-exchange` | `vibranium.dlq` |
+| `arguments.x-dead-letter-routing-key` | `wallet.keycloak.events.dlq` |
+
+RED → `arguments` vazio → assertion falha. GREEN → campos presentes → ✅.
+
+#### TC-KC-DLQ-2 — Validação comportamental: evento REGISTER falha e vai para DLQ
+
+| Etapa | Comportamento RED | Comportamento GREEN |
+|-------|-------------------|---------------------|
+| `@MockBean WalletService` lança `RuntimeException` | NACK → mensagem descartada | NACK → DLX → `wallet.keycloak.events.dlq` |
+| `QueueInformation.getMessageCount()` DLQ após 10s | `null` (fila não existe) | `>= 1` → ✅ |
+| Header `x-death` na mensagem consumida da DLQ | n/a | presente → ✅ |
+
+```java
+doThrow(new RuntimeException("Simulated permanent failure"))
+        .when(walletService)
+        .createWallet(any(UUID.class), any(UUID.class), anyString());
+
+// ... publica evento REGISTER ...
+
+await().atMost(10, TimeUnit.SECONDS)
+       .untilAsserted(() -> {
+           QueueInformation dlqInfo = rabbitAdmin.getQueueInfo(QUEUE_KEYCLOAK_EVENTS_DLQ);
+           assertThat(dlqInfo).isNotNull();
+           assertThat(dlqInfo.getMessageCount()).isGreaterThanOrEqualTo(1);
+       });
+
+Message dlqMessage = rabbitTemplate.receive(QUEUE_KEYCLOAK_EVENTS_DLQ, 3_000);
+assertThat(dlqMessage.getMessageProperties().getHeaders()).containsKey("x-death");
+```
+
+### Critérios de Aceite
+
+| Critério | Validação | Status |
+|---|---|---|
+| DLQ criada e vinculada ao exchange `vibranium.dlq` | TC-KC-DLQ-1: Management API retorna `x-dead-letter-exchange` e `x-dead-letter-routing-key` | ✅ |
+| Mensagem REGISTER inválida vai para DLQ | TC-KC-DLQ-2: `messageCount >= 1` + header `x-death` | ✅ |
+
+### Artefatos gerados pelo AT-2.2.2
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `RabbitMQConfig` | Atualizado | Constantes `QUEUE_KEYCLOAK_EVENTS` e `QUEUE_KEYCLOAK_EVENTS_DLQ`; DLX args no `walletKeycloakEventsQueue()`; bean `walletKeycloakEventsDlQueue()` + binding `walletKeycloakEventsDlqBinding()` |
+| `AbstractIntegrationTest` | Atualizado | `wallet.keycloak.events.dlq` adicionada ao loop de purge em `resetState()` |
+| `KeycloakDlqIntegrationTest` | Novo | TC-KC-DLQ-1 (estrutural via Management API) + TC-KC-DLQ-2 (comportamental: `@MockBean` força NACK → DLQ) |
+
+---
+
 **Status**: ✅ Consolidado e Completo  
 **Última atualização**: 3 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-2.2.2**: DLX na fila `wallet.keycloak.events` — `x-dead-letter-exchange=vibranium.dlq` + `x-dead-letter-routing-key=wallet.keycloak.events.dlq` adicionados no `walletKeycloakEventsQueue()`. Nova fila DLQ `wallet.keycloak.events.dlq` (`durable`) declarada com binding no `vibranium.dlq` exchange. `AbstractIntegrationTest.resetState()` atualizado com purge da DLQ. Novo `KeycloakDlqIntegrationTest` (TC-KC-DLQ-1: estrutural via Management HTTP API; TC-KC-DLQ-2: `@MockBean WalletService` lança `RuntimeException` → listener NACK → mensagem roteada para DLQ com header `x-death`). 2/2 passando. Adicionada seção 27 neste guia.
 > - **AT-2.2.1**: DLX nas 4 filas de projeção — `x-dead-letter-exchange=vibranium.dlq` + `x-dead-letter-routing-key=<queue>.dlq` adicionados em cada `QueueBuilder` de projeção. 4 filas DLQ `durable` declaradas (`order.projection.received.dlq`, `order.projection.funds-reserved.dlq`, `order.projection.match-executed.dlq`, `order.projection.cancelled.dlq`) com bindings no `vibranium.dlq` exchange. `autoAckContainerFactory` atualizado com `setDefaultRequeueRejected(false)` para prevenir loop infinito em exceções de runtime. Novo `ProjectionDlqIntegrationTest` (TC-DLQ-1: mensagem tóxica roteada para DLQ via Management API; TC-DLQ-2: smoke test de declaração das 4 DLQs). 2/2 passando. Adicionada seção 26 neste guia.
 > - **AT-2.1.1**: Saga TCC — `tryMatch()` fora de `@Transactional` com compensação Redis. `onFundsReserved()` decomposto em 3 fases via `TransactionTemplate`: Fase 1 JPA TX (idempotência + `markAsOpen` + save), Fase 2 sem TX (`tryMatch` Redis/Lua), Fase 3 JPA TX (outbox). Compensação TCC no `catch` da Fase 3: `removeFromBook()` + `cancelOrder("MATCH_ENGINE_OUTBOX_FAILURE")`. Bean `sagaTransactionTemplate` adicionado em `RabbitMQConfig`. Novos testes `FundsReservedEventConsumerTest.SagaTccTests` (AT22-01 compensação, AT22-02 ordem das fases via `InOrder`). 10/10 passando. Adicionada seção 25 neste guia.
 > - **AT-1.5.1**: Segurança de Container — ENTRYPOINT shell form + non-root user em ambos os serviços. Exec form `["java", "-jar", "app.jar"]` substituído por `["sh", "-c", "java $JAVA_OPTS -jar app.jar"]` (expansão de variáveis). Adicionado `RUN addgroup -S appgroup && adduser -S appuser -G appgroup` + `USER appuser` antes do ENTRYPOINT. COPY permanece antes do USER (root tem permissão de escrita; appuser lê 644). Validado: `whoami` → `appuser`; `MaxRAMPercentage = 75.000000 {command line}`. Adicionada seção 24 neste guia.
