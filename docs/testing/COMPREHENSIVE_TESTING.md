@@ -25,7 +25,8 @@
 21. [Saga Timeout + Bean Clock (AT-09.1 + AT-09.2)](#saga-timeout--bean-clock-at-091--at-092)
 22. [Auto ACK em Listeners de Projeção MongoDB (AT-1.2.1)](#auto-ack-em-listeners-de-projeção-mongodb-at-121)
 23. [MongoDB Replica Set rs0 no Staging (AT-1.3.2)](#mongodb-replica-set-rs0-no-staging-at-132)
-24. [Referências](#referências)
+24. [Segurança de Container — Non-Root User + Shell Form ENTRYPOINT (AT-1.5.1)](#segurança-de-container--non-root-user--shell-form-entrypoint-at-151)
+25. [Referências](#referências)
 
 ---
 
@@ -2914,6 +2915,70 @@ docker exec vibranium-mongodb-1 mongosh \
 - [REST Assured Documentation](https://rest-assured.io/)
 - [TestContainers Documentation](https://www.testcontainers.org/)
 - [Spring Boot Testing Guide](https://docs.spring.io/spring-boot/docs/current/reference/html/features.html#features.testing)
+- [Docker — Understand how CMD and ENTRYPOINT interact](https://docs.docker.com/engine/reference/builder/#understand-how-cmd-and-entrypoint-interact)
+- [Docker — Best practices for writing Dockerfiles](https://docs.docker.com/develop/develop-images/dockerfile_best-practices/)
+
+---
+
+## Segurança de Container — Non-Root User + Shell Form ENTRYPOINT (AT-1.5.1)
+
+### Problema
+
+Dois bugs independentes nos Dockerfiles de produção de ambos os serviços:
+
+1. **ENTRYPOINT exec form não expande variáveis**: `["java", "-jar", "app.jar"]` executa o binário diretamente sem shell. A variável `$JAVA_OPTS` (que contém `-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 ...`) nunca era expandida — a JVM iniciava com configurações padrão silenciosamente.
+2. **Containers rodando como root**: ausência de `USER` instrução → processo Java com UID 0, ampliando superfície de ataque em caso de vulnerabilidade na JVM ou na aplicação.
+
+### Solução
+
+Alterações aplicadas em `apps/order-service/docker/Dockerfile` e `apps/wallet-service/docker/Dockerfile`:
+
+```dockerfile
+# Stage 2: Runtime
+FROM eclipse-temurin:21-jre-alpine
+
+WORKDIR /app
+
+# 1. Criar grupo e usuário não-root
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+# 2. COPY ainda como root (necessário para escrita em /app)
+COPY --from=builder /app/apps/*/target/*.jar app.jar
+
+ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -XX:MaxGCPauseMillis=200 -XX:+UseStringDeduplication"
+
+EXPOSE 8080
+
+HEALTHCHECK ...
+
+# 3. Trocar para não-root antes de iniciar
+USER appuser
+
+# 4. Shell form para expandir $JAVA_OPTS
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
+```
+
+### Por que shell form?
+
+| Forma | Sintaxe | Shell? | Expande `$VAR`? | PID 1? |
+|-------|---------|--------|-----------------|--------|
+| Exec | `["java", "-jar", "app.jar"]` | ❌ | ❌ | ✅ |
+| Shell | `java $JAVA_OPTS -jar app.jar` | ✅ (via `/bin/sh -c`) | ✅ | ❌ (filho de sh) |
+| Shell (array) | `["sh", "-c", "java $JAVA_OPTS -jar app.jar"]` | ✅ | ✅ | ✅ (sh é PID 1) |
+
+A forma adotada (`["sh", "-c", "..."]`) é a combinação mais segura: shell para expansão + exec para que `sh` seja PID 1 e receba SIGTERM corretamente.
+
+### Permissões
+
+`app.jar` é copiado pelo `COPY --from=builder` (executado como root) com permissões `rw-r--r--` (644). O `appuser` (sem permissão de escrita) consegue **ler e executar** o JAR normalmente. Não é necessário `chown`.
+
+### Critérios de Aceite Validados
+
+| Critério | Comando | Resultado |
+|----------|---------|----------|
+| Processo como non-root | `docker run --rm --entrypoint sh <img> -c 'whoami'` | `appuser` |
+| `JAVA_OPTS` expandido | `docker run --rm --entrypoint sh <img> -c 'java $JAVA_OPTS -XX:+PrintFlagsFinal 2>&1 \| grep MaxRAMPercentage'` | `75.000000 {command line}` |
+| Build sem erros | `docker build ...` | EXIT 0 |
 
 ---
 
@@ -2921,6 +2986,7 @@ docker exec vibranium-mongodb-1 mongosh \
 **Última atualização**: 3 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-1.5.1**: Segurança de Container — ENTRYPOINT shell form + non-root user em ambos os serviços. Exec form `["java", "-jar", "app.jar"]` substituído por `["sh", "-c", "java $JAVA_OPTS -jar app.jar"]` (expansão de variáveis). Adicionado `RUN addgroup -S appgroup && adduser -S appuser -G appgroup` + `USER appuser` antes do ENTRYPOINT. COPY permanece antes do USER (root tem permissão de escrita; appuser lê 644). Validado: `whoami` → `appuser`; `MaxRAMPercentage = 75.000000 {command line}`. Adicionada seção 24 neste guia.
 > - **AT-1.3.2**: MongoDB Replica Set rs0 no Staging — `docker-compose.staging.yml` atualizado com `--replSet rs0 --keyFile` nos 3 nós MongoDB. Novo `docker-entrypoint-override-staging.sh` grava `MONGO_REPLICA_KEY` (env var fixa e idêntica nos 3 nós) como `/etc/mongod-keyfile` (keyFile compartilhado obrigatório para intra-cluster auth). Novo `init-replica-set-staging.sh` (idempotente): executa `rs.initiate({_id:'rs0', members:[mongodb-1,mongodb-2,mongodb-3]})` e aguarda até 90s pelo PRIMARY. Serviço `mongo-rs-init` depende de `service_healthy` nos 3 nós; `order-service-1/2/3` usam `service_completed_successfully`. Validado ao vivo: `rs.status()` retorna `mongodb-1 PRIMARY`, `mongodb-2 SECONDARY`, `mongodb-3 SECONDARY`. Adicionada seção 23 neste guia.
 > - **AT-1.3.1**: MongoDB Replica Set `rs0` — `docker-compose.dev.yml` atualizado com `--replSet rs0 --keyFile` e serviço `mongo-rs-init` (container de curta duração). `docker-entrypoint-override.sh` gera `keyFile` via `openssl rand -base64 756` (exigido pelo MongoDB 7 quando `--auth + --replSet` estão ativos). `order-service` usa `depends_on: mongo-rs-init: service_completed_successfully` e URI com `?replicaSet=rs0&authSource=admin`. `init-mongo.js` movido de `infra/postgres/` para `infra/mongo/` (removido `createUser()` duplicado). Smoke test validado: `rs.status()` retorna `{state:'PRIMARY', setName:'rs0', ok:1}`.
 > - **AT-1.2.1**: Auto ACK em listeners de projeção MongoDB — bean `autoAckContainerFactory` (`AcknowledgeMode.AUTO`) adicionado em `RabbitMQConfig`. Os 4 `@RabbitListener` de `OrderEventProjectionConsumer` passam a declarar `containerFactory` explicitamente, evitando herdar o `MANUAL` global do `application.yaml` (que causava acúmulo de `unacknowledged` no broker). Segurança garantida pela idempotência do `$ne` no MongoDB. Novos testes `ProjectionAckIntegrationTest` (TC-ACK-1, TC-ACK-2) validam via RabbitMQ Management HTTP API que `messages_ready + messages_unacknowledged = 0` após processamento. Adicionada seção 22 neste guia.

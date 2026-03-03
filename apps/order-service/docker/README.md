@@ -6,8 +6,10 @@ Este diretório contém os Dockerfiles para o Order Service em diferentes ambien
 
 - **Dockerfile** - Imagem de produção (multi-stage build)
   - Build otimizado em container
-  - Runtime em JRE alpine
-  - JVM tuning para containers
+  - Runtime em JRE alpine (`eclipse-temurin:21-jre-alpine`)
+  - JVM tuning para containers via `$JAVA_OPTS` (G1GC, MaxRAMPercentage=75, GC pause target)
+  - ENTRYPOINT em shell form (`sh -c`) para expansão de variáveis de ambiente
+  - Processo roda como usuário não-root `appuser` (AT-1.5.1)
   - Healthcheck configurado
 
 - **Dockerfile.dev** - Imagem de desenvolvimento com hotreload
@@ -50,6 +52,30 @@ docker-compose up order-service  # Usa imagem pré-built
 
 - `SPRING_PROFILES_ACTIVE=dev`
 - `JAVA_OPTS=-agentlib:jdwp=...` (debug remoto)
+
+## Segurança de Runtime (Produção)
+
+A imagem de produção executa o processo Java como usuário não-root:
+
+```dockerfile
+# Criado na imagem final (alpine adduser)
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+COPY --from=builder ... app.jar   # COPY como root (permissão de escrita)
+USER appuser                       # troca antes do ENTRYPOINT
+```
+
+O ENTRYPOINT usa **shell form** para que `$JAVA_OPTS` seja expandido pelo shell:
+
+```dockerfile
+# ✅ Shell form — expande $JAVA_OPTS
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
+
+# ❌ Exec form — NÃO expande variáveis de ambiente
+# ENTRYPOINT ["java", "-jar", "app.jar"]
+```
+
+> **Validação:** `docker run --rm --entrypoint sh <img> -c 'whoami'` → `appuser`  
+> **Validação:** `docker run --rm --entrypoint sh <img> -c 'java $JAVA_OPTS -XX:+PrintFlagsFinal 2>&1 | grep MaxRAMPercentage'` → `75.000000 {command line}`
 
 ## Mais Informações
 
