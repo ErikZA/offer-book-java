@@ -38,7 +38,7 @@ services:
 
         environment:
             POSTGRES_USER: postgres
-            POSTGRES_PASSWORD: postgres123 # TODO: Externalizar via Docker Secrets em produção
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copie .env.example para .env}
             POSTGRES_DB: vibranium_infra
 
         # Porta 5432 NÃO exposta ao host intencionalmente:
@@ -83,7 +83,7 @@ services:
             KONG_PG_HOST: postgresql
             KONG_PG_PORT: 5432
             KONG_PG_USER: postgres
-            KONG_PG_PASSWORD: postgres123
+            KONG_PG_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copie .env.example para .env}
             KONG_PG_DATABASE: vibranium_infra
 
         depends_on:
@@ -121,7 +121,7 @@ services:
             KONG_PG_HOST: postgresql
             KONG_PG_PORT: 5432
             KONG_PG_USER: postgres
-            KONG_PG_PASSWORD: postgres123
+            KONG_PG_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copie .env.example para .env}
             KONG_PG_DATABASE: vibranium_infra
             KONG_ADMIN_LISTEN: 0.0.0.0:8001
             KONG_ADMIN_GUI_LISTEN: 0.0.0.0:8002
@@ -181,8 +181,8 @@ services:
                     memory: 256M
 
         environment:
-            RABBITMQ_DEFAULT_USER: guest
-            RABBITMQ_DEFAULT_PASS: guest
+            RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
+            RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
 
         ports:
             - '5672:5672'
@@ -238,12 +238,12 @@ services:
             KC_DB: postgres
             KC_DB_URL: jdbc:postgresql://postgresql:5432/vibranium_infra
             KC_DB_USERNAME: postgres
-            KC_DB_PASSWORD: postgres123
+            KC_DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copie .env.example para .env}
             KC_DB_SCHEMA: keycloak
             KEYCLOAK_ADMIN: admin
-            KEYCLOAK_ADMIN_PASSWORD: admin123
+            KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required — copie .env.example para .env}
             KC_BOOTSTRAP_ADMIN_USERNAME: admin
-            KC_BOOTSTRAP_ADMIN_PASSWORD: admin123
+            KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required — copie .env.example para .env}
             KC_HTTP_ENABLED: 'true'
             KC_HTTP_PORT: 8080
             KC_HOSTNAME_STRICT: 'false'
@@ -256,8 +256,8 @@ services:
             # Plugin keycloak-event-listener-rabbitmq
             KK_TO_RMQ_URL: rabbitmq
             KK_TO_RMQ_PORT: 5672
-            KK_TO_RMQ_USERNAME: guest
-            KK_TO_RMQ_PASSWORD: guest
+            KK_TO_RMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            KK_TO_RMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
             KK_TO_RMQ_VHOST: /
             KK_TO_RMQ_EXCHANGE: amq.topic
             KK_TO_RMQ_USE_TLS: 'false'

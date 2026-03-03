@@ -14,12 +14,12 @@ services:
         ports:
             - '27017:27017'
         environment:
-            MONGO_INITDB_ROOT_USERNAME: admin
-            MONGO_INITDB_ROOT_PASSWORD: admin123
+            MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
+            MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required — copie .env.example para .env}
             MONGO_INITDB_DATABASE: vibranium_orders
             # Chave compartilhada para intra-cluster auth do replica set rs0.
             # DEVE ser idêntica nos 3 nós — replica members rejeitam auth com keyFile diferente.
-            MONGO_REPLICA_KEY: 'VibraniumStagingRS0SharedKeyForReplicaSetAuth2026'
+            MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?MONGO_REPLICA_KEY is required — copie .env.example para .env}
         volumes:
             - mongodb_1_data:/data/db
             - ./mongo/docker-entrypoint-override-staging.sh:/scripts/docker-entrypoint-override.sh:ro
@@ -32,7 +32,7 @@ services:
                 reservations:
                     cpus: '0.5'
         healthcheck:
-            test: ['CMD-SHELL', 'mongosh "mongodb://admin:admin123@localhost:27017/test?authSource=admin" --eval "db.runCommand(''ping'').ok" --quiet | grep -q "^1"']
+            test: ['CMD-SHELL', 'mongosh "mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD}@localhost:27017/test?authSource=admin" --eval "db.runCommand(''ping'').ok" --quiet | grep -q "^1"']
             interval: 10s
             timeout: 5s
             retries: 5
@@ -45,10 +45,10 @@ services:
         ports:
             - '27018:27017'
         environment:
-            MONGO_INITDB_ROOT_USERNAME: admin
-            MONGO_INITDB_ROOT_PASSWORD: admin123
+            MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
+            MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required — copie .env.example para .env}
             MONGO_INITDB_DATABASE: vibranium_orders
-            MONGO_REPLICA_KEY: 'VibraniumStagingRS0SharedKeyForReplicaSetAuth2026'
+            MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?MONGO_REPLICA_KEY is required — copie .env.example para .env}
         volumes:
             - mongodb_2_data:/data/db
             - ./mongo/docker-entrypoint-override-staging.sh:/scripts/docker-entrypoint-override.sh:ro
@@ -61,7 +61,7 @@ services:
                 reservations:
                     cpus: '0.5'
         healthcheck:
-            test: ['CMD-SHELL', 'mongosh "mongodb://admin:admin123@localhost:27017/test?authSource=admin" --eval "db.runCommand(''ping'').ok" --quiet | grep -q "^1"']
+            test: ['CMD-SHELL', 'mongosh "mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD}@localhost:27017/test?authSource=admin" --eval "db.runCommand(''ping'').ok" --quiet | grep -q "^1"']
             interval: 10s
             timeout: 5s
             retries: 5
@@ -74,10 +74,10 @@ services:
         ports:
             - '27019:27017'
         environment:
-            MONGO_INITDB_ROOT_USERNAME: admin
-            MONGO_INITDB_ROOT_PASSWORD: admin123
+            MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
+            MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required — copie .env.example para .env}
             MONGO_INITDB_DATABASE: vibranium_orders
-            MONGO_REPLICA_KEY: 'VibraniumStagingRS0SharedKeyForReplicaSetAuth2026'
+            MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?MONGO_REPLICA_KEY is required — copie .env.example para .env}
         volumes:
             - mongodb_3_data:/data/db
             - ./mongo/docker-entrypoint-override-staging.sh:/scripts/docker-entrypoint-override.sh:ro
@@ -90,7 +90,7 @@ services:
                 reservations:
                     cpus: '0.5'
         healthcheck:
-            test: ['CMD-SHELL', 'mongosh "mongodb://admin:admin123@localhost:27017/test?authSource=admin" --eval "db.runCommand(''ping'').ok" --quiet | grep -q "^1"']
+            test: ['CMD-SHELL', 'mongosh "mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD}@localhost:27017/test?authSource=admin" --eval "db.runCommand(''ping'').ok" --quiet | grep -q "^1"']
             interval: 10s
             timeout: 5s
             retries: 5
@@ -103,8 +103,8 @@ services:
         image: mongo:7.0
         container_name: vibranium-mongo-rs-init-staging
         environment:
-            MONGO_ROOT_USER: admin
-            MONGO_ROOT_PASSWORD: admin123
+            MONGO_ROOT_USER: ${MONGO_ROOT_USER:-admin}
+            MONGO_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required — copie .env.example para .env}
         volumes:
             - ./mongo/init-replica-set-staging.sh:/scripts/init-replica-set.sh:ro
         command: ['bash', '/scripts/init-replica-set.sh']
@@ -127,7 +127,7 @@ services:
             - '5432:5432'
         environment:
             POSTGRES_USER: postgres
-            POSTGRES_PASSWORD: postgres
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copie .env.example para .env}
             POSTGRES_DB: vibranium_wallet
         volumes:
             - postgres_primary_data:/var/lib/postgresql/data
@@ -152,7 +152,7 @@ services:
             - '5433:5432'
         environment:
             POSTGRES_USER: postgres
-            POSTGRES_PASSWORD: postgres
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copie .env.example para .env}
             POSTGRES_DB: vibranium_wallet
         volumes:
             - postgres_replica_1_data:/var/lib/postgresql/data
@@ -179,7 +179,7 @@ services:
             - '5434:5432'
         environment:
             POSTGRES_USER: postgres
-            POSTGRES_PASSWORD: postgres
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copie .env.example para .env}
             POSTGRES_DB: vibranium_wallet
         volumes:
             - postgres_replica_2_data:/var/lib/postgresql/data
@@ -263,9 +263,9 @@ services:
             - '5672:5672'
             - '15672:15672'
         environment:
-            RABBITMQ_DEFAULT_USER: guest
-            RABBITMQ_DEFAULT_PASS: guest
-            RABBITMQ_ERLANG_COOKIE: secret-cookie
+            RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
+            RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
+            RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?RABBITMQ_ERLANG_COOKIE is required — copie .env.example para .env}
             RABBITMQ_NODENAME: rabbit@rabbitmq-1
         volumes:
             - rabbitmq_1_data:/var/lib/rabbitmq
@@ -290,9 +290,9 @@ services:
             - '5673:5672'
             - '15673:15672'
         environment:
-            RABBITMQ_DEFAULT_USER: guest
-            RABBITMQ_DEFAULT_PASS: guest
-            RABBITMQ_ERLANG_COOKIE: secret-cookie
+            RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
+            RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
+            RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?RABBITMQ_ERLANG_COOKIE is required — copie .env.example para .env}
             RABBITMQ_NODENAME: rabbit@rabbitmq-2
         volumes:
             - rabbitmq_2_data:/var/lib/rabbitmq
@@ -319,9 +319,9 @@ services:
             - '5674:5672'
             - '15674:15672'
         environment:
-            RABBITMQ_DEFAULT_USER: guest
-            RABBITMQ_DEFAULT_PASS: guest
-            RABBITMQ_ERLANG_COOKIE: secret-cookie
+            RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
+            RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
+            RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?RABBITMQ_ERLANG_COOKIE is required — copie .env.example para .env}
             RABBITMQ_NODENAME: rabbit@rabbitmq-3
         volumes:
             - rabbitmq_3_data:/var/lib/rabbitmq
@@ -352,13 +352,13 @@ services:
             # Todos os 3 membros do replica set + replicaSet=rs0 para failover automático.
             # O driver MongoDB redireciona operações de escrita ao PRIMARY e leituras
             # podem ir a SECONDARY (conforme readPreference configurado na aplicação).
-            SPRING_DATA_MONGODB_URI: mongodb://admin:admin123@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
+            SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required}@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
             SPRING_REDIS_HOST: redis-1
             SPRING_REDIS_PORT: 6379
             SPRING_RABBITMQ_HOST: rabbitmq-1
             SPRING_RABBITMQ_PORT: 5672
-            SPRING_RABBITMQ_USERNAME: guest
-            SPRING_RABBITMQ_PASSWORD: guest
+            SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
         depends_on:
             # Aguarda o replica set rs0 estar completamente formado (PRIMARY eleito)
             # antes de conectar — evita falha de MongoTransactionManager no boot.
@@ -390,13 +390,13 @@ services:
             - '8081:8080'
         environment:
             SPRING_APPLICATION_NAME: order-service
-            SPRING_DATA_MONGODB_URI: mongodb://admin:admin123@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
+            SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required}@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
             SPRING_REDIS_HOST: redis-2
             SPRING_REDIS_PORT: 6379
             SPRING_RABBITMQ_HOST: rabbitmq-2
             SPRING_RABBITMQ_PORT: 5672
-            SPRING_RABBITMQ_USERNAME: guest
-            SPRING_RABBITMQ_PASSWORD: guest
+            SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
         depends_on:
             - order-service-1
         networks:
@@ -421,13 +421,13 @@ services:
             - '8082:8080'
         environment:
             SPRING_APPLICATION_NAME: order-service
-            SPRING_DATA_MONGODB_URI: mongodb://admin:admin123@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
+            SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required}@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
             SPRING_REDIS_HOST: redis-3
             SPRING_REDIS_PORT: 6379
             SPRING_RABBITMQ_HOST: rabbitmq-3
             SPRING_RABBITMQ_PORT: 5672
-            SPRING_RABBITMQ_USERNAME: guest
-            SPRING_RABBITMQ_PASSWORD: guest
+            SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
         depends_on:
             - order-service-1
         networks:
@@ -455,11 +455,11 @@ services:
             SPRING_APPLICATION_NAME: wallet-service
             SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-primary:5432/vibranium_wallet
             SPRING_DATASOURCE_USERNAME: postgres
-            SPRING_DATASOURCE_PASSWORD: postgres
+            SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
             SPRING_RABBITMQ_HOST: rabbitmq-1
             SPRING_RABBITMQ_PORT: 5672
-            SPRING_RABBITMQ_USERNAME: guest
-            SPRING_RABBITMQ_PASSWORD: guest
+            SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
         depends_on:
             - postgres-primary
             - rabbitmq-1
@@ -487,11 +487,11 @@ services:
             SPRING_APPLICATION_NAME: wallet-service
             SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-replica-1:5432/vibranium_wallet
             SPRING_DATASOURCE_USERNAME: postgres
-            SPRING_DATASOURCE_PASSWORD: postgres
+            SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
             SPRING_RABBITMQ_HOST: rabbitmq-2
             SPRING_RABBITMQ_PORT: 5672
-            SPRING_RABBITMQ_USERNAME: guest
-            SPRING_RABBITMQ_PASSWORD: guest
+            SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
         depends_on:
             - wallet-service-1
         networks:
@@ -518,11 +518,11 @@ services:
             SPRING_APPLICATION_NAME: wallet-service
             SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-replica-2:5432/vibranium_wallet
             SPRING_DATASOURCE_USERNAME: postgres
-            SPRING_DATASOURCE_PASSWORD: postgres
+            SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
             SPRING_RABBITMQ_HOST: rabbitmq-3
             SPRING_RABBITMQ_PORT: 5672
-            SPRING_RABBITMQ_USERNAME: guest
-            SPRING_RABBITMQ_PASSWORD: guest
+            SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
         depends_on:
             - wallet-service-1
         networks:
@@ -548,7 +548,7 @@ services:
         container_name: vibranium-keycloak-db-staging
         environment:
             POSTGRES_USER: keycloak
-            POSTGRES_PASSWORD: keycloak
+            POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?KEYCLOAK_DB_PASSWORD is required — copie .env.example para .env}
             POSTGRES_DB: keycloak_db
         volumes:
             - keycloak_db_staging_data:/var/lib/postgresql/data
@@ -588,10 +588,10 @@ services:
             KC_DB: postgres
             KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak_db
             KC_DB_USERNAME: keycloak
-            KC_DB_PASSWORD: keycloak # TODO: use secrets in production
+            KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?KEYCLOAK_DB_PASSWORD is required — copie .env.example para .env}
 
             KEYCLOAK_ADMIN: admin
-            KEYCLOAK_ADMIN_PASSWORD: admin123 # TODO: use secrets in production
+            KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required — copie .env.example para .env}
 
             KC_HTTP_ENABLED: 'true'
             KC_HTTP_PORT: 8080
@@ -612,8 +612,8 @@ services:
             # ---------------------------------------------------------------
             KK_TO_RMQ_URL: rabbitmq-1
             KK_TO_RMQ_PORT: 5672
-            KK_TO_RMQ_USERNAME: guest
-            KK_TO_RMQ_PASSWORD: guest # TODO: use secrets in production
+            KK_TO_RMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            KK_TO_RMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
             KK_TO_RMQ_VHOST: /
             KK_TO_RMQ_EXCHANGE: amq.topic
             KK_TO_RMQ_USE_TLS: 'false'
@@ -677,7 +677,7 @@ services:
         container_name: kong-db-staging
         environment:
             POSTGRES_USER: kong
-            POSTGRES_PASSWORD: kong
+            POSTGRES_PASSWORD: ${KONG_DB_PASSWORD:?KONG_DB_PASSWORD is required — copie .env.example para .env}
             POSTGRES_DB: kong
         volumes:
             - kong_db_staging_data:/var/lib/postgresql/data
@@ -704,7 +704,7 @@ services:
             KONG_PG_HOST: kong-database
             KONG_PG_PORT: 5432
             KONG_PG_USER: kong
-            KONG_PG_PASSWORD: kong
+            KONG_PG_PASSWORD: ${KONG_DB_PASSWORD:?KONG_DB_PASSWORD is required — copie .env.example para .env}
         depends_on:
             kong-database:
                 condition: service_healthy
@@ -724,7 +724,7 @@ services:
             KONG_PG_HOST: kong-database
             KONG_PG_PORT: 5432
             KONG_PG_USER: kong
-            KONG_PG_PASSWORD: kong
+            KONG_PG_PASSWORD: ${KONG_DB_PASSWORD:?KONG_DB_PASSWORD is required — copie .env.example para .env}
             KONG_PROXY_ACCESS_LOG: /dev/stdout
             KONG_ADMIN_ACCESS_LOG: /dev/stdout
         depends_on:
