@@ -13,12 +13,28 @@ O nosso desafio exige suportar **5000 transações por segundo** e ter **rastrea
 **O Guardião do Dinheiro**
 
 * **O que é:** Um banco de dados relacional clássico, organizado em linhas e colunas (tabelas).
-* 
-**Para que usamos:** Para guardar o saldo da carteira dos usuários (Reais e Vibranium) e gerenciar os bloqueios de saldo (quando o dinheiro fica "em trade").
 
+**Para que usamos:** Para guardar o saldo da carteira dos usuários (Reais e Vibranium) e gerenciar os bloqueios de saldo (quando o dinheiro fica "em trade").
 
 * **Por que escolhemos ele para isso?** Quando lidamos com dinheiro, precisamos de uma garantia chamada **ACID** (Atomicidade, Consistência, Isolamento, Durabilidade). O Postgres é excelente em "trancar" uma linha (Row-Level Lock).
 *Exemplo:* Se dois robôs tentarem gastar os mesmos R$ 100,00 da sua carteira no exato mesmo milissegundo, o Postgres coloca um em fila de espera e garante que o saldo nunca fique negativo. Ele é lento para milhares de buscas complexas, mas é **infalível** para cálculos financeiros.
+
+### Topologia de Alta Disponibilidade no Staging (AT-5.1.3)
+
+No ambiente de staging, o PostgreSQL opera em topologia de **Streaming Replication**:
+
+| Nó | Container | Modo | Portas |
+|---|---|---|---|
+| Primary | `postgres-primary` | Write/Read — `wal_level=replica` | 5432 |
+| Hot Standby 1 | `postgres-replica-1` | Somente leitura — `hot_standby=on` | 5433 |
+| Hot Standby 2 | `postgres-replica-2` | Somente leitura — `hot_standby=on` | 5434 |
+
+**Como funciona:**
+1. O primary cria o usuário `replicator` via `pg-primary-init.sh` (rodado no `docker-entrypoint-initdb.d/`).
+2. Cada réplica usa `pg-replica-entrypoint.sh` para executar `pg_basebackup --wal-method=stream`, criando `standby.signal` e configurando `primary_conninfo` no `postgresql.auto.conf`.
+3. **Todos os `wallet-service` (1, 2 e 3) apontam para o primary** para garantir que writes nunca sejam direcionados para um hot_standby (que rejeitaria com erro `cannot execute INSERT in a read-only transaction`).
+
+**Monitoramento:** `SELECT * FROM pg_stat_replication;` no primary deve exibir 2 réplicas com `state = 'streaming'`.
 
 ## 2. MongoDB (Microsserviço Order - Leitura/Histórico) 🍃
 

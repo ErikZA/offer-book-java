@@ -34,10 +34,16 @@ infra/
 │   ├── init-replica-set.sh                    # Dev: rs.initiate() single-node rs0 (AT-1.3.1)
 │   └── init-replica-set-staging.sh            # ⭐ Staging: rs.initiate() 3-node rs0 (AT-1.3.2)
 └── postgres/
-    ├── init-app-databases.sh   # Cria vibranium_orders + vibranium_wallet no 1º boot
-    ├── init-infra-db.sql       # Cria schemas kong + keycloak em vibranium_infra
-    ├── init-mongo.js           # Collections iniciais do MongoDB
-    └── init-postgres.sql       # Dados iniciais extras (seed opcional)
+    ├── init-app-databases.sh      # Dev: cria vibranium_orders + vibranium_wallet no 1º boot
+    ├── init-infra-db.sql          # Cria schemas kong + keycloak em vibranium_infra
+    ├── init-postgres.sql          # Schema vibranium_wallet (tabelas wallets + wallet_transactions)
+    ├── pg-primary-init.sh         # ⭐ Staging (AT-5.1.3): executado pelo initdb do primary;
+    │                              #    cria usuário `replicator` e configura pg_hba.conf para
+    │                              #    aceitar conexões de streaming replication dos standbys
+    └── pg-replica-entrypoint.sh   # ⭐ Staging (AT-5.1.3): substitui o entrypoint padrão das
+                                   #    réplicas; executa pg_basebackup no primary, cria
+                                   #    standby.signal e configura primary_conninfo em
+                                   #    postgresql.auto.conf (hot_standby=on)
 ```
 
 ## 🚀 Comandos
@@ -74,6 +80,18 @@ docker compose -f infra/docker-compose.staging.yml up -d \
 
 # Stack completo (requer imagens pré-buildadas: order-service:latest, wallet-service:latest)
 docker compose -f infra/docker-compose.staging.yml up -d
+```
+
+> **PostgreSQL Streaming Replication (AT-5.1.3)** — Em staging, `postgres-primary` opera com
+> `wal_level=replica` e cria o usuário `replicator`. As réplicas (`postgres-replica-1/2`) usam
+> `pg-replica-entrypoint.sh` para clonar o primary via `pg_basebackup` e iniciar como
+> `hot_standby` (somente leitura). Todos os `wallet-service` apontam para `postgres-primary`
+> para escrita. Para validar: `bash tests/AT-5.1.3-pg-streaming-replication-validation.sh`.
+>
+> **⚠️ Primeiro boot:** apague os volumes das réplicas antes de subir:
+> ```bash
+> docker volume rm infra_postgres_replica_1_data infra_postgres_replica_2_data
+> # ou use: docker compose -f infra/docker-compose.staging.yml down -v
 ```
 
 ## 🐳 Portas expostas (dev)

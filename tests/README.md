@@ -7,9 +7,12 @@ Os composes foram movidos do diretório legado `docker/` para cá na reestrutura
 
 ```
 tests/
-├── docker-compose.test.yml    # Stack completa isolada (infra + test-runner Maven)
-├── docker-compose-test.yml    # Stack mínima (PostgreSQL infra apenas)
-└── test-results/              # Relatórios Surefire gerados pelo test-runner
+├── docker-compose.test.yml                          # Stack completa isolada (infra + test-runner Maven)
+├── docker-compose-test.yml                          # Stack mínima (PostgreSQL infra apenas)
+├── AT-12.1-rate-limiting-redis-validation.sh         # AT-12.1: Rate Limiting via Redis no Kong
+├── AT-13.1-jwks-rotation-validation.sh              # AT-13.1: Rotação JWKS do Keycloak → Kong
+├── AT-5.1.3-pg-streaming-replication-validation.sh  # ⭐ AT-5.1.3: PostgreSQL Streaming Replication
+└── test-results/                                    # Relatórios Surefire gerados pelo test-runner
 ```
 
 ## 🧪 Composes disponíveis
