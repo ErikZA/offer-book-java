@@ -325,4 +325,86 @@ class OrderQueryControllerTest extends AbstractMongoIntegrationTest {
                            .anyMatch(h -> h.eventType().equals("ORDER_CANCELLED"));
                });
     }
+
+    // =========================================================================
+    // TC-8: BOLA/IDOR — ownership check em GET /api/v1/orders/{orderId} (AT-4.1.1)
+    // =========================================================================
+
+    /**
+     * [RED → GREEN] Usuário diferente tenta acessar ordem alheia → 403 Forbidden.
+     *
+     * <p>Valida proteção IDOR (OWASP API Security BOLA): o {@code jwt.sub} deve
+     * bater com o {@code OrderDocument.userId}; caso contrário, 403 é retornado.</p>
+     */
+    @Test
+    @DisplayName("getOrderById_differentUser_returns403 (AT-4.1.1)")
+    void testGetOrderById_differentUser_returns403() throws Exception {
+        // GIVEN — ordem pertencente ao userId (usuário A)
+        OrderReceivedEvent received = OrderReceivedEvent.of(
+                correlationId, orderId, userId, walletId,
+                OrderType.BUY, new BigDecimal("50000.00"), new BigDecimal("0.5")
+        );
+        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, RabbitMQConfig.RK_ORDER_RECEIVED, received);
+        await().atMost(10, TimeUnit.SECONDS)
+               .until(() -> orderHistoryRepository.existsById(orderId.toString()));
+
+        // WHEN — usuário B (diferente) tenta consultar a ordem do usuário A
+        UUID userBId = UUID.randomUUID();
+        mockMvc.perform(get("/api/v1/orders/{orderId}", orderId)
+                        .with(jwt().jwt(j -> j.subject(userBId.toString()))))
+               .andExpect(status().isForbidden());
+    }
+
+    /**
+     * [RED → GREEN] Dono da ordem acessa com JWT correto → 200 OK.
+     *
+     * <p>Quando {@code jwt.sub} coincide com {@code OrderDocument.userId},
+     * o endpoint retorna o documento normalmente.</p>
+     */
+    @Test
+    @DisplayName("getOrderById_sameUser_returns200 (AT-4.1.1)")
+    void testGetOrderById_sameUser_returns200() throws Exception {
+        // GIVEN
+        OrderReceivedEvent received = OrderReceivedEvent.of(
+                correlationId, orderId, userId, walletId,
+                OrderType.BUY, new BigDecimal("50000.00"), new BigDecimal("0.5")
+        );
+        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, RabbitMQConfig.RK_ORDER_RECEIVED, received);
+        await().atMost(10, TimeUnit.SECONDS)
+               .until(() -> orderHistoryRepository.existsById(orderId.toString()));
+
+        // WHEN/THEN — o próprio dono da ordem
+        mockMvc.perform(get("/api/v1/orders/{orderId}", orderId)
+                        .with(jwt().jwt(j -> j.subject(userId.toString()))))
+               .andExpect(status().isOk())
+               .andExpect(jsonPath("$.orderId").value(orderId.toString()));
+    }
+
+    /**
+     * [RED → GREEN] Usuário com {@code ROLE_ADMIN} acessa ordem de outro usuário → 200 OK.
+     *
+     * <p>Admin bypass: se o claim {@code roles} contiver {@code ROLE_ADMIN}, o filtro
+     * de ownership é ignorado — necessário para suporte e auditoria interna.</p>
+     */
+    @Test
+    @DisplayName("getOrderById_adminRole_returns200 (AT-4.1.1)")
+    void testGetOrderById_adminRole_returns200() throws Exception {
+        // GIVEN — ordem pertencente ao userId (usuário A)
+        OrderReceivedEvent received = OrderReceivedEvent.of(
+                correlationId, orderId, userId, walletId,
+                OrderType.BUY, new BigDecimal("50000.00"), new BigDecimal("0.5")
+        );
+        rabbitTemplate.convertAndSend(RabbitMQConfig.EVENTS_EXCHANGE, RabbitMQConfig.RK_ORDER_RECEIVED, received);
+        await().atMost(10, TimeUnit.SECONDS)
+               .until(() -> orderHistoryRepository.existsById(orderId.toString()));
+
+        // WHEN/THEN — admin com sub diferente do dono consegue acessar
+        UUID adminId = UUID.randomUUID();
+        mockMvc.perform(get("/api/v1/orders/{orderId}", orderId)
+                        .with(jwt().jwt(j -> j
+                                .subject(adminId.toString())
+                                .claim("roles", java.util.List.of("ROLE_ADMIN")))))
+               .andExpect(status().isOk())
+               .andExpect(jsonPath("$.orderId").value(orderId.toString()));
+    }
 }
