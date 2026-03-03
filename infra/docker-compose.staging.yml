@@ -5,14 +5,24 @@ services:
     mongodb-1:
         image: mongo:7.0
         container_name: vibranium-mongodb-1
+        # docker-entrypoint-override-staging.sh: grava MONGO_REPLICA_KEY como keyFile antes
+        # de chamar o entrypoint oficial. MongoDB 7 exige --keyFile quando --auth + --replSet
+        # estão ativos juntos. Em staging o keyFile é FIXO e COMPARTILHADO pelos 3 nós —
+        # diferente do dev onde é aleatório (single-node não precisa de consistência).
+        entrypoint: ['bash', '/scripts/docker-entrypoint-override.sh']
+        command: ['mongod', '--replSet', 'rs0', '--bind_ip_all', '--keyFile', '/etc/mongod-keyfile']
         ports:
             - '27017:27017'
         environment:
             MONGO_INITDB_ROOT_USERNAME: admin
             MONGO_INITDB_ROOT_PASSWORD: admin123
             MONGO_INITDB_DATABASE: vibranium_orders
+            # Chave compartilhada para intra-cluster auth do replica set rs0.
+            # DEVE ser idêntica nos 3 nós — replica members rejeitam auth com keyFile diferente.
+            MONGO_REPLICA_KEY: 'VibraniumStagingRS0SharedKeyForReplicaSetAuth2026'
         volumes:
             - mongodb_1_data:/data/db
+            - ./mongo/docker-entrypoint-override-staging.sh:/scripts/docker-entrypoint-override.sh:ro
         networks:
             - vibranium-staging-network
         deploy:
@@ -30,14 +40,18 @@ services:
     mongodb-2:
         image: mongo:7.0
         container_name: vibranium-mongodb-2
+        entrypoint: ['bash', '/scripts/docker-entrypoint-override.sh']
+        command: ['mongod', '--replSet', 'rs0', '--bind_ip_all', '--keyFile', '/etc/mongod-keyfile']
         ports:
             - '27018:27017'
         environment:
             MONGO_INITDB_ROOT_USERNAME: admin
             MONGO_INITDB_ROOT_PASSWORD: admin123
             MONGO_INITDB_DATABASE: vibranium_orders
+            MONGO_REPLICA_KEY: 'VibraniumStagingRS0SharedKeyForReplicaSetAuth2026'
         volumes:
             - mongodb_2_data:/data/db
+            - ./mongo/docker-entrypoint-override-staging.sh:/scripts/docker-entrypoint-override.sh:ro
         networks:
             - vibranium-staging-network
         deploy:
@@ -55,14 +69,18 @@ services:
     mongodb-3:
         image: mongo:7.0
         container_name: vibranium-mongodb-3
+        entrypoint: ['bash', '/scripts/docker-entrypoint-override.sh']
+        command: ['mongod', '--replSet', 'rs0', '--bind_ip_all', '--keyFile', '/etc/mongod-keyfile']
         ports:
             - '27019:27017'
         environment:
             MONGO_INITDB_ROOT_USERNAME: admin
             MONGO_INITDB_ROOT_PASSWORD: admin123
             MONGO_INITDB_DATABASE: vibranium_orders
+            MONGO_REPLICA_KEY: 'VibraniumStagingRS0SharedKeyForReplicaSetAuth2026'
         volumes:
             - mongodb_3_data:/data/db
+            - ./mongo/docker-entrypoint-override-staging.sh:/scripts/docker-entrypoint-override.sh:ro
         networks:
             - vibranium-staging-network
         deploy:
@@ -76,6 +94,30 @@ services:
             interval: 10s
             timeout: 5s
             retries: 5
+
+    # ================== MongoDB Replica Set Init ==================
+    # Container de curta duração: executa rs.initiate() com os 3 membros e sai
+    # com código 0 após o PRIMARY ser eleito. Os order-services aguardam
+    # service_completed_successfully antes de conectar ao MongoDB.
+    mongo-rs-init:
+        image: mongo:7.0
+        container_name: vibranium-mongo-rs-init-staging
+        environment:
+            MONGO_ROOT_USER: admin
+            MONGO_ROOT_PASSWORD: admin123
+        volumes:
+            - ./mongo/init-replica-set-staging.sh:/scripts/init-replica-set.sh:ro
+        command: ['bash', '/scripts/init-replica-set.sh']
+        depends_on:
+            mongodb-1:
+                condition: service_healthy
+            mongodb-2:
+                condition: service_healthy
+            mongodb-3:
+                condition: service_healthy
+        networks:
+            - vibranium-staging-network
+        restart: 'no'
 
     # ================== PostgreSQL (3 Replicas) ==================
     postgres-primary:
@@ -307,6 +349,9 @@ services:
             - '8080:8080'
         environment:
             SPRING_APPLICATION_NAME: order-service
+            # Todos os 3 membros do replica set + replicaSet=rs0 para failover automático.
+            # O driver MongoDB redireciona operações de escrita ao PRIMARY e leituras
+            # podem ir a SECONDARY (conforme readPreference configurado na aplicação).
             SPRING_DATA_MONGODB_URI: mongodb://admin:admin123@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
             SPRING_REDIS_HOST: redis-1
             SPRING_REDIS_PORT: 6379
@@ -315,9 +360,14 @@ services:
             SPRING_RABBITMQ_USERNAME: guest
             SPRING_RABBITMQ_PASSWORD: guest
         depends_on:
-            - mongodb-1
-            - redis-1
-            - rabbitmq-1
+            # Aguarda o replica set rs0 estar completamente formado (PRIMARY eleito)
+            # antes de conectar — evita falha de MongoTransactionManager no boot.
+            mongo-rs-init:
+                condition: service_completed_successfully
+            redis-1:
+                condition: service_started
+            rabbitmq-1:
+                condition: service_started
         networks:
             - vibranium-staging-network
         deploy:
