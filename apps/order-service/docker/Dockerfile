@@ -19,7 +19,11 @@ FROM eclipse-temurin:21-jre-alpine
 
 WORKDIR /app
 
-# Copy JAR do stage anterior
+# Criar grupo e usuário não-root para executar a aplicação com privilégios mínimos
+# Reduz a superfície de ataque em caso de vulnerabilidade na JVM ou na aplicação
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+# Copy JAR do stage anterior (executado como root para garantir permissões de escrita)
 COPY --from=builder /app/apps/order-service/target/order-service-1.0.0-SNAPSHOT.jar app.jar
 
 # JVM tuning para container
@@ -30,4 +34,8 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD wget --quiet --tries=1 --spider http://localhost:8080/actuator/health || exit 1
 
-ENTRYPOINT ["java", "-jar", "app.jar"]
+# Trocar para usuário não-root antes de iniciar o processo
+USER appuser
+
+# Shell form necessário para expandir $JAVA_OPTS — exec form não interpreta variáveis de ambiente
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
