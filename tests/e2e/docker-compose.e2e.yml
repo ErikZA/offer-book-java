@@ -1,0 +1,286 @@
+version: '3.8'
+
+# ================================================================================
+# AMBIENTE E2E — Vibranium Platform
+# ================================================================================
+# Orquestra toda a infra + ambos os serviços para a suíte SagaEndToEndIT.
+#
+# Principais diferenças em relação ao ambiente dev:
+#   - SPRING_PROFILES_ACTIVE=e2e nos serviços → E2eSecurityConfig (JWT sem validação)
+#   - PostgreSQL separado por serviço (sem init script multi-banco necessário)
+#   - MongoDB sem autenticação (keyFile removido) para simplicidade de setup
+#   - Sem Keycloak, Kong, Jaeger (não necessários para validação da Saga)
+#   - Saga timeout reduzido (1 min, pool a cada 5s) para testes de timeout
+#
+# Subir manualmente: docker compose -f tests/docker-compose.e2e.yml up -d
+# Parar:             docker compose -f tests/docker-compose.e2e.yml down -v
+# ================================================================================
+
+services:
+
+    # ============================================================================
+    # PostgreSQL — banco dedicado ao order-service
+    # Banco único: vibranium_orders (sem init script multi-banco necessário)
+    # ============================================================================
+    postgres-orders-e2e:
+        image: postgres:16-alpine
+        container_name: vibranium-postgres-orders-e2e
+        environment:
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres123
+            POSTGRES_DB: vibranium_orders
+        networks:
+            - vibranium-e2e
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U postgres -d vibranium_orders']
+            interval: 5s
+            timeout: 3s
+            retries: 10
+            start_period: 10s
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                    cpus: '0.5'
+
+    # ============================================================================
+    # PostgreSQL — banco dedicado ao wallet-service
+    # ============================================================================
+    postgres-wallet-e2e:
+        image: postgres:16-alpine
+        container_name: vibranium-postgres-wallet-e2e
+        environment:
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres123
+            POSTGRES_DB: vibranium_wallet
+        networks:
+            - vibranium-e2e
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U postgres -d vibranium_wallet']
+            interval: 5s
+            timeout: 3s
+            retries: 10
+            start_period: 10s
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                    cpus: '0.5'
+
+    # ============================================================================
+    # MongoDB 7.0 — Event Store / Read Model (sem autenticação em E2E)
+    # --replSet rs0: obrigatório para MongoTransactionManager (Spring Transactions)
+    # Sem --auth nem --keyFile: simplifica E2E sem comprometer validação da Saga
+    # ============================================================================
+    mongodb-e2e:
+        image: mongo:7.0
+        container_name: vibranium-mongodb-e2e
+        command: ['mongod', '--replSet', 'rs0', '--bind_ip_all']
+        networks:
+            - vibranium-e2e
+        healthcheck:
+            test:
+                - 'CMD-SHELL'
+                - >-
+                    mongosh "mongodb://localhost:27017/test" --eval
+                    "db.runCommand({ping:1}).ok" --quiet | grep -q "^1"
+            interval: 10s
+            timeout: 5s
+            retries: 10
+            start_period: 20s
+        deploy:
+            resources:
+                limits:
+                    # MongoDB 7.0 requer no mínimo 512M no startup (WiredTiger cache)
+                    memory: 768M
+                    cpus: '0.5'
+
+    # ============================================================================
+    # mongo-rs-init — Inicializa replica set rs0 (container de curta duração)
+    # Executa rs.initiate() e sai com código 0.
+    # ============================================================================
+    mongo-rs-init-e2e:
+        image: mongo:7.0
+        container_name: vibranium-mongo-rs-init-e2e
+        command:
+            - 'bash'
+            - '-c'
+            - |
+                until mongosh "mongodb://mongodb-e2e:27017" --eval "db.runCommand({ping:1}).ok" --quiet 2>/dev/null | grep -q "^1"; do
+                  echo "Aguardando MongoDB..."; sleep 2
+                done
+                mongosh "mongodb://mongodb-e2e:27017" --eval '
+                  try {
+                    rs.initiate({_id:"rs0",members:[{_id:0,host:"mongodb-e2e:27017"}]});
+                    print("Replica set iniciado com sucesso");
+                  } catch(e) {
+                    if (e.code === 23) { print("Replica set ja iniciado"); } else { throw e; }
+                  }
+                '
+        depends_on:
+            mongodb-e2e:
+                condition: service_healthy
+        networks:
+            - vibranium-e2e
+        restart: 'no'
+
+    # ============================================================================
+    # Redis 7 — Motor de Match (Script Lua atômico)
+    # ============================================================================
+    redis-e2e:
+        image: redis:7-alpine
+        container_name: vibranium-redis-e2e
+        networks:
+            - vibranium-e2e
+        healthcheck:
+            test: ['CMD', 'redis-cli', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 5
+        deploy:
+            resources:
+                limits:
+                    memory: 128M
+                    cpus: '0.25'
+
+    # ============================================================================
+    # RabbitMQ 3.13 — Message broker para a Saga
+    # ============================================================================
+    rabbitmq-e2e:
+        image: rabbitmq:3.13-management-alpine
+        container_name: vibranium-rabbitmq-e2e
+        environment:
+            RABBITMQ_DEFAULT_USER: guest
+            RABBITMQ_DEFAULT_PASS: guest
+        networks:
+            - vibranium-e2e
+        healthcheck:
+            test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+            interval: 10s
+            timeout: 5s
+            retries: 10
+            start_period: 20s
+        deploy:
+            resources:
+                limits:
+                    memory: 384M
+                    cpus: '0.5'
+
+    # ============================================================================
+    # order-service — build a partir do contexto do projeto (../)
+    #
+    # Perfil e2e:
+    #   - E2eSecurityConfig: JwtDecoder que parseia sem validar assinatura
+    #   - E2eDataSeederController: endpoint /e2e/setup para pré-configurar dados de teste
+    #   - Saga timeout reduzido para 1 min (test de timeout rápido)
+    # ============================================================================
+    order-service-e2e:
+        build:
+            context: ../..
+            dockerfile: apps/order-service/docker/Dockerfile
+        image: vibranium-order-service:e2e
+        container_name: vibranium-order-service-e2e
+        environment:
+            SERVER_PORT: '8080'
+            SPRING_APPLICATION_NAME: order-service
+            SPRING_PROFILES_ACTIVE: e2e
+            SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-orders-e2e:5432/vibranium_orders
+            SPRING_DATASOURCE_USERNAME: postgres
+            SPRING_DATASOURCE_PASSWORD: postgres123
+            # replicaSet=rs0: obrigatório para MongoTransactionManager (sem autenticação em E2E)
+            SPRING_DATA_MONGODB_URI: 'mongodb://mongodb-e2e:27017/vibranium_orders?replicaSet=rs0'
+            SPRING_DATA_REDIS_HOST: redis-e2e
+            SPRING_RABBITMQ_HOST: rabbitmq-e2e
+            SPRING_RABBITMQ_PORT: '5672'
+            SPRING_RABBITMQ_USERNAME: guest
+            SPRING_RABBITMQ_PASSWORD: guest
+            # Saga timeout e intervalo reduzidos para teste de timeout (<2 min)
+            APP_SAGA_PENDING_TIMEOUT_MINUTES: '1'
+            APP_SAGA_CLEANUP_DELAY_MS: '5000'
+            # Desabilita tracing OTLP (sem Jaeger em E2E)
+            MANAGEMENT_TRACING_SAMPLING_PROBABILITY: '0.0'
+            MANAGEMENT_OTLP_TRACING_ENDPOINT: 'http://localhost:4318'
+            # Desabilita Keycloak OIDC discovery (JWT tratado pelo E2eSecurityConfig)
+            SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: ''
+        depends_on:
+            postgres-orders-e2e:
+                condition: service_healthy
+            mongo-rs-init-e2e:
+                condition: service_completed_successfully
+            redis-e2e:
+                condition: service_healthy
+            rabbitmq-e2e:
+                condition: service_healthy
+        networks:
+            - vibranium-e2e
+        healthcheck:
+            test:
+                - 'CMD'
+                - 'wget'
+                - '--quiet'
+                - '--tries=1'
+                - '--spider'
+                - 'http://localhost:8080/actuator/health'
+            interval: 10s
+            timeout: 5s
+            retries: 12
+            start_period: 90s
+        deploy:
+            resources:
+                limits:
+                    memory: 1024M
+                    cpus: '1.0'
+
+    # ============================================================================
+    # wallet-service — build a partir do contexto do projeto (../)
+    # ============================================================================
+    wallet-service-e2e:
+        build:
+            context: ../..
+            dockerfile: apps/wallet-service/docker/Dockerfile
+        image: vibranium-wallet-service:e2e
+        container_name: vibranium-wallet-service-e2e
+        environment:
+            SERVER_PORT: '8081'
+            SPRING_APPLICATION_NAME: wallet-service
+            SPRING_PROFILES_ACTIVE: e2e
+            SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-wallet-e2e:5432/vibranium_wallet
+            SPRING_DATASOURCE_USERNAME: postgres
+            SPRING_DATASOURCE_PASSWORD: postgres123
+            SPRING_RABBITMQ_HOST: rabbitmq-e2e
+            SPRING_RABBITMQ_PORT: '5672'
+            SPRING_RABBITMQ_USERNAME: guest
+            SPRING_RABBITMQ_PASSWORD: guest
+            # Desabilita tracing OTLP (sem Jaeger em E2E)
+            MANAGEMENT_TRACING_SAMPLING_PROBABILITY: '0.0'
+            MANAGEMENT_OTLP_TRACING_ENDPOINT: 'http://localhost:4318'
+            # Desabilita Keycloak OIDC discovery (JWT tratado pelo E2eSecurityConfig)
+            SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: ''
+        depends_on:
+            postgres-wallet-e2e:
+                condition: service_healthy
+            rabbitmq-e2e:
+                condition: service_healthy
+        networks:
+            - vibranium-e2e
+        healthcheck:
+            test:
+                - 'CMD'
+                - 'wget'
+                - '--quiet'
+                - '--tries=1'
+                - '--spider'
+                - 'http://localhost:8081/actuator/health'
+            interval: 10s
+            timeout: 5s
+            retries: 12
+            start_period: 90s
+        deploy:
+            resources:
+                limits:
+                    memory: 1024M
+                    cpus: '1.0'
+
+networks:
+    vibranium-e2e:
+        driver: bridge

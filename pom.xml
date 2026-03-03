@@ -19,6 +19,10 @@
         <module>libs/common-utils</module>
         <module>apps/order-service</module>
         <module>apps/wallet-service</module>
+        <!-- Suíte E2E cross-service: SagaEndToEndIT via Testcontainers-Compose.
+             Não faz parte do build padrão (mvn clean package) — apenas mvn verify.
+             Requer Docker Engine acessível. -->
+        <module>tests/e2e</module>
     </modules>
 
     <properties>

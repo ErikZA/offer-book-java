@@ -1,83 +1,105 @@
-# Tests — Ambientes de Teste Isolados
+# Tests — Validação da Plataforma Vibranium
 
-Contém os arquivos Docker Compose para execução de testes de integração da plataforma Vibranium.
-Os composes foram movidos do diretório legado `docker/` para cá na reestruturação da infra.
+Contém scripts de validação de infra e o módulo Maven de testes E2E cross-service.
 
-## 📁 Estrutura
+## Estrutura
 
 ```
 tests/
-├── docker-compose.test.yml                          # Stack completa isolada (infra + test-runner Maven)
-├── docker-compose-test.yml                          # Stack mínima (PostgreSQL infra apenas)
+├── e2e/                                              # Módulo Maven — suíte E2E (AT-5.3.1)
+│   ├── pom.xml                                       # Dependências: Testcontainers, RestAssured, Awaitility
+│   ├── docker-compose.e2e.yml                        # Ambiente E2E completo (sem Keycloak/Kong/Jaeger)
+│   └── src/test/java/com/vibranium/e2e/
+│       └── SagaEndToEndIT.java                       # Happy path + Timeout path da Saga
 ├── AT-12.1-rate-limiting-redis-validation.sh         # AT-12.1: Rate Limiting via Redis no Kong
 ├── AT-13.1-jwks-rotation-validation.sh              # AT-13.1: Rotação JWKS do Keycloak → Kong
-├── AT-5.1.3-pg-streaming-replication-validation.sh  # ⭐ AT-5.1.3: PostgreSQL Streaming Replication
-└── test-results/                                    # Relatórios Surefire gerados pelo test-runner
+├── AT-5.1.3-pg-streaming-replication-validation.sh  # AT-5.1.3: PostgreSQL Streaming Replication
+└── README.md
 ```
 
-## 🧪 Composes disponíveis
+---
 
-### `docker-compose.test.yml` — Stack completa de integração
+## Suíte E2E — `tests/e2e/` (AT-5.3.1)
 
-Sobe toda a infra de dependência em modo isolado (sufixo `-test` em todos os containers/redes/volumes) e executa o `test-runner` (Maven) ao final.
+### O que valida
 
-**Serviços:**
-| Container | Imagem | Porta |
-|-----------|--------|-------|
-| `postgresql-test` | postgres:16-alpine | 5433 |
-| `redis-test` | redis:7-alpine | 6380 |
-| `rabbitmq-test` | rabbitmq:3.13-management-alpine | 5673 / 15673 |
-| `mongodb-test` | mongo:7.0 | 27018 |
-| `kong-migration-test` | kong:3.4 | — |
-| `kong-test` | kong:3.4 | 8101 / 8102 |
-| `keycloak-test` | vibranium-keycloak:22.0.5 | 8180 || `kong-init-test` | (build Dockerfile.kong-init) | — |
-| `jwks-rotator-test` | vibranium-jwks-rotator:latest | — | ⭐ AT-13.1: sidecar JWKS 30s || `test-runner` | (build do projeto) | — |
+| Teste | Fluxo | Resultado esperado |
+|-------|-------|--------------------|
+| `happyPath_buyAndSellFilled` | BUY + SELL ao mesmo preço/quantidade | Ambas as ordens `FILLED` |
+| `timeoutPath_cancelledByCleanupJob` | BUY sem contraparte | Ordem `CANCELLED` após 1 min (Saga timeout) |
 
-**Uso:**
+### Como funciona
+
+O `SagaEndToEndIT.java` usa `DockerComposeContainer` (Testcontainers) para subir o
+`docker-compose.e2e.yml`, que orquestra toda a infra + ambos os serviços com
+`SPRING_PROFILES_ACTIVE=e2e`.
+
+O perfil `e2e` ativa:
+- **`E2eSecurityConfig`** — `JwtDecoder` que parseia JWTs sem validar assinatura
+  (sem necessidade de Keycloak nos testes)
+- **`E2eDataSeederController`** — endpoints `/e2e/setup/users` e `/e2e/setup/wallets`
+  para pré-configurar dados de teste via `@BeforeAll`
+
+### Pré-requisitos
+
+- Docker Engine acessível (`docker info` sem erro)
+- Porta 8080 (order-service) e 8081 (wallet-service) livres ou mapeamento automático via Testcontainers
+- Primeira execução: ~5–8 min (build das imagens); subsequentes: ~2–3 min (cache Docker)
+
+### Execução
+
 ```bash
-# Subir apenas a infra (sem o test-runner)
-docker compose -f tests/docker-compose.test.yml up -d \
-  postgresql-test redis-test rabbitmq-test mongodb-test \
-  kong-migration-test kong-test keycloak-test
+# 1. Instalar todos os artefatos no ~/.m2 (sem rodar testes)
+mvn clean install -DskipTests
 
-# Executar teste completo (infra + test-runner)
-docker compose -f tests/docker-compose.test.yml up --abort-on-container-exit
+# 2. Executar suíte E2E completa
+mvn verify -pl tests/e2e --no-transfer-progress
 
-# Ver relatórios
-ls tests/test-results/
+# Apenas compilar (verificar erros de sintaxe sem subir Docker)
+mvn test-compile -pl tests/e2e --no-transfer-progress
 ```
 
-### `docker-compose-test.yml` — Stack mínima (PostgreSQL + schemas de infra)
+### Ambiente Docker (`docker-compose.e2e.yml`)
 
-Útil para validar migrações de infra (`kong` e `keycloak` schemas) sem subir toda a stack.
+| Serviço | Imagem | Função |
+|---------|--------|--------|
+| `postgres-orders-e2e` | postgres:16-alpine | Banco do order-service |
+| `postgres-wallet-e2e` | postgres:16-alpine | Banco do wallet-service |
+| `mongodb-e2e` | mongo:7.0 | Event Store + Read Model (replica set rs0, sem auth) |
+| `mongo-rs-init-e2e` | mongo:7.0 | Inicializa `rs.initiate()` e encerra |
+| `redis-e2e` | redis:7-alpine | Motor de Match (script Lua) |
+| `rabbitmq-e2e` | rabbitmq:3.13-management-alpine | Message broker da Saga |
+| `order-service-e2e` | build local | Order Service com perfil `e2e` |
+| `wallet-service-e2e` | build local | Wallet Service com perfil `e2e` |
 
-**Uso:**
+Subir manualmente (sem os testes):
 ```bash
-docker compose -f tests/docker-compose-test.yml up -d
-# Verificar schemas:
-docker exec vibranium-postgresql-test psql -U postgres -d vibranium_infra_test \
-  -c "\dn"
-docker compose -f tests/docker-compose-test.yml down -v
+docker compose -f tests/e2e/docker-compose.e2e.yml up -d
+docker compose -f tests/e2e/docker-compose.e2e.yml down -v
 ```
 
-## 📝 Scripts de validação manuais
+---
 
-Alternativa ao test-runner Maven para validações de infra:
+## Scripts de validação manual
+
+Alternativa ao módulo Maven para validações de infra isoladas (requerem infra ativa):
 
 | Script | Descrição |
 |--------|-----------|
-| `AT-12.1-rate-limiting-redis-validation.sh` | Valida `policy=redis` em todos os plugins rate-limiting |
-| `AT-13.1-jwks-rotation-validation.sh` | ⭐ Valida rotação automática JWKS: artefatos, 401→200, idempotência (10 testes) |
-| `AT-5.1.3-pg-streaming-replication-validation.sh` | ⭐ Valida PostgreSQL Streaming Replication: `wal_level`, `pg_stat_replication` (2 réplicas), `hot_standby`, rejeição de writes nas réplicas, URLs dos wallet-services (5 testes) |
+| `AT-12.1-rate-limiting-redis-validation.sh` | Valida `policy=redis` em todos os plugins rate-limiting do Kong |
+| `AT-13.1-jwks-rotation-validation.sh` | Valida rotação automática JWKS: artefatos, 401→200, idempotência (10 testes) |
+| `AT-5.1.3-pg-streaming-replication-validation.sh` | Valida PostgreSQL Streaming Replication: `wal_level`, `pg_stat_replication`, hot standby (5 testes) |
 
 ```bash
-# Executar validação JWKS rotation (requer infra de teste ativa)
 chmod +x tests/AT-13.1-jwks-rotation-validation.sh
 ./tests/AT-13.1-jwks-rotation-validation.sh
 
 # Override de variáveis caso necessário:
 KONG_ADMIN_URL=http://localhost:8001 \
 KEYCLOAK_URL=http://localhost:8180 \
+./tests/AT-13.1-jwks-rotation-validation.sh
+```
+
 ./tests/AT-13.1-jwks-rotation-validation.sh
 
 # Executar validação PostgreSQL Streaming Replication (requer staging ativo)

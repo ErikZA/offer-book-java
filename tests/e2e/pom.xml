@@ -1,0 +1,159 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.vibranium</groupId>
+        <artifactId>vibranium-orderbook</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>e2e-tests</artifactId>
+    <name>E2E Tests — Saga End-to-End Validation</name>
+    <description>
+        Suíte de testes cross-service que sobe todos os microsserviços via
+        Testcontainers-Compose e valida o ciclo completo da Saga de Order Book:
+        POST BUY → FundsReserved → POST SELL → Match → FILLED.
+
+        Execução isolada (não faz parte do build padrão):
+          mvn clean install -DskipTests           # instala artefatos no ~/.m2
+          mvn verify -pl tests/e2e --no-transfer-progress  # roda a suíte E2E
+
+        Pré-requisito: Docker Engine acessível na máquina (local ou Docker-in-Docker).
+        Imagens dos serviços são construídas na primeira execução (~5 min)
+        e cacheadas pelo Docker para execuções subsequentes (~2-3 min).
+    </description>
+
+    <dependencies>
+        <!-- =====================================================================
+             Testcontainers — orquestração Docker nos testes de integração
+        ===================================================================== -->
+
+        <!-- Core Testcontainers (GenericContainer, Wait strategies) -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- JUnit 5 extension: @Testcontainers + @Container lifecycle management -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- =====================================================================
+             JUnit Jupiter — motor de testes
+        ===================================================================== -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- =====================================================================
+             RestAssured 5.4 — DSL fluente para validação de REST APIs
+             Não incluído no spring-boot-dependencies, por isso versão explícita.
+        ===================================================================== -->
+        <dependency>
+            <groupId>io.rest-assured</groupId>
+            <artifactId>rest-assured</artifactId>
+            <version>5.4.0</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- =====================================================================
+             Awaitility — polling assíncrono (aguarda propagação de eventos)
+        ===================================================================== -->
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- =====================================================================
+             Jackson — parse de respostas JSON nos testes
+        ===================================================================== -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- =====================================================================
+             AssertJ — fluent assertions (legibilidade nos testes)
+        ===================================================================== -->
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- =====================================================================
+             SLF4J Simple — log de diagnóstico dos testes (sem Spring Boot)
+        ===================================================================== -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>2.0.13</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- =====================================================================
+                 Surefire: pula unit tests (não há nenhum neste módulo)
+            ===================================================================== -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <skipTests>true</skipTests>
+                </configuration>
+            </plugin>
+
+            <!-- =====================================================================
+                 Failsafe: executa *IT.java na fase integration-test / verify
+                 Timeout global de 7 minutos para toda a suíte E2E.
+            ===================================================================== -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <includes>
+                        <include>**/*IT.java</include>
+                    </includes>
+                    <!-- Timeout global de 420s (7 min) — critério de aceite do task 5.3.1 -->
+                    <forkedProcessTimeoutInSeconds>420</forkedProcessTimeoutInSeconds>
+                    <!-- Herda o @{argLine} do pai para suporte a JVM modular -->
+                    <argLine>@{argLine} -XX:+EnableDynamicAgentLoading -Xshare:off</argLine>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Jacoco desabilitado neste módulo (métricas de cobertura não se aplicam a testes E2E) -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <configuration>
+                    <skip>true</skip>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
