@@ -2,6 +2,7 @@ package com.vibranium.walletservice.domain.model;
 
 import com.vibranium.contracts.enums.AssetType;
 import com.vibranium.walletservice.exception.InsufficientFundsException;
+import com.vibranium.walletservice.exception.InsufficientLockedFundsException;
 import jakarta.persistence.*;
 
 import java.math.BigDecimal;
@@ -143,6 +144,43 @@ public class Wallet {
     }
 
     /**
+     * Libera (desbloqueia) saldo do caminho compensatório da Saga: move {@code amount}
+     * de "locked" de volta para "available". Operação simétrica a {@link #reserveFunds}.
+     *
+     * <p>Valida ambas as pré-condições antes de qualquer mutação — se alguma falhar,
+     * nenhum campo é alterado (atomicidade da operação).</p>
+     *
+     * @param asset  Tipo do ativo (BRL ou VIBRANIUM).
+     * @param amount Valor a devolver ao saldo disponível — deve ser positivo.
+     * @throws IllegalArgumentException          se {@code amount} for zero ou negativo.
+     * @throws InsufficientLockedFundsException  se o saldo bloqueado for menor que {@code amount}.
+     */
+    public void releaseFunds(AssetType asset, BigDecimal amount) {
+        // Invariante 1: amount deve ser positivo
+        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException(
+                    "amount deve ser positivo para release: recebido=" + amount);
+        }
+
+        if (asset == AssetType.BRL) {
+            // Invariante 2: locked não pode ficar negativo
+            if (brlLocked.compareTo(amount) < 0) {
+                throw new InsufficientLockedFundsException(
+                        "BRL locked insuficiente para release: locked=" + brlLocked + ", solicitado=" + amount);
+            }
+            brlLocked     = brlLocked.subtract(amount);
+            brlAvailable  = brlAvailable.add(amount);
+        } else {
+            if (vibLocked.compareTo(amount) < 0) {
+                throw new InsufficientLockedFundsException(
+                        "VIB locked insuficiente para release: locked=" + vibLocked + ", solicitado=" + amount);
+            }
+            vibLocked     = vibLocked.subtract(amount);
+            vibAvailable  = vibAvailable.add(amount);
+        }
+    }
+
+    /**
      * Liquida um trade do lado comprador: libera o BRL bloqueado e credita o VIB recebido.
      *
      * <p>Encapsula a invariante: {@code brlToRelease} não pode exceder o {@code brlLocked}
@@ -234,6 +272,7 @@ public class Wallet {
     // Nota: setters públicos de saldo foram removidos intencionalmente (US-005).
     // Toda mutação de estado deve ocorrer via métodos de domínio:
     //   - reserveFunds()         → bloqueia saldo para uma ordem
+    //   - releaseFunds()         → devolve saldo bloqueado (caminho compensatório Saga)
     //   - applyBuySettlement()   → liquida trade no lado comprador
     //   - applySellSettlement()  → liquida trade no lado vendedor
     //   - adjustBalance()        → ajuste administrativo via delta

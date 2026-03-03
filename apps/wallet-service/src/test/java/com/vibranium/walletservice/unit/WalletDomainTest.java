@@ -3,6 +3,7 @@ package com.vibranium.walletservice.unit;
 import com.vibranium.contracts.enums.AssetType;
 import com.vibranium.walletservice.domain.model.Wallet;
 import com.vibranium.walletservice.exception.InsufficientFundsException;
+import com.vibranium.walletservice.exception.InsufficientLockedFundsException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -281,6 +282,89 @@ class WalletDomainTest {
             // Nenhum campo alterado — a validação ocorre antes de qualquer modificação
             assertThat(wallet.getBrlAvailable()).isEqualByComparingTo(brlAntes);
             assertThat(wallet.getVibAvailable()).isEqualByComparingTo(vibAntes);
+        }
+    }
+
+    // =========================================================================
+    // releaseFunds
+    // =========================================================================
+
+    @Nested
+    @DisplayName("releaseFunds()")
+    class ReleaseFundsTests {
+
+        @Test
+        @DisplayName("BRL: release válido deve mover locked → available mantendo invariante")
+        void releaseFunds_validBrl_movesLockedToAvailable() {
+            // Arrange — carteira com R$300 originalmente; R$100 foram reservados
+            Wallet wallet = walletWith(new BigDecimal("300.00"), BigDecimal.ZERO);
+            wallet.reserveFunds(AssetType.BRL, new BigDecimal("100.00"));
+            // Estado: brlAvailable=200, brlLocked=100
+
+            // Act — compensação: devolve R$100 de locked → available
+            wallet.releaseFunds(AssetType.BRL, new BigDecimal("100.00"));
+
+            // Assert
+            assertThat(wallet.getBrlAvailable()).isEqualByComparingTo("300.00");
+            assertThat(wallet.getBrlLocked()).isEqualByComparingTo("0.00");
+        }
+
+        @Test
+        @DisplayName("VIB: release válido deve mover VIB locked → VIB available")
+        void releaseFunds_validVib_movesLockedToAvailable() {
+            // Arrange — vendedor com 10 VIB reservados
+            Wallet wallet = walletWith(BigDecimal.ZERO, new BigDecimal("10.00"));
+            wallet.reserveFunds(AssetType.VIBRANIUM, new BigDecimal("10.00"));
+            // Estado: vibAvailable=0, vibLocked=10
+
+            // Act
+            wallet.releaseFunds(AssetType.VIBRANIUM, new BigDecimal("10.00"));
+
+            // Assert
+            assertThat(wallet.getVibAvailable()).isEqualByComparingTo("10.00");
+            assertThat(wallet.getVibLocked()).isEqualByComparingTo("0.00");
+        }
+
+        @Test
+        @DisplayName("locked insuficiente: deve lançar InsufficientLockedFundsException sem alterar estado")
+        void releaseFunds_insufficientLocked_throwsExceptionAndPreservesState() {
+            // Arrange — apenas R$50 bloqueados, mas tentando liberar R$200
+            Wallet wallet = walletWithBrlLocked(new BigDecimal("50.00"));
+            BigDecimal availableAntes = wallet.getBrlAvailable();
+            BigDecimal lockedAntes    = wallet.getBrlLocked();
+
+            // Act & Assert
+            assertThatThrownBy(() -> wallet.releaseFunds(AssetType.BRL, new BigDecimal("200.00")))
+                    .isInstanceOf(InsufficientLockedFundsException.class)
+                    .hasMessageContaining("BRL");
+
+            // Estado preservado — sem mutação parcial
+            assertThat(wallet.getBrlAvailable()).isEqualByComparingTo(availableAntes);
+            assertThat(wallet.getBrlLocked()).isEqualByComparingTo(lockedAntes);
+        }
+
+        @Test
+        @DisplayName("amount zero: deve lançar IllegalArgumentException sem alterar estado")
+        void releaseFunds_zeroAmount_throwsIllegalArgumentException() {
+            Wallet wallet = walletWithBrlLocked(new BigDecimal("100.00"));
+
+            assertThatThrownBy(() -> wallet.releaseFunds(AssetType.BRL, BigDecimal.ZERO))
+                    .isInstanceOf(IllegalArgumentException.class);
+
+            // Estado não alterado
+            assertThat(wallet.getBrlLocked()).isEqualByComparingTo("100.00");
+        }
+
+        @Test
+        @DisplayName("amount negativo: deve lançar IllegalArgumentException sem alterar estado")
+        void releaseFunds_negativeAmount_throwsIllegalArgumentException() {
+            Wallet wallet = walletWithBrlLocked(new BigDecimal("100.00"));
+
+            assertThatThrownBy(() -> wallet.releaseFunds(AssetType.BRL, new BigDecimal("-10.00")))
+                    .isInstanceOf(IllegalArgumentException.class);
+
+            // Estado não alterado
+            assertThat(wallet.getBrlLocked()).isEqualByComparingTo("100.00");
         }
     }
 

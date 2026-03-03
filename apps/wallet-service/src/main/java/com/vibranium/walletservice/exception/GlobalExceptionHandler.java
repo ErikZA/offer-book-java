@@ -23,6 +23,7 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li>{@link WalletNotFoundException} → 404 Not Found</li>
  *   <li>{@link InsufficientFundsException} → 422 Unprocessable Entity</li>
+ *   <li>{@link InsufficientLockedFundsException} → 422 Unprocessable Entity (caminho compensatório Saga)</li>
  *   <li>{@link MethodArgumentNotValidException} → 400 Bad Request (validação JSR-380)</li>
  *   <li>{@link MethodArgumentTypeMismatchException} → 400 Bad Request (UUID inválido na URL)</li>
  *   <li>{@link HttpMessageNotReadableException} → 400 Bad Request (JSON malformado)</li>
@@ -54,6 +55,16 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(InsufficientFundsException.class)
     public ResponseEntity<ErrorResponse> handleInsufficientFunds(InsufficientFundsException ex) {
         logger.warn("Insufficient funds: {}", ex.getMessage());
+        return ResponseEntity
+                .status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(InsufficientLockedFundsException.class)
+    public ResponseEntity<ErrorResponse> handleInsufficientLockedFunds(InsufficientLockedFundsException ex) {
+        // Saldo bloqueado insuficiente: incidente crítico no caminho compensatório da Saga.
+        // Logado como ERROR pois indica inconsistência de estado — locked < 0 nunca deveria ocorrer.
+        logger.error("Insufficient locked funds (Saga compensation path): {}", ex.getMessage());
         return ResponseEntity
                 .status(HttpStatus.UNPROCESSABLE_ENTITY)
                 .body(new ErrorResponse(ex.getMessage()));
