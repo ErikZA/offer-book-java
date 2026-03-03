@@ -344,6 +344,44 @@ levar alguns milissegundos para ser criado (tempo de propagação pelo RabbitMQ)
 
 ---
 
+## 🪨 MongoDB Replica Set — Suporte a Transações (AT-1.3.1)
+
+### Problema
+MongoDB standalone não suporta transações multi-documento. O `MongoTransactionManager` falha com:
+```
+Transaction numbers are only allowed on a replica set member or mongos
+```
+
+### Solução — Single-Node Replica Set `rs0`
+
+```
+Boot do container MongoDB:
+  docker-entrypoint-override.sh
+    → gera /etc/mongod-keyfile (openssl rand -base64 756)
+    → delega ao entrypoint oficial: mongod --replSet rs0 --bind_ip_all --keyFile ...
+
+Servico mongo-rs-init (container de curta duração):
+  depends_on: mongodb: service_healthy
+    → rs.initiate({ _id: "rs0", members: [{_id: 0, host: "mongodb:27017"}] })
+    → aguarda stateStr === "PRIMARY"
+    → sai com código 0
+
+order-service:
+  depends_on: mongo-rs-init: service_completed_successfully
+  SPRING_DATA_MONGODB_URI: ...?replicaSet=rs0&authSource=admin
+```
+
+**Por que `--keyFile`?** MongoDB 7 exige autenticação intra-cluster (`keyFile`) sempre que `--auth` e `--replSet` estão ativos juntos — mesmo num single-node. O `docker-entrypoint-override.sh` gera o keyFile automaticamente no boot; regen na cada restart é seguro porque nenhum outro membro precisa autenticar com este nó.
+
+### URI de conexão
+
+| Ambiente | URI |
+|---|---|
+| Dev local (`mongod --replSet rs0`) | `mongodb://localhost:27017/vibranium_orders?replicaSet=rs0` |
+| Docker Compose dev | `mongodb://admin:***@mongodb:27017/vibranium_orders?replicaSet=rs0&authSource=admin` |
+
+---
+
 ## ⏱️ Saga Timeout — Ciclo de Vida Finito (AT-09.1 + AT-09.2)
 
 ### Problema

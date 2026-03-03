@@ -41,7 +41,8 @@ infra/
 docker compose -f infra/docker-compose.dev.yml up -d
 
 # Subir apenas infraestrutura (sem apps)
-docker compose -f infra/docker-compose.dev.yml up -d postgres redis rabbitmq mongodb keycloak-db keycloak kong jaeger
+# mongo-rs-init é obrigatório: inicializa o replica set rs0 antes que os serviços conectem
+docker compose -f infra/docker-compose.dev.yml up -d postgres redis rabbitmq mongodb mongo-rs-init keycloak-db keycloak kong jaeger
 ```
 
 > **Jaeger UI** disponível em `http://localhost:16686` após subir o ambiente dev.
@@ -107,7 +108,7 @@ KONG_ADMIN_URL=http://localhost:8001 ./tests/AT-12.1-rate-limiting-redis-validat
 - **Keycloak**: imagem customizada com `keycloak-to-rabbit-3.0.5.jar` compilada via `kc.sh build --db=postgres --health-enabled=true`. O modo `start --optimized` (staging) exige essas flags no build-time.
 - **Kong 3.4**: não possui `curl` na imagem — healthcheck usa `kong health`.
 - **Redis-Kong**: Redis standalone dedicado ao Kong rate-limiting. Os redis de aplicação (`redis-1/2/3`) usam cluster mode — incompatível com o plugin rate-limiting do Kong 3.x (requer standalone ou Sentinel). Dados efêmeros por design (`appendonly no`).
-- **MongoDB 7.0**: requer mínimo 512M de memória; healthcheck deve incluir `authSource=admin`.
+- **MongoDB 7.0 — Replica Set (AT-1.3.1)**: `MongoTransactionManager` exige replica set para criar sessões de transação. O serviço `mongodb` sobe com `--replSet rs0 --keyFile /etc/mongod-keyfile` (MongoDB 7 exige keyFile quando `--auth + --replSet` estão ativos). O `docker-entrypoint-override.sh` gera o keyFile via `openssl rand -base64 756` em cada boot (seguro para single-node dev). O serviço `mongo-rs-init` executa `rs.initiate()` após o healthcheck pass e aguarda `stateStr === 'PRIMARY'` antes de sair com código 0. O `order-service` usa `depends_on: mongo-rs-init: service_completed_successfully`.
 - **init-app-databases.sh**: usa heredoc para passar `\gexec` ao `psql` (metacomando não funciona com `--command`).
 
 
