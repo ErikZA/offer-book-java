@@ -141,7 +141,9 @@ public abstract class AbstractIntegrationTest {
                 "wallet.keycloak.events",
                 "wallet.commands",
                 "wallet.commands.reserve-funds",
-                "wallet.commands.reserve-funds.dlq"
+                "wallet.commands.reserve-funds.dlq",
+                "wallet.commands.release-funds",
+                "wallet.commands.release-funds.dlq"
         }) {
             try {
                 rabbitAdmin.purgeQueue(queue, false);

@@ -2,6 +2,7 @@ package com.vibranium.walletservice.application.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vibranium.contracts.commands.wallet.ReleaseFundsCommand;
 import com.vibranium.contracts.commands.wallet.ReserveFundsCommand;
 import com.vibranium.contracts.commands.wallet.SettleFundsCommand;
 import com.vibranium.contracts.enums.FailureReason;
@@ -14,6 +15,7 @@ import com.vibranium.walletservice.domain.repository.IdempotencyKeyRepository;
 import com.vibranium.walletservice.domain.repository.OutboxMessageRepository;
 import com.vibranium.walletservice.domain.repository.WalletRepository;
 import com.vibranium.walletservice.exception.InsufficientFundsException;
+import com.vibranium.walletservice.exception.InsufficientLockedFundsException;
 import com.vibranium.walletservice.exception.WalletNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,6 +34,7 @@ import java.util.UUID;
  * <ul>
  *   <li><b>Criação de carteiras</b> — disparada por evento REGISTER do Keycloak.</li>
  *   <li><b>Reserva de fundos</b> — bloqueia saldo antes de uma ordem entrar no livro.</li>
+ *   <li><b>Liberação de fundos</b> — devolve saldo bloqueado no caminho compensatório da Saga.</li>
  *   <li><b>Liquidação de fundos</b> — executa as transferências BRL/VIB após um match.</li>
  *   <li><b>Ajuste de saldo</b> — operação REST para crédito/débito administrativo.</li>
  * </ul>
@@ -168,6 +171,83 @@ public class WalletService {
                     "FundsReservationFailedEvent",
                     wallet.getId().toString(),
                     toJson(failedEvent)
+            ));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Liberação de fundos (compensação Saga)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Libera (desbloqueia) o saldo reservado no contexto compensatório da Saga.
+     *
+     * <p>Move {@code amount} de "locked" de volta para "available", revertendo
+     * uma reserva prévia. Opera dentro de uma única {@code @Transactional}, garantindo
+     * que a mutação do saldo, a gravação do evento no outbox e a chave de idempotência
+     * sejam atômicas — ou tudo comita, ou nada muda.</p>
+     *
+     * <p>Fluxo happy path:</p>
+     * <ol>
+     *   <li>Grava chave de idempotência (previne double-processing em re-entregas).</li>
+     *   <li>Adquire lock pessimista na carteira ({@code SELECT FOR UPDATE}).</li>
+     *   <li>Executa {@code wallet.releaseFunds()} — valida locked antes de modificar.</li>
+     *   <li>Grava {@code FundsReleasedEvent} no outbox na mesma TX.</li>
+     * </ol>
+     *
+     * <p>Em caso de falha (carteira não encontrada ou saldo locked insuficiente),
+     * grava {@code FundsReleaseFailedEvent} no outbox sem alterar saldos.</p>
+     *
+     * @param cmd       Comando com walletId, asset e amount a liberar.
+     * @param messageId ID da mensagem AMQP para idempotência.
+     */
+    @Transactional
+    public void releaseFunds(ReleaseFundsCommand cmd, String messageId) {
+        logger.debug("Processing ReleaseFundsCommand for walletId={}", cmd.walletId());
+
+        // Grava chave de idempotência atomicamente com a operação
+        idempotencyKeyRepository.save(new IdempotencyKey(messageId));
+
+        try {
+            Wallet wallet = walletRepository.findByIdForUpdate(cmd.walletId())
+                    .orElseThrow(() -> WalletNotFoundException.forWalletId(cmd.walletId()));
+
+            // Valida locked >= amount e move locked → available
+            wallet.releaseFunds(cmd.asset(), cmd.amount());
+            walletRepository.save(wallet);
+
+            FundsReleasedEvent event = FundsReleasedEvent.of(
+                    cmd.correlationId(), cmd.orderId(),
+                    cmd.walletId(), cmd.asset(), cmd.amount()
+            );
+            outboxMessageRepository.save(OutboxMessage.create(
+                    "FundsReleasedEvent",
+                    wallet.getId().toString(),
+                    toJson(event)
+            ));
+            logger.info("Funds released: walletId={}, asset={}, amount={}",
+                    cmd.walletId(), cmd.asset(), cmd.amount());
+
+        } catch (WalletNotFoundException | InsufficientLockedFundsException e) {
+            /*
+             * Falha crítica: fundos permanecem bloqueados indevidamente.
+             * Emitir FundsReleaseFailedEvent para que o order-service acione
+             * processo de reconciliação manual ou alerta operacional.
+             */
+            logger.error("ReleaseFunds failed for walletId={}: {}", cmd.walletId(), e.getMessage());
+
+            FailureReason reason = (e instanceof WalletNotFoundException)
+                    ? FailureReason.WALLET_NOT_FOUND
+                    : FailureReason.RELEASE_DB_ERROR;
+
+            outboxMessageRepository.save(OutboxMessage.create(
+                    "FundsReleaseFailedEvent",
+                    cmd.walletId().toString(),
+                    toJson(FundsReleaseFailedEvent.of(
+                            cmd.correlationId(), cmd.orderId(),
+                            cmd.walletId().toString(),
+                            reason, e.getMessage()
+                    ))
             ));
         }
     }

@@ -18,23 +18,25 @@ import org.springframework.context.annotation.Configuration;
  *   Exchange: wallet.commands (topic)
  *     ├─ Binding: wallet.command.reserve-funds → Queue: wallet.commands.reserve-funds
  *     │    └─ DLX: vibranium.dlq → wallet.commands.reserve-funds.dlq
+ *     ├─ Binding: wallet.command.release-funds → Queue: wallet.commands.release-funds
+ *     │    └─ DLX: vibranium.dlq → wallet.commands.release-funds.dlq
  *     └─ Binding: wallet.command.settle-funds  → Queue: wallet.commands
  *
  *   Exchange: vibranium.dlq (direct) — Dead Letter Exchange
- *     └─ Binding: wallet.commands.reserve-funds.dlq → Queue: wallet.commands.reserve-funds.dlq
+ *     ├─ Binding: wallet.commands.reserve-funds.dlq → Queue: wallet.commands.reserve-funds.dlq
+ *     └─ Binding: wallet.commands.release-funds.dlq → Queue: wallet.commands.release-funds.dlq
  * </pre>
  *
  * <p>Todos os recursos são declarados com {@code durable=true} para sobreviverem
  * a reinicializações do broker. O {@code RabbitAdmin} criará automaticamente
  * exchanges e filas que ainda não existam no broker.</p>
  *
- * <p><b>DLQ (Dead Letter Queue):</b> A fila {@code wallet.commands.reserve-funds} possui
- * {@code x-dead-letter-exchange=vibranium.dlq} e
- * {@code x-dead-letter-routing-key=wallet.commands.reserve-funds.dlq}.
- * Isso garante que qualquer mensagem rejeitada com {@code requeue=false} — seja por
- * NACK explícito do listener ou por TTL expirado — seja encaminhada automaticamente
- * ao exchange DLX, que a roteia para a fila DLQ correspondente, eliminando
- * a perda silenciosa de comandos financeiros.</p>
+ * <p><b>DLQ (Dead Letter Queue):</b> As filas {@code wallet.commands.reserve-funds} e
+ * {@code wallet.commands.release-funds} possuem {@code x-dead-letter-exchange=vibranium.dlq}
+ * com routing keys DLQ individuais. Isso garante que qualquer mensagem rejeitada com
+ * {@code requeue=false} — seja por NACK explícito do listener ou por TTL expirado — seja
+ * encaminhada automaticamente ao exchange DLX, eliminando a perda silenciosa de comandos
+ * financeiros, especialmente crítico para o caminho compensatório da Saga.</p>
  */
 @Configuration
 public class RabbitMQConfig {
@@ -59,6 +61,19 @@ public class RabbitMQConfig {
      * política de DLQ de forma cirúrgica, sem afetar outros comandos.
      */
     public static final String QUEUE_RESERVE_FUNDS = "wallet.commands.reserve-funds";
+
+    /**
+     * Fila dedicada para {@link com.vibranium.contracts.commands.wallet.ReleaseFundsCommand}.
+     * Separada com DLQ própria — falhas no caminho compensatório indicam fundos
+     * permanentemente bloqueados, exigindo análise manual imediata.
+     */
+    public static final String QUEUE_RELEASE_FUNDS = "wallet.commands.release-funds";
+
+    /**
+     * Dead Letter Queue para o comando de liberação de fundos.
+     * Mensagens aqui representam fundos que não foram liberados — incidente crítico.
+     */
+    public static final String QUEUE_RELEASE_FUNDS_DLQ = "wallet.commands.release-funds.dlq";
 
     /**
      * Dead Letter Queue para o comando de reserva de fundos.
@@ -190,6 +205,29 @@ public class RabbitMQConfig {
         return QueueBuilder.durable(QUEUE_RESERVE_FUNDS_DLQ).build();
     }
 
+    /**
+     * Fila dedicada para {@link com.vibranium.contracts.commands.wallet.ReleaseFundsCommand}.
+     *
+     * <p>Configurada com DLQ para garantir que nenhuma mensagem de liberação seja
+     * perdida silenciosamente — fundos bloqueados indevidamente exigem rastreabilidade.</p>
+     */
+    @Bean
+    public Queue releaseFundsQueue() {
+        return QueueBuilder.durable(QUEUE_RELEASE_FUNDS)
+                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-routing-key", QUEUE_RELEASE_FUNDS_DLQ)
+                .build();
+    }
+
+    /**
+     * Dead Letter Queue para {@link com.vibranium.contracts.commands.wallet.ReleaseFundsCommand}.
+     * Mensagens aqui indicam compensação incompleta — requer intervenção operacional.
+     */
+    @Bean
+    public Queue releaseFundsDlQueue() {
+        return QueueBuilder.durable(QUEUE_RELEASE_FUNDS_DLQ).build();
+    }
+
     // -------------------------------------------------------------------------
     // Bindings
     // -------------------------------------------------------------------------
@@ -242,6 +280,33 @@ public class RabbitMQConfig {
                 .bind(reserveFundsQueue)
                 .to(walletCommandsExchange)
                 .with("wallet.command.reserve-funds");
+    }
+
+    /**
+     * Liga a exchange de comandos à fila dedicada de liberação de fundos.
+     * Routing key exata {@code wallet.command.release-funds}.
+     */
+    @Bean
+    public Binding releaseFundsQueueBinding(
+            @Qualifier("releaseFundsQueue")      Queue releaseFundsQueue,
+            @Qualifier("walletCommandsExchange") TopicExchange walletCommandsExchange) {
+        return BindingBuilder
+                .bind(releaseFundsQueue)
+                .to(walletCommandsExchange)
+                .with("wallet.command.release-funds");
+    }
+
+    /**
+     * Liga o exchange DLX à Dead Letter Queue de liberação de fundos.
+     */
+    @Bean
+    public Binding releaseFundsDlqBinding(
+            @Qualifier("releaseFundsDlQueue") Queue releaseFundsDlQueue,
+            @Qualifier("dlqExchange")         DirectExchange dlqExchange) {
+        return BindingBuilder
+                .bind(releaseFundsDlQueue)
+                .to(dlqExchange)
+                .with(QUEUE_RELEASE_FUNDS_DLQ);
     }
 
     /**

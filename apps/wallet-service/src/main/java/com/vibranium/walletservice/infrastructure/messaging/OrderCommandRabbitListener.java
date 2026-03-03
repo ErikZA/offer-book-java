@@ -2,6 +2,7 @@ package com.vibranium.walletservice.infrastructure.messaging;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rabbitmq.client.Channel;
+import com.vibranium.contracts.commands.wallet.ReleaseFundsCommand;
 import com.vibranium.contracts.commands.wallet.ReserveFundsCommand;
 import com.vibranium.contracts.commands.wallet.SettleFundsCommand;
 import com.vibranium.walletservice.application.service.WalletService;
@@ -19,10 +20,11 @@ import java.nio.charset.StandardCharsets;
 /**
  * Listener de comandos enviados pelo {@code order-service} via RabbitMQ.
  *
- * <p>Escuta a fila {@code wallet.commands}, que recebe dois tipos de comandos:</p>
+ * <p>Escuta três filas de comandos:</p>
  * <ul>
- *   <li>{@link ReserveFundsCommand} — bloqueia saldo antes de adicionar ordem ao livro.</li>
- *   <li>{@link SettleFundsCommand} — liquida fundos após match confirmado pelo motor.</li>
+ *   <li>{@code wallet.commands.reserve-funds} — fila dedicada com DLQ para {@link ReserveFundsCommand}.</li>
+ *   <li>{@code wallet.commands.release-funds} — fila dedicada com DLQ para {@link ReleaseFundsCommand} (compensação Saga).</li>
+ *   <li>{@code wallet.commands} — fila genérica para {@link SettleFundsCommand}.</li>
  * </ul>
  *
  * <p>O roteamento entre os tipos é feito pelo header AMQP {@code type},
@@ -70,19 +72,20 @@ public class OrderCommandRabbitListener {
     /**
      * Processa comandos de carteira recebidos nas filas de comando:
      * <ul>
-     *   <li>{@code wallet.commands.reserve-funds} — fila dedicada com DLQ configurada.</li>
-     *   <li>{@code wallet.commands} — fila genérica para comandos sem DLQ (ex: settle-funds).</li>
+     *   <li>{@code wallet.commands.reserve-funds} — fila dedicada com DLQ para reserva de saldo.</li>
+     *   <li>{@code wallet.commands.release-funds} — fila dedicada com DLQ para liberação compensatória.</li>
+     *   <li>{@code wallet.commands} — fila genérica para liquidação de fundos ({@link SettleFundsCommand}).</li>
      * </ul>
      *
-     * <p>Ambas as filas compartilham o mesmo handler pois o roteamento do tipo de comando
-     * já é feito pelo header AMQP {@code type}. Manter um único método reduz duplicação
-     * e garante consistência na política de ACK/NACK.</p>
+     * <p>As três filas compartilham o mesmo handler: o roteamento entre tipos é feito pelo
+     * header AMQP {@code type} (FQN da classe do comando). Manter um único método reduz
+     * duplicação e garante consistência na política de ACK/NACK.</p>
      *
      * @param message  Mensagem AMQP raw.
      * @param channel  Canal AMQP para ACK/NACK manual.
      * @throws Exception Propagado para erros de I/O no canal AMQP.
      */
-    @RabbitListener(queues = {"wallet.commands.reserve-funds", "wallet.commands"})
+    @RabbitListener(queues = {"wallet.commands.reserve-funds", "wallet.commands.release-funds", "wallet.commands"})
     public void handleCommand(Message message, Channel channel) throws Exception {
         String messageId = message.getMessageProperties().getMessageId();
         long deliveryTag = message.getMessageProperties().getDeliveryTag();
@@ -120,6 +123,21 @@ public class OrderCommandRabbitListener {
                         enrichSpan(cmd.correlationId(), cmd.orderId());
                         walletService.reserveFunds(cmd, messageId);
                         logger.info("ReserveFundsCommand processed: walletId={}, messageId={}",
+                                cmd.walletId(), messageId);
+                    } finally {
+                        MDC.remove("orderId");
+                    }
+                }
+
+            } else if (ReleaseFundsCommand.class.getName().equals(commandType)) {
+                ReleaseFundsCommand cmd = objectMapper.readValue(body, ReleaseFundsCommand.class);
+                // AT-14.2: MDC popula correlationId e orderId para rastreabilidade no caminho compensatório.
+                try (var ignoredCorr = MDC.putCloseable("correlationId", cmd.correlationId().toString())) {
+                    MDC.put("orderId", cmd.orderId().toString());
+                    try {
+                        enrichSpan(cmd.correlationId(), cmd.orderId());
+                        walletService.releaseFunds(cmd, messageId);
+                        logger.info("ReleaseFundsCommand processed: walletId={}, messageId={}",
                                 cmd.walletId(), messageId);
                     } finally {
                         MDC.remove("orderId");

@@ -26,7 +26,9 @@ class EventRouteTest {
         "FundsReservedEvent,          vibranium.events, wallet.events.funds-reserved",
         "FundsReservationFailedEvent, vibranium.events, wallet.events.funds-reservation-failed",
         "FundsSettledEvent,           vibranium.events, wallet.events.funds-settled",
-        "WalletCreatedEvent,          vibranium.events, wallet.events.wallet-created"
+        "WalletCreatedEvent,          vibranium.events, wallet.events.wallet-created",
+        "FundsReleasedEvent,          vibranium.events, wallet.events.funds-released",
+        "FundsReleaseFailedEvent,     vibranium.events, wallet.events.funds-release-failed"
     })
     @DisplayName("fromEventType deve retornar exchange e routing-key corretos")
     void shouldResolveCorrectRouteForEventType(String eventType, String exchange, String routingKey) {
@@ -81,8 +83,8 @@ class EventRouteTest {
     // -------------------------------------------------------------------------
 
     @Test
-    @DisplayName("EventRoute deve conter exatamente 4 rotas")
+    @DisplayName("EventRoute deve conter exatamente 6 rotas")
     void shouldHaveExactlyFourRoutes() {
-        assertThat(EventRoute.values()).hasSize(4);
+        assertThat(EventRoute.values()).hasSize(6);
     }
 }
