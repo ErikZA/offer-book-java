@@ -19,7 +19,7 @@
 
   ARGV:
     ARGV[1] = orderType     "BUY" ou "SELL"
-    ARGV[2] = priceScore    preço * 1_000_000 como inteiro (ex: 500.00 → 500000000)
+    ARGV[2] = priceScore    preço * 100_000_000 como inteiro (ex: 500.00 → 50000000000) (AT-3.2.1)
     ARGV[3] = orderValue    "orderId|userId|walletId|qty|correlId|epochMs"
     ARGV[4] = quantityStr   quantidade como string decimal (ex: "10.00000000")
 

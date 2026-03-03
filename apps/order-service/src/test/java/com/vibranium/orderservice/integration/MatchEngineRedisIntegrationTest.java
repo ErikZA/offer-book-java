@@ -598,6 +598,87 @@ class MatchEngineRedisIntegrationTest extends AbstractIntegrationTest {
     }
 
     // =========================================================================
+    // Cenário 10 — TC-PP-1: Precisão de preço com 8 casas decimais (AT-3.2.1)
+    // =========================================================================
+
+    /**
+     * TC-PP-1 — Verifica que preços com 8 casas decimais (ex: 0.00000001 e 0.00000002)
+     * são armazenados com scores distintos no Sorted Set do Redis.
+     *
+     * <p><strong>FASE RED:</strong> Com {@code PRICE_PRECISION = 1_000_000}:
+     * {@code 0.00000001 × 1_000_000 = 0.01 → (long) 0} e
+     * {@code 0.00000002 × 1_000_000 = 0.02 → (long) 0}.
+     * Ambos os ASKs ficam no score 0, indiferenciáveis pelo sorted set.</p>
+     *
+     * <p><strong>FASE GREEN:</strong> Com {@code PRICE_PRECISION = 100_000_000}:
+     * {@code 0.00000001 × 100_000_000 = 1} e {@code 0.00000002 × 100_000_000 = 2}.
+     * Scores distintos → ordenação correta e match exato.</p>
+     */
+    @Test
+    @DisplayName("TC-PP-1: Preços com 8 casas decimais (0.00000001 vs 0.00000002) produzem scores distintos e match correto")
+    void testPricePrecision_8DecimalPlaces_differentiatedInBook() {
+        BigDecimal price1 = new BigDecimal("0.00000001"); // 1 satoshi equivalente
+        BigDecimal price2 = new BigDecimal("0.00000002"); // 2 satoshi equivalente
+        BigDecimal qty    = new BigDecimal("1.00000000");
+
+        UUID ask1OrderId  = UUID.randomUUID();
+        UUID ask1WalletId = UUID.randomUUID();
+        UUID ask1CorrelId = UUID.randomUUID();
+
+        UUID ask2OrderId  = UUID.randomUUID();
+        UUID ask2WalletId = UUID.randomUUID();
+        UUID ask2CorrelId = UUID.randomUUID();
+
+        // Insere 2 SELLs com preços microscopicamente diferentes — sem BID disponível → NO_MATCH
+        MatchResult r1 = matchEngine.tryMatch(ask1OrderId, "user-a", ask1WalletId,
+                OrderType.SELL, price1, qty, ask1CorrelId);
+        MatchResult r2 = matchEngine.tryMatch(ask2OrderId, "user-b", ask2WalletId,
+                OrderType.SELL, price2, qty, ask2CorrelId);
+
+        assertThat(r1.matched()).as("SELL a 0.00000001 não deve casar (sem BID)").isFalse();
+        assertThat(r2.matched()).as("SELL a 0.00000002 não deve casar (sem BID)").isFalse();
+
+        // Ambos os ASKs devem estar no livro
+        assertThat(redisTemplate.opsForZSet().zCard(asksKey))
+                .as("Dois ASKs distintos devem estar no livro")
+                .isEqualTo(2L);
+
+        // Verifica scores via rangeWithScores — com PRICE_PRECISION=10^8 espera 1.0 e 2.0
+        var entries = redisTemplate.opsForZSet().rangeWithScores(asksKey, 0, -1);
+        assertThat(entries).isNotNull().hasSize(2);
+
+        var scores = entries.stream()
+                .map(org.springframework.data.redis.core.ZSetOperations.TypedTuple::getScore)
+                .sorted()
+                .toList();
+
+        // FASE RED falha aqui: ambos os scores são 0.0 com PRICE_PRECISION=1_000_000
+        assertThat(scores.get(0))
+                .as("Score do ASK mais barato (0.00000001 × 10^8 = 1)")
+                .isEqualTo(1.0);
+        assertThat(scores.get(1))
+                .as("Score do ASK mais caro (0.00000002 × 10^8 = 2)")
+                .isEqualTo(2.0);
+
+        // BID a price1 deve casar APENAS com o ASK mais barato (price1), não com price2
+        UUID bidOrderId = UUID.randomUUID();
+        MatchResult bidResult = matchEngine.tryMatch(bidOrderId, "user-c", UUID.randomUUID(),
+                OrderType.BUY, price1, qty, UUID.randomUUID());
+
+        assertThat(bidResult.matched())
+                .as("BID a 0.00000001 deve casar com o ASK mais barato")
+                .isTrue();
+        assertThat(bidResult.counterpartId())
+                .as("Contraparte deve ser o ASK de 0.00000001 (ask1OrderId)")
+                .isEqualTo(ask1OrderId);
+
+        // Apenas o ASK de price2 deve restar
+        assertThat(redisTemplate.opsForZSet().zCard(asksKey))
+                .as("Apenas o ASK de 0.00000002 deve permanecer no livro")
+                .isEqualTo(1L);
+    }
+
+    // =========================================================================
     // Helpers — importados pelo RedisMatchEngineAdapter via @Autowired
     // =========================================================================
 
@@ -608,8 +689,9 @@ class MatchEngineRedisIntegrationTest extends AbstractIntegrationTest {
     // Helpers
     // =========================================================================
 
+    // AT-3.2.1: espelha PRICE_PRECISION = 100_000_000L do RedisMatchEngineAdapter
     private static double priceToScore(BigDecimal price) {
-        return price.multiply(BigDecimal.valueOf(1_000_000)).doubleValue();
+        return price.multiply(BigDecimal.valueOf(100_000_000)).doubleValue();
     }
 
     private static String buildRedisValue(UUID orderId, UUID userId, UUID walletId,

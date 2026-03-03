@@ -30,8 +30,8 @@ import org.springframework.data.redis.core.ZSetOperations;
  *
  * <h2>Estrutura dos Sorted Sets</h2>
  * <ul>
- *   <li>Key {@code {vibranium}:asks}: ASKs com score = price × 1_000_000 (menor preço primeiro)</li>
- *   <li>Key {@code {vibranium}:bids}: BIDs com score = price × 1_000_000 (maior preço primeiro via ZREVRANGEBYSCORE)</li>
+   * <li>Key {@code {vibranium}:asks}: ASKs com score = price × 100_000_000 (menor preço primeiro)</li>
+ *   <li>Key {@code {vibranium}:bids}: BIDs com score = price × 100_000_000 (maior preço primeiro via ZREVRANGEBYSCORE)</li>
  * </ul> *
  * <h2>AT-04.2 — Índice Reverso (order_index)</h2>
  * <p>O script {@code match_engine.lua} popula atomicamente o hash auxiliar
@@ -58,10 +58,13 @@ public class RedisMatchEngineAdapter {
 
     /**
      * Multiplicador para converter preço em score inteiro.
-     * Preserva 6 casas decimais sem perda de precisão em {@code double}.
-     * Exemplo: 500.000001 → 500_000_001.0
+     * Preserva 8 casas decimais sem perda de precisão em {@code double}.
+     * {@code tonumber()} no Lua é IEEE-754 double de 64 bits: suporta inteiros
+     * exatos até 2^53 (~9 × 10^15), valor máximo de score gerado com esta
+     * constante para preço de 90_000 USD → 9_000_000_000_000_000, dentro do limite.
+     * Exemplo: 500.00000001 → 50_000_000_001 (AT-3.2.1)
      */
-    private static final long PRICE_PRECISION = 1_000_000L;
+    private static final long PRICE_PRECISION = 100_000_000L;
 
     @Value("${app.redis.keys.asks}")
     private String asksKey;
