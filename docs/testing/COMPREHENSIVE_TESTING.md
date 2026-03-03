@@ -34,7 +34,8 @@
 30. [Ownership Check em GET /orders/{orderId} — Proteção IDOR/BOLA (AT-4.1.1)](#ownership-check-em-get-ordersorderid--proteção-idorbola-at-411)
 31. [@PreAuthorize + Pageable em GET /wallets — Controle de Acesso Admin (AT-4.2.1)](#preauthorize--pageable-em-get-wallets--controle-de-acesso-admin-at-421)
 32. [Externalização de Senhas via Variáveis de Ambiente — Compose Files (AT-4.3.1)](#externalização-de-senhas-via-variáveis-de-ambiente--compose-files-at-431)
-33. [Referências](#referências)
+33. [Multi-Match Loop Atômico no Lua EVAL — Consumo de Liquidez Total (AT-3.1.1)](#multi-match-loop-atômico-no-lua-eval--consumo-de-liquidez-total-at-311)
+34. [Referências](#referências)
 
 ---
 
@@ -3910,10 +3911,139 @@ KONG_DB_PASSWORD=<CHANGE_ME>
 
 ---
 
+## Multi-Match Loop Atômico no Lua EVAL — Consumo de Liquidez Total (AT-3.1.1)
+
+### Problema
+
+O `match_engine.lua` original usava `ZRANGEBYSCORE ... LIMIT 0 1` — retornando **um único** contraparte por `EVAL`. Uma ordem de compra de 100 BTC contra 10 vendas de 10 BTC cada exigia 10 chamadas `EVAL` separadas, quebrando a atomicidade: entre dois `EVAL` consecutivos outro cliente poderia inserir ou remover ordens do livro, gerando condições de corrida e estado inconsistente.
+
+### Solução
+
+Loop `while remainingQty > 0 and iterations < MAX_MATCHES` dentro do mesmo `EVAL`, consumindo toda a liquidez disponível atomicamente:
+
+```lua
+local MAX_MATCHES = 100
+local remainingQty = tonumber(ARGV[4])
+local iterations   = 0
+local matches      = {}
+
+while remainingQty > 0 and iterations < MAX_MATCHES do
+    local best = redis.call('ZRANGEBYSCORE', bookKey, minScore, maxScore, 'LIMIT', 0, 1)
+    if #best == 0 then break end
+    -- consumir qty, atualizar/remover contraparte, acumular no array matches
+    iterations = iterations + 1
+end
+```
+
+`MAX_MATCHES=100` é uma guarda de segurança contra bloqueio prolongado do Redis. Na prática, ordens de varejo atingem 1–3 matches.
+
+### Protocolo de retorno
+
+Array plano: `{STATUS, N, val₁, qty₁, fill₁, rem₁, …}`
+
+| Status | Significado |
+|---|---|
+| `MULTI_MATCH` | Ordem totalmente preenchida (N contrapartes consumidas) |
+| `PARTIAL` | Livro esgotado antes de preencher a ordem (N matches + remaining final no apêndice) |
+| `NO_MATCH` | Livro vazio ou sem preço compatível |
+| `MATCH` _(legado)_ | Formato anterior — 1 contraparte; suportado por retrocompatibilidade |
+
+### Java Adapter — `RedisMatchEngineAdapter`
+
+`tryMatch()` e `parseResult()` passaram de `MatchResult` para `List<MatchResult>`:
+
+```java
+public List<MatchResult> tryMatch(...) {
+    List<Object> raw = redisTemplate.execute(script, keys, args);
+    return parseResult(raw);
+}
+
+private List<MatchResult> parseResult(List<Object> result) {
+    String status = (String) result.get(0);
+    return switch (status) {
+        case "MULTI_MATCH", "PARTIAL" -> {
+            int count = Integer.parseInt((String) result.get(1));
+            // parse N×4 campos a partir do índice 2
+        }
+        case "MATCH"    -> List.of(parseSingleMatchEntry(result, 1)); // legado
+        case "NO_MATCH" -> List.of();
+        default         -> List.of();
+    };
+}
+```
+
+### Consumer — `FundsReservedEventConsumer`
+
+`handleMatches()` itera a lista, aplica cada match via `order.applyMatch()`, emite um `MatchExecutedEvent` por contraparte e um **único** evento de preenchimento (`OrderFilledEvent` ou `OrderPartiallyFilledEvent`) ao final:
+
+```java
+private void handleMatches(Order order, List<MatchResult> matches, ...) {
+    for (MatchResult match : matches) {
+        order.applyMatch(match);
+        outboxRepository.save(buildMatchExecutedEvent(match, order, event));
+    }
+    orderRepository.save(order);
+    // único evento de fill baseado no status final da ordem
+    if (order.getStatus() == OrderStatus.FILLED) {
+        outboxRepository.save(buildOrderFilledEvent(order, event));
+    } else {
+        outboxRepository.save(buildOrderPartiallyFilledEvent(order, event));
+    }
+}
+```
+
+### Testes — FASE RED → GREEN
+
+**Testes unitários** (`RedisMatchEngineAdapterParseResultTest`):
+
+| Classe | Testes | Cobertura |
+|---|---|---|
+| `MultiMatchFormatTests` | 4 | Array plano `MULTI_MATCH` com 1, 2 e 3 matches; campos val/qty/fill/rem corretos |
+| `PartialFormatTests` | 2 | `PARTIAL` com remaining ignorado; N matches extraídos corretamente |
+
+**Testes de integração** (`MatchEngineRedisIntegrationTest`):
+
+| ID | Cenário | Critério de aceite |
+|---|---|---|
+| TC-MM-1 | BUY 100 contra 5 asks de 20 | 5 matches retornados; ordem FILLED; livro vazio |
+| TC-MM-2 | BUY 100 contra 3 asks de 50 | 2 matches (total 100); remainder 50 permanece no livro |
+| TC-MM-3 | Livro vazio | `List.isEmpty()` — `NO_MATCH` |
+| TC-MM-4 | `MAX_MATCHES` atingido | `PARTIAL` — N elementos, `remainingQty > 0` |
+
+```powershell
+mvn test -pl apps/order-service -Dtest=MatchEngineRedisIntegrationTest
+mvn test -pl apps/order-service -Dtest=RedisMatchEngineAdapterParseResultTest
+```
+
+### Critérios de aceite
+
+| # | Critério | Status |
+|---|---|---|
+| 1 | Loop consome toda a liquidez disponível em um único `EVAL` (atomicidade Redis) | ✅ |
+| 2 | `MAX_MATCHES=100` impede bloqueio indefinido do thread Redis | ✅ |
+| 3 | `parseResult()` suporta `MULTI_MATCH`, `PARTIAL`, `NO_MATCH` e `MATCH` legado | ✅ |
+| 4 | `handleMatches()` emite exatamente 1 evento de fill ao final do loop | ✅ |
+| 5 | TC-MM-1..4 passando; 157 testes executados sem novas regressões | ✅ |
+
+### Artefatos alterados pelo AT-3.1.1
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `apps/order-service/src/main/resources/lua/match_engine.lua` | Alterado | Loop `while` multi-match substituindo `LIMIT 0 1`; retorno plano `{STATUS,N,v,q,f,r,…}` |
+| `RedisMatchEngineAdapter.java` | Alterado | `tryMatch()` + `parseResult()` → `List<MatchResult>`; helper `parseSingleMatchEntry()` |
+| `FundsReservedEventConsumer.java` | Alterado | `handleMatch()` → `handleMatches()` com loop por contraparte + único evento de fill final |
+| `RedisMatchEngineAdapterParseResultTest.java` | Alterado | 14 testes migrados + 6 novos (`MultiMatchFormatTests`, `PartialFormatTests`) |
+| `MatchEngineRedisIntegrationTest.java` | Alterado | 3 callsites corrigidos + TC-MM-1/2/3/4 adicionados |
+| `FundsReservedEventConsumerTest.java` | Alterado | Todos os mocks `tryMatch()` → `List.of(buildMatchResult())` / `List.of()` |
+| `AT04ReverseIndexIntegrationTest.java` | Alterado | 2 callsites corrigidos para `List<MatchResult>` |
+
+---
+
 **Status**: ✅ Consolidado e Completo  
 **Última atualização**: 3 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-3.1.1**: Multi-Match Loop Atômico no Lua EVAL — `match_engine.lua` refatorado de `LIMIT 0 1` para loop `while remainingQty > 0 and iterations < MAX_MATCHES` (MAX=100). Protocolo de retorno novo: array plano `{STATUS, N, v₁, q₁, f₁, r₁, …}` com STATUS ∈ {MULTI_MATCH, PARTIAL, NO_MATCH}; formato `MATCH` legado suportado por retrocompatibilidade. `RedisMatchEngineAdapter.tryMatch()` e `parseResult()` passaram a retornar `List<MatchResult>`; helper `parseSingleMatchEntry()` extraiu lógica compartilhada. `FundsReservedEventConsumer.handleMatches()` itera a lista, emite `MatchExecutedEvent` por contraparte e um único evento de fill ao final (`OrderFilledEvent` ou `OrderPartiallyFilledEvent` baseado no status final da ordem). 7 arquivos alterados: Lua script, adapter, consumer, 2 testes unitários e 2 testes de integração. Novos testes: `MultiMatchFormatTests` (4 casos), `PartialFormatTests` (2 casos), TC-MM-1..4 em `MatchEngineRedisIntegrationTest`. 157 testes executados, zero regressões introduzidas. Adicionada seção 33 neste guia.
 > - **AT-4.3.1**: Externalização de senhas via variáveis de ambiente nos compose files de produção e staging. `infra/docker-compose.yml`: 9 credenciais substituídas — `POSTGRES_PASSWORD`, `KONG_PG_PASSWORD` (×2), `KC_DB_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD`/`KC_BOOTSTRAP_ADMIN_PASSWORD`, `RABBITMQ_DEFAULT_PASS`, `KK_TO_RMQ_PASSWORD`. `infra/docker-compose.staging.yml`: ~25 credenciais substituídas cobrindo MongoDB (×3 nós + healthchecks inline + mongo-rs-init), PostgreSQL (×3 réplicas), RabbitMQ (×3 nós incluindo `RABBITMQ_ERLANG_COOKIE: secret-cookie`), order-service (×3 — URI inline `admin:admin123` + `SPRING_RABBITMQ_PASSWORD`), wallet-service (×3 — `SPRING_DATASOURCE_PASSWORD` + `SPRING_RABBITMQ_PASSWORD`), Keycloak-DB, Keycloak (`KC_DB_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD`, `KK_TO_RMQ_PASSWORD`), kong-database, kong-migration e kong (`KONG_PG_PASSWORD`). Sintaxe `${VAR:?msg}` para falha rápida em variáveis obrigatórias; `${VAR:-default}` para nomes de usuário sem segredo. `.env.example` expandido: header referencia os 3 compose files; novas entradas de staging `MONGO_REPLICA_KEY` (gerado via `openssl rand -base64 756`), `RABBITMQ_ERLANG_COOKIE` (via `openssl rand -hex 32`) e `KONG_DB_PASSWORD`. `.gitignore`: `.env` já listado — sem alteração. Verificação FASE GREEN: `grep` retornou 0 matches de senhas literais em ambos os arquivos. Adicionada seção 32 neste guia.
 > - **AT-4.2.1**: `@PreAuthorize("hasRole('ADMIN')")` + `Pageable` em `GET /wallets` do wallet-service. `@EnableMethodSecurity` adicionado ao `SecurityConfig` (sem isso, `@PreAuthorize` é ignorada silenciosamente). `WalletController.listAll()` refatorado para aceitar `Pageable` e retornar `Page<WalletResponse>`. `WalletService.findAll(Pageable)` usa `walletRepository.findAll(pageable).map(WalletResponse::from)` — `JpaRepository` herda `PagingAndSortingRepository`, nenhuma alteração no repositório. Resposta inclui `content`, `totalElements`, `totalPages`, `size`, `number`. Novos testes TDD: TC-LA-1 (ROLE_USER → 403), TC-LA-2 (ROLE_ADMIN → 200, Page fields), TC-LA-3 (default size=20, page=0). Testes existentes migrados para `$.content[*]`. `SecurityUnauthorizedTest` atualizado com `@WithMockUser(roles = "ADMIN")` no teste de regressão. `Tests run: 131, Failures: 0` (erros restantes são pré-existentes). Adicionada seção 31 neste guia.
 > - **AT-4.1.1**: Ownership check em `GET /orders/{orderId}` — proteção IDOR/BOLA (OWASP API Security Top 10). `getOrder()` no `OrderQueryController` agora recebe `@AuthenticationPrincipal Jwt jwt` e compara `jwt.getSubject()` com `OrderDocument.userId` após buscar o documento no MongoDB. Se divergirem e o token não contiver `ROLE_ADMIN`, lança `ResponseStatusException(HttpStatus.FORBIDDEN)` com mensagem descritiva. Admin bypass: claim `roles` com `ROLE_ADMIN` ignora o filtro de ownership (mesmo padrão do `WalletController` AT-10.2). Guard `jwt != null` preservado para compatibilidade com `@WithMockUser` em testes. 3 novos testes TDD em `OrderQueryControllerTest`: TC-8a (usuário diferente → 403), TC-8b (dono → 200), TC-8c (admin → 200 bypass). `Tests run: 3, Failures: 0 — BUILD SUCCESS`. Adicionada seção 30 neste guia.

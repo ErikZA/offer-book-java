@@ -279,7 +279,7 @@ mvn test -pl apps/order-service -Dtest=ProjectionDlqIntegrationTest
 | **`OrderOutboxResilienceIntegrationTest`** | **Integração (Resiliência)** | **Broker pausado → atomicidade → sem processamento indevido → recovery → não duplicidade** | **AT-01.2** |
 | `OrderSagaConcurrencyTest` | Integração (Concorrência) | Optimistic lock + retry em ordens concorrentes | — |
 | `KeycloakUserRegistryIntegrationTest` | Integração | Registro de usuário via evento Keycloak | — |
-| `MatchEngineRedisIntegrationTest` | Integração | Script Lua atômico no Sorted Set Redis; **TC-PP-1**: precisão de preço 8 casas decimais | **AT-3.2.1** |
+| **`MatchEngineRedisIntegrationTest`** | **Integração** | Script Lua atômico no Sorted Set Redis; **TC-PP-1**: precisão de preço 8 casas decimais; **TC-MM-1..4**: loop multi-match atômico | **AT-3.2.1 / AT-3.1.1** |
 | **`RedisKeyFormatIT`** | **Integração (Spring Context)** | **FASE RED → GREEN: keys com hash tag `{vibranium}` injetadas via `@Value`** | **AT-11.1** |
 | **`RedisClusterHashTagIT`** | **Integração (CRC16 + Testcontainers Cluster)** | **CRC16 slot equality; CROSSSLOT antes e sem erro após hash tags em cluster real** | **AT-11.1** |
 | **`ProjectionAckIntegrationTest`** | **Integração (AMQP ACK)** | **AUTO ACK em listeners de projeção: fila esvazia após ACK automático (Management API)** | **AT-1.2.1** |
@@ -538,3 +538,45 @@ app.redis.keys:
 **Service ID**: order-service  
 **Port**: 8080 (produção) / aleatória em testes (`RANDOM_PORT`)  
 **Perfis**: `dev`, `test`
+
+## 🔄 Motor de Match Redis — Multi-Match Loop Atômico (AT-3.1.1)
+
+### Problema
+
+`match_engine.lua` usava `ZRANGEBYSCORE ... LIMIT 0 1` — retornando **um único** contraparte por `EVAL`. Uma ordem de compra contra múltiplas ofertas no livro exigia `N` chamadas `EVAL` separadas, quebrando a atomicidade e expondo condições de corrida entre execuções.
+
+### Solução
+
+```lua
+-- match_engine.lua
+local MAX_MATCHES = 100
+local iterations  = 0
+local matches     = {}
+
+while remainingQty > 0 and iterations < MAX_MATCHES do
+    local best = redis.call('ZRANGEBYSCORE', bookKey, minScore, maxScore, 'LIMIT', 0, 1)
+    if #best == 0 then break end
+    -- consumir qty, atualizar/remover contraparte
+    iterations = iterations + 1
+end
+
+-- Retorno: {STATUS, N, val, qty, fill, rem, ...}
+-- STATUS: MULTI_MATCH | PARTIAL | NO_MATCH
+```
+
+O `RedisMatchEngineAdapter.tryMatch()` passa a retornar `List<MatchResult>` (vazia = sem match).
+`FundsReservedEventConsumer.handleMatches()` itera a lista e emite um único evento de fill ao final.
+
+### Testes
+
+| ID | Cenário | Resultado esperado |
+|---|---|---|
+| TC-MM-1 | BUY 100 contra 5 asks de 20 | 5 matches; ordem FILLED; livro vazio |
+| TC-MM-2 | BUY 100 contra 3 asks de 50 | 2 matches; remainder 50 no livro |
+| TC-MM-3 | Livro vazio | `List.isEmpty()` |
+| TC-MM-4 | `MAX_MATCHES` atingido | `PARTIAL`; `remainingQty > 0` |
+
+```powershell
+mvn test -pl apps/order-service -Dtest=MatchEngineRedisIntegrationTest
+mvn test -pl apps/order-service -Dtest=RedisMatchEngineAdapterParseResultTest
+```
