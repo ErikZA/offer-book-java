@@ -160,6 +160,7 @@ public abstract class AbstractIntegrationTest {
         //     mensagens residuais contra wallets recém-deletadas ---
         for (String queue : new String[]{
                 "wallet.keycloak.events",
+                "wallet.keycloak.events.dlq",
                 "wallet.commands",
                 "wallet.commands.reserve-funds",
                 "wallet.commands.reserve-funds.dlq",

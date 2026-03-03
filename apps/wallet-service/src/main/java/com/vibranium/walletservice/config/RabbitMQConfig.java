@@ -14,6 +14,7 @@ import org.springframework.context.annotation.Configuration;
  * <pre>
  *   Exchange: keycloak.events (topic)
  *     └─ Binding: KK.EVENT.CLIENT.# → Queue: wallet.keycloak.events
+ *          └─ DLX: vibranium.dlq → wallet.keycloak.events.dlq
  *
  *   Exchange: wallet.commands (topic)
  *     ├─ Binding: wallet.command.reserve-funds → Queue: wallet.commands.reserve-funds
@@ -23,6 +24,7 @@ import org.springframework.context.annotation.Configuration;
  *     └─ Binding: wallet.command.settle-funds  → Queue: wallet.commands
  *
  *   Exchange: vibranium.dlq (direct) — Dead Letter Exchange
+ *     ├─ Binding: wallet.keycloak.events.dlq       → Queue: wallet.keycloak.events.dlq
  *     ├─ Binding: wallet.commands.reserve-funds.dlq → Queue: wallet.commands.reserve-funds.dlq
  *     └─ Binding: wallet.commands.release-funds.dlq → Queue: wallet.commands.release-funds.dlq
  * </pre>
@@ -31,12 +33,12 @@ import org.springframework.context.annotation.Configuration;
  * a reinicializações do broker. O {@code RabbitAdmin} criará automaticamente
  * exchanges e filas que ainda não existam no broker.</p>
  *
- * <p><b>DLQ (Dead Letter Queue):</b> As filas {@code wallet.commands.reserve-funds} e
- * {@code wallet.commands.release-funds} possuem {@code x-dead-letter-exchange=vibranium.dlq}
- * com routing keys DLQ individuais. Isso garante que qualquer mensagem rejeitada com
- * {@code requeue=false} — seja por NACK explícito do listener ou por TTL expirado — seja
- * encaminhada automaticamente ao exchange DLX, eliminando a perda silenciosa de comandos
- * financeiros, especialmente crítico para o caminho compensatório da Saga.</p>
+ * <p><b>DLQ (Dead Letter Queue):</b> As filas {@code wallet.keycloak.events},
+ * {@code wallet.commands.reserve-funds} e {@code wallet.commands.release-funds} possuem
+ * {@code x-dead-letter-exchange=vibranium.dlq} com routing keys DLQ individuais. Qualquer
+ * mensagem rejeitada com {@code requeue=false} — seja por NACK explícito do listener ou
+ * por TTL expirado — é encaminhada automaticamente ao exchange DLX, eliminando a perda
+ * silenciosa de mensagens críticas (registro de usuário e comandos financeiros da Saga).</p>
  */
 @Configuration
 public class RabbitMQConfig {
@@ -44,6 +46,19 @@ public class RabbitMQConfig {
     // -------------------------------------------------------------------------
     // Constantes de topologia
     // -------------------------------------------------------------------------
+
+    /**
+     * Fila que recebe eventos de criação de usuário publicados pelo plugin Keycloak.
+     * Promovida a constante para que testes e bindings referenciem sem strings literais.
+     */
+    public static final String QUEUE_KEYCLOAK_EVENTS = "wallet.keycloak.events";
+
+    /**
+     * Dead Letter Queue para eventos Keycloak não processáveis.
+     * Recebe mensagens NACKed com {@code requeue=false} da fila principal,
+     * garantindo rastreabilidade de falhas de registro de usuário.
+     */
+    public static final String QUEUE_KEYCLOAK_EVENTS_DLQ = "wallet.keycloak.events.dlq";
 
     /**
      * Exchange DLX (Dead Letter Exchange) centralizado para o wallet-service.
@@ -147,10 +162,42 @@ public class RabbitMQConfig {
     // Queues
     // -------------------------------------------------------------------------
 
-    /** Fila que recebe eventos de criação de usuário do Keycloak. */
+    /**
+     * Fila que recebe eventos de criação de usuário publicados pelo plugin
+     * {@code aznamier/keycloak-event-listener-rabbitmq}.
+     *
+     * <p>Configurada com DLX para garantir que eventos de registro com falha permanente
+     * (ex: falha de banco, estado de wallet inválido) não sejam silenciosamente descartados.
+     * O {@link com.vibranium.walletservice.infrastructure.messaging.KeycloakRabbitListener}
+     * executa {@code basicNack(tag, false, false)} nesses casos; sem DLX, a mensagem
+     * seria perdida, impedindo criação de wallet e auditoria posterior.</p>
+     *
+     * <p>Usa a mesma estratégia de DLQ por declaração explícita (em vez de policy)
+     * adotada nas filas de comandos — versionada em código, reproduzível em qualquer
+     * ambiente sem configuração manual no broker.</p>
+     */
     @Bean
     public Queue walletKeycloakEventsQueue() {
-        return QueueBuilder.durable("wallet.keycloak.events").build();
+        return QueueBuilder.durable(QUEUE_KEYCLOAK_EVENTS)
+                // Encaminha NACKs definitivos (requeue=false) para o exchange DLX
+                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
+                // Routing key determinística na DLQ — identifica a fila de origem
+                .withArgument("x-dead-letter-routing-key", QUEUE_KEYCLOAK_EVENTS_DLQ)
+                .build();
+    }
+
+    /**
+     * Dead Letter Queue para eventos Keycloak não processáveis.
+     *
+     * <p>Mensagens aqui representam usuários cujas wallets não puderam ser criadas.
+     * Requerem análise operacional e possível reprocessamento manual supervisionado.</p>
+     *
+     * <p>Declarada como fila simples durable — sem TTL nem retry automático,
+     * para evitar loops infinitos em mensagens genuinamente inválidas (poison pill).</p>
+     */
+    @Bean
+    public Queue walletKeycloakEventsDlQueue() {
+        return QueueBuilder.durable(QUEUE_KEYCLOAK_EVENTS_DLQ).build();
     }
 
     /** Fila que recebe comandos de liquidação de fundos (SettleFundsCommand). */
@@ -244,6 +291,24 @@ public class RabbitMQConfig {
                 .bind(walletKeycloakEventsQueue)
                 .to(keycloakEventsExchange)
                 .with("KK.EVENT.CLIENT.#");
+    }
+
+    /**
+     * Liga o exchange DLX à Dead Letter Queue de eventos Keycloak.
+     *
+     * <p>O {@link DirectExchange} {@value DLQ_EXCHANGE} roteia via routing key exata.
+     * A routing key {@value QUEUE_KEYCLOAK_EVENTS_DLQ} corresponde ao valor declarado
+     * em {@code x-dead-letter-routing-key} da fila {@value QUEUE_KEYCLOAK_EVENTS},
+     * garantindo que apenas mensagens mortas desta fila específica cheguem aqui.</p>
+     */
+    @Bean
+    public Binding walletKeycloakEventsDlqBinding(
+            @Qualifier("walletKeycloakEventsDlQueue") Queue walletKeycloakEventsDlQueue,
+            @Qualifier("dlqExchange")                 DirectExchange dlqExchange) {
+        return BindingBuilder
+                .bind(walletKeycloakEventsDlQueue)
+                .to(dlqExchange)
+                .with(QUEUE_KEYCLOAK_EVENTS_DLQ);
     }
 
     /**
