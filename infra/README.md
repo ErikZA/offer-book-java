@@ -9,7 +9,7 @@ Os arquivos Docker Compose foram reorganizados do diretório legado `docker/` pa
 infra/
 ├── docker-compose.yml          # Infra-only (Kong + Keycloak + PostgreSQL + RabbitMQ + Redis-Kong + jwks-rotator)
 ├── docker-compose.dev.yml      # Dev completo (infra + order-service + wallet-service hot-reload)
-├── docker-compose.staging.yml  # Staging com réplicas (3× MongoDB, PostgreSQL, Redis, RabbitMQ + Redis-Kong)
+├── docker-compose.staging.yml  # Staging com réplicas (3× MongoDB rs0, PostgreSQL, Redis, RabbitMQ + Redis-Kong)
 ├── docker/
 │   ├── Dockerfile              # Imagem base para apps (build multi-stage Maven)
 │   ├── Dockerfile.keycloak     # Keycloak 22 + plugin keycloak-to-rabbit-3.0.5.jar
@@ -26,6 +26,13 @@ infra/
 │   ├── jwks-rotation.sh            # ⭐ Script idempotente de rotação JWKS (AT-13.1)
 │   ├── jwks-rotator-entrypoint.sh  # ⭐ Entrypoint loop 6h do sidecar (AT-13.1)
 │   └── kong-config.md              # Documentação das rotas configuradas
+├── mongo/
+│   ├── docker-entrypoint-override.sh          # Dev: gera keyFile aleatório por boot (single-node)
+│   ├── docker-entrypoint-override-staging.sh  # ⭐ Staging: escreve MONGO_REPLICA_KEY como keyFile
+│   │                                          # fixo e compartilhado pelos 3 nós (AT-1.3.2)
+│   ├── init-mongo.js                          # Collections iniciais do MongoDB
+│   ├── init-replica-set.sh                    # Dev: rs.initiate() single-node rs0 (AT-1.3.1)
+│   └── init-replica-set-staging.sh            # ⭐ Staging: rs.initiate() 3-node rs0 (AT-1.3.2)
 └── postgres/
     ├── init-app-databases.sh   # Cria vibranium_orders + vibranium_wallet no 1º boot
     ├── init-infra-db.sql       # Cria schemas kong + keycloak em vibranium_infra
@@ -55,9 +62,15 @@ docker compose -f infra/docker-compose.yml up -d
 
 ### Staging (réplicas)
 ```bash
-# Apenas infra base (recomendado para validação)
+# Subir apenas os nós MongoDB e aguardar PRIMARY (recomendado para validação)
+# mongo-rs-init executa rs.initiate() com os 3 membros e sai com código 0
+docker compose -f infra/docker-compose.staging.yml up mongodb-1 mongodb-2 mongodb-3 -d
+docker compose -f infra/docker-compose.staging.yml up mongo-rs-init
+
+# Apenas infra base (recomendado para validação sem apps)
 docker compose -f infra/docker-compose.staging.yml up -d \
-  mongodb-1 postgres-primary redis-1 rabbitmq-1 keycloak-db keycloak kong-database kong-migration redis-kong kong
+  mongodb-1 mongodb-2 mongodb-3 mongo-rs-init \
+  postgres-primary redis-1 rabbitmq-1 keycloak-db keycloak kong-database kong-migration redis-kong kong
 
 # Stack completo (requer imagens pré-buildadas: order-service:latest, wallet-service:latest)
 docker compose -f infra/docker-compose.staging.yml up -d
@@ -108,6 +121,7 @@ KONG_ADMIN_URL=http://localhost:8001 ./tests/AT-12.1-rate-limiting-redis-validat
 - **Keycloak**: imagem customizada com `keycloak-to-rabbit-3.0.5.jar` compilada via `kc.sh build --db=postgres --health-enabled=true`. O modo `start --optimized` (staging) exige essas flags no build-time.
 - **Kong 3.4**: não possui `curl` na imagem — healthcheck usa `kong health`.
 - **Redis-Kong**: Redis standalone dedicado ao Kong rate-limiting. Os redis de aplicação (`redis-1/2/3`) usam cluster mode — incompatível com o plugin rate-limiting do Kong 3.x (requer standalone ou Sentinel). Dados efêmeros por design (`appendonly no`).
+- **MongoDB 7.0 — Replica Set Staging (AT-1.3.2)**: `docker-compose.staging.yml` usa 3 nós (`mongodb-1/2/3`) com `--replSet rs0 --keyFile /etc/mongod-keyfile`. Diferente do dev (keyFile aleatório por boot, safe para single-node), em staging o `docker-entrypoint-override-staging.sh` grava `MONGO_REPLICA_KEY` (env var FIXA e IDÊNTICA nos 3 nós) como keyFile — necessário para intra-cluster auth. O serviço `mongo-rs-init` executa `rs.initiate({_id:'rs0', members:[mongodb-1,mongodb-2,mongodb-3]})` após `service_healthy` nos 3 nós e aguarda eleicão do PRIMARY antes de sair com código 0. Os `order-services` usam `service_completed_successfully` em `mongo-rs-init`.
 - **MongoDB 7.0 — Replica Set (AT-1.3.1)**: `MongoTransactionManager` exige replica set para criar sessões de transação. O serviço `mongodb` sobe com `--replSet rs0 --keyFile /etc/mongod-keyfile` (MongoDB 7 exige keyFile quando `--auth + --replSet` estão ativos). O `docker-entrypoint-override.sh` gera o keyFile via `openssl rand -base64 756` em cada boot (seguro para single-node dev). O serviço `mongo-rs-init` executa `rs.initiate()` após o healthcheck pass e aguarda `stateStr === 'PRIMARY'` antes de sair com código 0. O `order-service` usa `depends_on: mongo-rs-init: service_completed_successfully`.
 - **init-app-databases.sh**: usa heredoc para passar `\gexec` ao `psql` (metacomando não funciona com `--command`).
 

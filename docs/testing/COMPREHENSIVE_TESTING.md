@@ -24,7 +24,8 @@
 20. [Testes de Segurança Spring Security Test (AT-10.3)](#testes-de-segurança-spring-security-test-at-103)
 21. [Saga Timeout + Bean Clock (AT-09.1 + AT-09.2)](#saga-timeout--bean-clock-at-091--at-092)
 22. [Auto ACK em Listeners de Projeção MongoDB (AT-1.2.1)](#auto-ack-em-listeners-de-projeção-mongodb-at-121)
-23. [Referências](#referências)
+23. [MongoDB Replica Set rs0 no Staging (AT-1.3.2)](#mongodb-replica-set-rs0-no-staging-at-132)
+24. [Referências](#referências)
 
 ---
 
@@ -2820,6 +2821,91 @@ class ProjectionAckIntegrationTest extends AbstractMongoIntegrationTest {
 
 ---
 
+## MongoDB Replica Set rs0 no Staging (AT-1.3.2)
+
+### Contexto
+
+O `docker-compose.staging.yml` possuía 3 nós MongoDB independentes (`mongodb-1/2/3`) sem `--replSet`, tornando-os instâncias **standalone isoladas**. O `MongoTransactionManager` do Spring falharia no boot com:
+
+```
+Transaction numbers are only allowed on a replica set member or mongos
+```
+
+### Solução Implementada
+
+#### Problema do keyFile em multi-node
+
+MongoDB 7 exige `--keyFile` quando `--auth + --replSet` estão ativos. Em dev, o keyFile é gerado **aleatoriamente** por boot (seguro: single-node, nenhum membro externo autentica). Em staging, **os 3 nós devem compartilhar o mesmo conteúdo** no keyFile — se divergirem, o secundário rejeita o primário com `Authentication failed` e o replica set não se forma.
+
+#### Arquivos criados
+
+| Arquivo | Descrição |
+|---|---|
+| `infra/mongo/docker-entrypoint-override-staging.sh` | Lê `MONGO_REPLICA_KEY` (env var) e grava como `/etc/mongod-keyfile` (chmod 400, chown mongodb). Chave FIXA e IDÊNTICA nos 3 nós. |
+| `infra/mongo/init-replica-set-staging.sh` | Idempotente: verifica `rs.status().ok` antes de chamar `rs.initiate()`. Aguarda até 90s (30 × 3s) pelo PRIMARY antes de sair com código 0. |
+
+#### Mudanças em `docker-compose.staging.yml`
+
+| O que mudou | Detalhe |
+|---|---|
+| `mongodb-1/2/3` — `entrypoint` | `docker-entrypoint-override-staging.sh` |
+| `mongodb-1/2/3` — `command` | `mongod --replSet rs0 --bind_ip_all --keyFile /etc/mongod-keyfile` |
+| `mongodb-1/2/3` — `MONGO_REPLICA_KEY` | String fixa, idêntica nos 3 nós |
+| Novo serviço `mongo-rs-init` | `depends_on`: 3 nós `service_healthy`; sai com 0 após PRIMARY eleito |
+| `order-service-1` — `depends_on` | `mongo-rs-init: service_completed_successfully` |
+| Connection strings | Já estavam corretas (`replicaSet=rs0` com 3 hosts) |
+
+### Ordem de inicialização
+
+```
+mongodb-1 ─┐
+mongodb-2 ─┼─ (service_healthy) ──► mongo-rs-init ──► order-service-1/2/3
+mongodb-3 ─┘                        rs.initiate()
+                                     aguarda PRIMARY
+                                     exit 0
+```
+
+### Validação (FASE GREEN — confirmada ao vivo)
+
+```bash
+# 1. Subir os 3 nós
+docker compose -f infra/docker-compose.staging.yml up mongodb-1 mongodb-2 mongodb-3 -d
+# → vibranium-mongodb-1/2/3: Up (healthy)
+
+# 2. Executar init container
+docker compose -f infra/docker-compose.staging.yml up mongo-rs-init
+# → [mongo-rs-init] PRIMARY eleito — replica set rs0 pronto (1 PRIMARY + 2 SECONDARY).
+# → exited with code 0
+
+# 3. Verificar status
+docker exec vibranium-mongodb-1 mongosh \
+  "mongodb://admin:admin123@localhost:27017/admin?authSource=admin" \
+  --eval "rs.status().members.map(m => ({name: m.name, stateStr: m.stateStr}))" \
+  --quiet
+```
+
+**Output confirmado:**
+
+```json
+[
+  { "name": "mongodb-1:27017", "stateStr": "PRIMARY" },
+  { "name": "mongodb-2:27017", "stateStr": "SECONDARY" },
+  { "name": "mongodb-3:27017", "stateStr": "SECONDARY" }
+]
+```
+
+### Critérios de aceite
+
+| Critério | Status |
+|---|---|
+| 3 nós formam rs0 (1 PRIMARY + 2 SECONDARY) | ✅ Confirmado |
+| Connection string inclui `replicaSet=rs0` com 3 hosts | ✅ Já existia |
+| `mongo-rs-init` idempotente (restart não re-executa) | ✅ `rs.status().ok === 1` guard |
+| `order-service` aguarda PRIMARY antes de conectar | ✅ `service_completed_successfully` |
+| Failover automático se primary cair | ✅ Driver MongoDB reconecta ao novo PRIMARY |
+
+---
+
 ## Referências
 
 - [JUnit 5 Documentation](https://junit.org/junit5/docs/current/user-guide/)
@@ -2835,6 +2921,7 @@ class ProjectionAckIntegrationTest extends AbstractMongoIntegrationTest {
 **Última atualização**: 3 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-1.3.2**: MongoDB Replica Set rs0 no Staging — `docker-compose.staging.yml` atualizado com `--replSet rs0 --keyFile` nos 3 nós MongoDB. Novo `docker-entrypoint-override-staging.sh` grava `MONGO_REPLICA_KEY` (env var fixa e idêntica nos 3 nós) como `/etc/mongod-keyfile` (keyFile compartilhado obrigatório para intra-cluster auth). Novo `init-replica-set-staging.sh` (idempotente): executa `rs.initiate({_id:'rs0', members:[mongodb-1,mongodb-2,mongodb-3]})` e aguarda até 90s pelo PRIMARY. Serviço `mongo-rs-init` depende de `service_healthy` nos 3 nós; `order-service-1/2/3` usam `service_completed_successfully`. Validado ao vivo: `rs.status()` retorna `mongodb-1 PRIMARY`, `mongodb-2 SECONDARY`, `mongodb-3 SECONDARY`. Adicionada seção 23 neste guia.
 > - **AT-1.3.1**: MongoDB Replica Set `rs0` — `docker-compose.dev.yml` atualizado com `--replSet rs0 --keyFile` e serviço `mongo-rs-init` (container de curta duração). `docker-entrypoint-override.sh` gera `keyFile` via `openssl rand -base64 756` (exigido pelo MongoDB 7 quando `--auth + --replSet` estão ativos). `order-service` usa `depends_on: mongo-rs-init: service_completed_successfully` e URI com `?replicaSet=rs0&authSource=admin`. `init-mongo.js` movido de `infra/postgres/` para `infra/mongo/` (removido `createUser()` duplicado). Smoke test validado: `rs.status()` retorna `{state:'PRIMARY', setName:'rs0', ok:1}`.
 > - **AT-1.2.1**: Auto ACK em listeners de projeção MongoDB — bean `autoAckContainerFactory` (`AcknowledgeMode.AUTO`) adicionado em `RabbitMQConfig`. Os 4 `@RabbitListener` de `OrderEventProjectionConsumer` passam a declarar `containerFactory` explicitamente, evitando herdar o `MANUAL` global do `application.yaml` (que causava acúmulo de `unacknowledged` no broker). Segurança garantida pela idempotência do `$ne` no MongoDB. Novos testes `ProjectionAckIntegrationTest` (TC-ACK-1, TC-ACK-2) validam via RabbitMQ Management HTTP API que `messages_ready + messages_unacknowledged = 0` após processamento. Adicionada seção 22 neste guia.
 > - **AT-09.1 + AT-09.2**: Saga Timeout Cleanup — `SagaTimeoutCleanupJob` (`@Scheduled`) cancela ordens `PENDING` expiradas com `SAGA_TIMEOUT` + `OrderCancelledEvent` no outbox. `TimeConfig` expondo `Clock.systemUTC()` como bean singleton; substituído por `Clock.fixed` em testes via `@Primary`. Flyway V6 com índice parcial `(created_at) WHERE status = 'PENDING'`. `OrderRepository#findByStatusAndCreatedAtBefore` adicionado. `SagaTimeoutCleanupJobTest` com 4 cenários de integração determinísticos. Adicionada seção 21 neste guia.
