@@ -279,7 +279,7 @@ mvn test -pl apps/order-service -Dtest=ProjectionDlqIntegrationTest
 | **`OrderOutboxResilienceIntegrationTest`** | **Integração (Resiliência)** | **Broker pausado → atomicidade → sem processamento indevido → recovery → não duplicidade** | **AT-01.2** |
 | `OrderSagaConcurrencyTest` | Integração (Concorrência) | Optimistic lock + retry em ordens concorrentes | — |
 | `KeycloakUserRegistryIntegrationTest` | Integração | Registro de usuário via evento Keycloak | — |
-| `MatchEngineRedisIntegrationTest` | Integração | Script Lua atômico no Sorted Set Redis | — |
+| `MatchEngineRedisIntegrationTest` | Integração | Script Lua atômico no Sorted Set Redis; **TC-PP-1**: precisão de preço 8 casas decimais | **AT-3.2.1** |
 | **`RedisKeyFormatIT`** | **Integração (Spring Context)** | **FASE RED → GREEN: keys com hash tag `{vibranium}` injetadas via `@Value`** | **AT-11.1** |
 | **`RedisClusterHashTagIT`** | **Integração (CRC16 + Testcontainers Cluster)** | **CRC16 slot equality; CROSSSLOT antes e sem erro após hash tags em cluster real** | **AT-11.1** |
 | **`ProjectionAckIntegrationTest`** | **Integração (AMQP ACK)** | **AUTO ACK em listeners de projeção: fila esvazia após ACK automático (Management API)** | **AT-1.2.1** |
@@ -479,6 +479,35 @@ Adicionado índice parcial para performance do job:
 ```sql
 CREATE INDEX idx_orders_status_created_at ON tb_orders (created_at)
     WHERE status = 'PENDING';  -- apenas linhas elegíveis → índice compacto
+```
+
+## 📏 Motor de Match Redis — Precisão de Preço (AT-3.2.1)
+
+### Problema
+
+`PRICE_PRECISION = 1_000_000L` preservava apenas 6 casas decimais ao converter o preço em score
+do Redis Sorted Set. Preços com 7+ casas (ex: `0.00000001` e `0.00000002`) colapsavam para score
+`0` — indistinguíveis, quebrando a ordenação para ativos de precisão satoshi.
+
+### Solução
+
+```java
+// RedisMatchEngineAdapter.java
+private static final long PRICE_PRECISION = 100_000_000L; // AT-3.2.1: era 1_000_000L
+```
+
+`tonumber()` no Lua Redis é IEEE-754 double (exato até $2^{53} \approx 9 \times 10^{15}$). Score
+máximo gerado para BTC @ USD 90.000 → `9_000_000_000_000_000` — dentro do limite.
+Nenhuma alteração no Lua foi necessária.
+
+### Configuração das keys Redis
+
+```yaml
+# application.yaml
+app.redis.keys:
+  asks:        "{vibranium}:asks"
+  bids:        "{vibranium}:bids"
+  order-index: "{vibranium}:order_index"
 ```
 
 ---

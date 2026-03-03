@@ -30,7 +30,8 @@
 26. [DLX nas Filas de Projeção — Mensagens Tóxicas para DLQ (AT-2.2.1)](#dlx-nas-filas-de-projeção--mensagens-tóxicas-para-dlq-at-221)
 27. [DLX na Fila wallet.keycloak.events — DLQ para Registro Keycloak (AT-2.2.2)](#dlx-na-fila-walletkeycloakevents--dlq-para-registro-keycloak-at-222)
 28. [Limpeza de Tabelas de Suporte — OutboxCleanupJob e IdempotencyKeyCleanupJob (AT-2.3.1)](#limpeza-de-tabelas-de-suporte--outboxcleanupjob-e-idempotencykeycleanupjob-at-231)
-29. [Referências](#referências)
+29. [PRICE_PRECISION 10^8 — Precisão de Preço com 8 Casas Decimais (AT-3.2.1)](#price_precision-108--precisão-de-preço-com-8-casas-decimais-at-321)
+30. [Referências](#referências)
 
 ---
 
@@ -3451,10 +3452,101 @@ void testCleanup_deletesProcessedMessagesOlderThanRetention() {
 
 ---
 
+---
+
+## PRICE_PRECISION 10^8 — Precisão de Preço com 8 Casas Decimais (AT-3.2.1)
+
+### Problema
+
+`PRICE_PRECISION = 1_000_000L` no `RedisMatchEngineAdapter` preservava apenas **6 casas decimais**
+ao converter o preço em score inteiro para o Redis Sorted Set:
+
+```
+0.00000001 × 1_000_000 = 0.01 → (long) 0
+0.00000002 × 1_000_000 = 0.02 → (long) 0
+```
+
+Ambos os scores colapsavam para `0`, tornando os dois preços **indistinguíveis** no Sorted Set.
+O livro de ordens não operava corretamente com ativos de precisão satoshi (crypto sub-centavo).
+
+### Análise de Compatibilidade Lua
+
+O script `match_engine.lua` usa `tonumber(ARGV[2])` para o score recebido. `tonumber()` no Redis Lua
+retorna um `double` IEEE-754 de 64 bits, que representa inteiros com exatidão até $2^{53} \approx 9 \times 10^{15}$.
+
+| Ativo | Preço máximo realista | Score máximo (× 10^8) | Dentro do limite? |
+|---|---|---|---|
+| BTC (USD) | USD 90.000 | 9.000.000.000.000.000 | ✅ ($< 2^{53}$) |
+| ETH (USD) | USD 10.000 | 1.000.000.000.000.000 | ✅ |
+
+**Conclusão:** `tonumber()` é seguro. Nenhuma alteração no Lua foi necessária.
+
+### Solução
+
+```java
+// RedisMatchEngineAdapter.java (AT-3.2.1)
+private static final long PRICE_PRECISION = 100_000_000L;  // era 1_000_000L
+```
+
+Resultado com a nova constante:
+
+```
+0.00000001 × 100_000_000 = 1  → score 1.0
+0.00000002 × 100_000_000 = 2  → score 2.0  ← distintos!
+```
+
+Os dois preços geram agora scores inteiros distintos, preservando a ordenação correta no Sorted Set.
+
+### Teste TDD (RED → GREEN)
+
+**TC-PP-1** em `MatchEngineRedisIntegrationTest`:
+
+```java
+@Test
+void testPricePrecision_8DecimalPlaces_differentiatedInBook() {
+    // FASE RED: scores = [0.0, 0.0] com PRICE_PRECISION=1_000_000
+    // FASE GREEN: scores = [1.0, 2.0] com PRICE_PRECISION=100_000_000
+    BigDecimal price1 = new BigDecimal("0.00000001");
+    BigDecimal price2 = new BigDecimal("0.00000002");
+    // Insere 2 SELLs, verifica scores distintos;
+    // BID a price1 casa APENAS com o ASK de price1 (ask1OrderId).
+}
+```
+
+| Verificação | Resultado |
+|---|---|
+| SELL a `0.00000001` → score `1.0` no Sorted Set | ✅ |
+| SELL a `0.00000002` → score `2.0` no Sorted Set | ✅ |
+| BID a `0.00000001` casa com `ask1OrderId` (mais barato) | ✅ |
+| ASK de `0.00000002` permanece no livro após o match | ✅ |
+| 10/10 testes `MatchEngineRedisIntegrationTest` passam | ✅ |
+
+### Critérios de aceite
+
+| Critério | Verificação | Status |
+|---|---|---|
+| Constante atualizada para `100_000_000L` | `RedisMatchEngineAdapter.PRICE_PRECISION` | ✅ |
+| Preços `0.00000001` e `0.00000002` geram scores distintos | TC-PP-1 linha de scores | ✅ |
+| BID casa com a contraparte correta (menor preço) | `assertThat(bidResult.counterpartId()).isEqualTo(ask1OrderId)` | ✅ |
+| Testes existentes passam | 10/10 `MatchEngineRedisIntegrationTest` | ✅ |
+| Comentário Lua atualizado (`ARGV[2]`) | `match_engine.lua` linha 22 | ✅ |
+| `priceToScore` helper no teste consistente | `× 100_000_000` | ✅ |
+
+### Artefatos alterados pelo AT-3.2.1
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `RedisMatchEngineAdapter.java` | Alterado | `PRICE_PRECISION`: `1_000_000L` → `100_000_000L`; Javadoc atualizado |
+| `match_engine.lua` | Alterado | Comentário `ARGV[2]` atualizado para `× 100_000_000` |
+| `MatchEngineRedisIntegrationTest.java` | Alterado | TC-PP-1 adicionado; `priceToScore` helper atualizado |
+
+---
+
 **Status**: ✅ Consolidado e Completo  
 **Última atualização**: 3 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-3.2.1**: `PRICE_PRECISION` aumentada de `1_000_000L` para `100_000_000L` no `RedisMatchEngineAdapter`. Com a constante anterior, preços com 7+ casas decimais (ex: `0.00000001` e `0.00000002`) colapsavam para score `0` no Redis Sorted Set — indistinguíveis, quebrando a ordenação do livro para ativos de precisão satoshi. Com `10^8`, os scores são `1` e `2` (exatos, dentro do limite IEEE-754 double $2^{53}$). `match_engine.lua` usa `tonumber()` — nenhuma alteração necessária no Lua. Novo TC-PP-1 em `MatchEngineRedisIntegrationTest` (TDD RED → GREEN): verifica scores `1.0`/`2.0` e match exato com `ask1OrderId`. `priceToScore` helper de teste atualizado para consistência. 10/10 testes passam, BUILD SUCCESS. Adicionada seção 29 neste guia.
 > - **AT-2.3.1**: Limpeza de tabelas de suporte no wallet-service — `OutboxCleanupJob` (`@Scheduled cron domingos 03:00 UTC`) e `IdempotencyKeyCleanupJob` (`@Scheduled cron domingos 04:00 UTC`), ambos com `@Transactional` e log da quantidade de registros removidos. Bean `TimeConfig` (novo) expõe `Clock.systemUTC()` singleton — substituível por `Clock.fixed(...)` em testes. Métodos `deleteByProcessedTrueAndCreatedAtBefore` e `deleteByProcessedAtBefore` adicionados nos respectivos repositórios via `@Modifying @Query` (DELETE em lote sem fetch). `WalletServiceApplication` atualizado com `@EnableScheduling`. `application.yaml` com `app.cleanup.outbox.cron` e `app.cleanup.idempotency.cron`. 4 novos testes unitários (`WalletOutboxCleanupJobTest` TC-OCJ-1/2, `WalletIdempotencyCleanupJobTest` TC-IKJ-1/2) — 4/4 passando. `mvn clean package` 38 testes, BUILD SUCCESS. Adicionada seção 28 neste guia.
 > - **AT-2.2.2**: DLX na fila `wallet.keycloak.events` — `x-dead-letter-exchange=vibranium.dlq` + `x-dead-letter-routing-key=wallet.keycloak.events.dlq` adicionados no `walletKeycloakEventsQueue()`. Nova fila DLQ `wallet.keycloak.events.dlq` (`durable`) declarada com binding no `vibranium.dlq` exchange. `AbstractIntegrationTest.resetState()` atualizado com purge da DLQ. Novo `KeycloakDlqIntegrationTest` (TC-KC-DLQ-1: estrutural via Management HTTP API; TC-KC-DLQ-2: `@MockBean WalletService` lança `RuntimeException` → listener NACK → mensagem roteada para DLQ com header `x-death`). 2/2 passando. Adicionada seção 27 neste guia.
 > - **AT-2.2.1**: DLX nas 4 filas de projeção — `x-dead-letter-exchange=vibranium.dlq` + `x-dead-letter-routing-key=<queue>.dlq` adicionados em cada `QueueBuilder` de projeção. 4 filas DLQ `durable` declaradas (`order.projection.received.dlq`, `order.projection.funds-reserved.dlq`, `order.projection.match-executed.dlq`, `order.projection.cancelled.dlq`) com bindings no `vibranium.dlq` exchange. `autoAckContainerFactory` atualizado com `setDefaultRequeueRejected(false)` para prevenir loop infinito em exceções de runtime. Novo `ProjectionDlqIntegrationTest` (TC-DLQ-1: mensagem tóxica roteada para DLQ via Management API; TC-DLQ-2: smoke test de declaração das 4 DLQs). 2/2 passando. Adicionada seção 26 neste guia.
