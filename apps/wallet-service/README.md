@@ -66,11 +66,12 @@ src/
 │       ├── DebeziumJdbcOffsetMigrationTest.java      # AT-08.1 RED — tabela wallet_outbox_offset
 │       └── DebeziumRestartIdempotencyTest.java       # AT-08.1 RED→GREEN — idempotência pós-restart
 │   └── security/
-│       ├── SecurityUnauthorizedTest.java             # AT-10.1 — 401 sem token, 200 com token
+│       ├── SecurityUnauthorizedTest.java             # AT-10.1 — 401 sem token; AT-4.2.1 — 200 com ROLE_ADMIN
 │       ├── WalletOwnershipTest.java                  # AT-10.2 — 403 acesso cruzado, 200 owner/admin
 │       └── WalletSecurityIntegrationTest.java        # AT-10.3 — 4 cenários: sem token, expirado, outro usuário, owner
-│   └── integration/
-│       └── WalletTracingPropagationIntegrationTest.java  # AT-14.1 RED→GREEN — W3C traceparent em AMQP
+│   ├── integration/
+│   │   ├── WalletControllerIntegrationTest.java       # AT-4.2.1 — TC-LA-1/2/3: @PreAuthorize ROLE_ADMIN + Page<WalletResponse>
+│   │   └── WalletTracingPropagationIntegrationTest.java  # AT-14.1 RED→GREEN — W3C traceparent em AMQP
 
 docker/
 ├── Dockerfile                # Build production
@@ -378,7 +379,7 @@ Cliente → [Bearer Token] → BearerTokenAuthenticationFilter
 ### Estratégia de testes
 
 - `AbstractIntegrationTest` — `@WithMockUser` garante que testes existentes não quebrem após ativação do `SecurityConfig`
-- `SecurityUnauthorizedTest` — valida 401 para qualquer endpoint sem token (`@WithAnonymousUser`) e 200 com token
+- `SecurityUnauthorizedTest` — valida 401 para qualquer endpoint sem token (`@WithAnonymousUser`); `listAll_comTokenValido_deveRetornar200` usa `@WithMockUser(roles = "ADMIN")` após AT-4.2.1 (usuário sem ROLE_ADMIN recebe 403, não 200)
 - `WalletSecurityIntegrationTest` — 4 cenários de segurança focados no `SecurityFilterChain` (AT-10.3):
   - Sem token → 401 (`@WithAnonymousUser`)
   - Token expirado → 401 (`@MockBean JwtDecoder` + `JwtValidationException`)
@@ -386,7 +387,37 @@ Cliente → [Bearer Token] → BearerTokenAuthenticationFilter
   - Token do owner → 200 (acesso legítimo sem regressão)
 - Perfil `test` usa `jwk-set-uri` (lazy) em vez de `issuer-uri` para evitar OIDC Discovery no startup dos testes
 
----
+### AT-4.2.1 — `@PreAuthorize("hasRole('ADMIN')")` + `Pageable` em GET /wallets
+
+O endpoint `GET /api/v1/wallets` expõe saldos de **todos** os usuários — acesso permitido apenas a admins.
+
+| Componente | Alteração |
+|---|---|
+| `SecurityConfig` | `@EnableMethodSecurity` adicionado (habilita `@PreAuthorize` no contexto Spring) |
+| `WalletController.listAll()` | `@PreAuthorize("hasRole('ADMIN')")` + parâmetro `Pageable` + retorno `Page<WalletResponse>` |
+| `WalletService.findAll(Pageable)` | `walletRepository.findAll(pageable).map(WalletResponse::from)` |
+
+**Matiz:** sem `@EnableMethodSecurity`, a anotação `@PreAuthorize` é silenciosamente ignorada — nenhum erro é lançado, mas qualquer usuário autenticado continuaria tendo acesso.
+
+**Resposta paginada** (`Page<WalletResponse>`):
+
+```json
+{
+  "content": [ { "walletId": "...", "userId": "...", "brlAvailable": 500.00, "..." } ],
+  "totalElements": 42,
+  "totalPages": 3,
+  "size": 20,
+  "number": 0
+}
+```
+
+| TC | Usuário | Resultado |
+|---|---|---|
+| TC-LA-1 | `@WithMockUser` (ROLE_USER) | `403 Forbidden` |
+| TC-LA-2 | `@WithMockUser(roles = "ADMIN")` | `200 OK` + campos `content`/`totalPages`/`totalElements` |
+| TC-LA-3 | `@WithMockUser(roles = "ADMIN")` sem parâmetros | `$.size = 20`, `$.number = 0` (defaults Spring Data) |
+
+
 
 ## 📦 Dependências
 

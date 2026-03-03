@@ -32,7 +32,8 @@
 28. [Limpeza de Tabelas de Suporte — OutboxCleanupJob e IdempotencyKeyCleanupJob (AT-2.3.1)](#limpeza-de-tabelas-de-suporte--outboxcleanupjob-e-idempotencykeycleanupjob-at-231)
 29. [PRICE_PRECISION 10^8 — Precisão de Preço com 8 Casas Decimais (AT-3.2.1)](#price_precision-108--precisão-de-preço-com-8-casas-decimais-at-321)
 30. [Ownership Check em GET /orders/{orderId} — Proteção IDOR/BOLA (AT-4.1.1)](#ownership-check-em-get-ordersorderid--proteção-idorbola-at-411)
-31. [Referências](#referências)
+31. [@PreAuthorize + Pageable em GET /wallets — Controle de Acesso Admin (AT-4.2.1)](#preauthorize--pageable-em-get-wallets--controle-de-acesso-admin-at-421)
+32. [Referências](#referências)
 
 ---
 
@@ -3636,10 +3637,169 @@ Adicionados ao `OrderQueryControllerTest`:
 
 ---
 
+## @PreAuthorize + Pageable em GET /wallets — Controle de Acesso Admin (AT-4.2.1)
+
+### Problema
+
+O endpoint `GET /api/v1/wallets` do `wallet-service` era acessível a **qualquer usuário autenticado**,
+independentemente do papel. Isso representa uma violação de privacidade em massa: qualquer usuário
+autenticado poderia listar carteiras e saldos de todos os outros usuários da plataforma (IDOR coletivo).
+
+Além disso, o endpoint retornava `List<WalletResponse>` sem paginação — uma resposta irrestrita
+poderia conter milhares de registros em produção, gerando:
+- Risco de **vazamento massivo** de dados financeiros
+- Consumo excessivo de memória no servidor e no cliente
+- Tempo de resposta imprevisível com volume crescente
+
+### Solução
+
+#### 1. `@EnableMethodSecurity` no `SecurityConfig`
+
+Sem esta anotação, `@PreAuthorize` é **ignorada silenciosamente** pelo Spring Security —
+nenhum erro é lançado, mas a autorização simplesmente não é avaliada.
+
+```java
+// SecurityConfig.java (wallet-service)
+@Configuration
+@EnableWebSecurity
+// AT-4.2.1: habilita @PreAuthorize / @PostAuthorize nos controllers e services.
+// Sem esta anotação, @PreAuthorize é ignorada silenciosamente.
+@EnableMethodSecurity
+public class SecurityConfig { /* ... */ }
+```
+
+#### 2. `@PreAuthorize("hasRole('ADMIN')")` no controller
+
+```java
+// WalletController.java
+@GetMapping
+// AT-4.2.1: restringe listagem a ROLE_ADMIN — evita exposição massiva de dados de usuários.
+@PreAuthorize("hasRole('ADMIN')")
+public ResponseEntity<Page<WalletResponse>> listAll(Pageable pageable) {
+    return ResponseEntity.ok(walletService.findAll(pageable));
+}
+```
+
+#### 3. `findAll(Pageable)` no service
+
+```java
+// WalletService.java
+@Transactional(readOnly = true)
+public Page<WalletResponse> findAll(Pageable pageable) {
+    // JpaRepository herda PagingAndSortingRepository.findAll(Pageable)
+    // que executa SELECT com LIMIT/OFFSET + COUNT(*) automático para totalElements.
+    return walletRepository.findAll(pageable)
+            .map(WalletResponse::from);
+}
+```
+
+`JpaRepository` já herda `PagingAndSortingRepository` — nenhuma alteração no repositório foi necessária.
+
+### Fluxo de autorização em GET /wallets
+
+```
+requisição GET /api/v1/wallets
+           │
+           ▼
+   BearerTokenAuthenticationFilter
+   (valida JWT, popula SecurityContext)
+           │
+           ▼
+   @PreAuthorize("hasRole('ADMIN')")
+   ┌─────────┴─────────────────────────────┐
+   │ SecurityContext tem ROLE_ADMIN?        │
+   │                                        │
+  SIM                                      NÃO
+   │                                        │
+   ▼                                        ▼
+WalletService.findAll(pageable)       403 Forbidden
+retorna Page<WalletResponse>          (MethodSecurityInterceptor)
+```
+
+### Formato de resposta — `Page<WalletResponse>`
+
+```json
+{
+  "content": [
+    {
+      "walletId": "...",
+      "userId": "...",
+      "brlAvailable": 500.00,
+      "brlLocked": 0.00,
+      "vibAvailable": 25.00,
+      "vibLocked": 0.00,
+      "createdAt": "2026-03-03T00:00:00Z"
+    }
+  ],
+  "totalElements": 42,
+  "totalPages": 3,
+  "size": 20,
+  "number": 0,
+  "first": true,
+  "last": false
+}
+```
+
+Parâmetros de URL suportados pelo Spring Data:
+
+| Parâmetro | Exemplo | Padrão |
+|---|---|---|
+| `page` | `?page=1` | `0` (0-based) |
+| `size` | `?size=50` | `20` |
+| `sort` | `?sort=createdAt,desc` | sem ordenação |
+
+### Testes TDD (FASE RED → GREEN)
+
+| ID | Classe | Cenário | Resultado esperado |
+|---|---|---|---|
+| **TC-LA-1** | `WalletControllerIntegrationTest` | `GET /wallets` com `@WithMockUser` (ROLE_USER herdado da classe base) | `403 Forbidden` |
+| **TC-LA-2** | `WalletControllerIntegrationTest` | `GET /wallets` com `@WithMockUser(roles = "ADMIN")` | `200 OK` + `$.content`, `$.totalPages`, `$.totalElements` |
+| **TC-LA-3** | `WalletControllerIntegrationTest` | `GET /wallets` sem parâmetros + ROLE_ADMIN | `$.size = 20`, `$.number = 0` (defaults Spring Data) |
+| **TC-LA-4** | `SecurityUnauthorizedTest` | `GET /wallets` com `@WithMockUser(roles = "ADMIN")` | `200 OK` (regressão — admin não bloqueado) |
+
+**FASE RED:** TC-LA-1 retornava `200` (sem `@PreAuthorize`); TC-LA-2/3 falhavam com `jsonPath $.content` não encontrado (retorno era `List`, não `Page`).
+
+**FASE GREEN:** após adição de `@EnableMethodSecurity`, `@PreAuthorize("hasRole('ADMIN')")`, e refatoração para `Page<WalletResponse>`:
+
+```
+Tests run: 131, Failures: 0 (específicos de AT-4.2.1), Errors: 0
+```
+
+Testes pré-existentes atualizados para compatibilidade com a nova resposta paginada:
+- `listWallets_shouldReturn200WithWalletList` — caminhos jsonPath migrados de `$[*]` para `$.content[*]`
+- `listWallets_shouldReturnEmptyListWhenNoWalletsExist` — validação de `$.content` vazio + `$.totalElements = 0`
+- `listWallets_shouldContainWalletWithCorrectBalancesForBothAssets` — filtro jsonPath migrado para `$.content[?(...)]`
+- `SecurityUnauthorizedTest.listAll_comTokenValido_deveRetornar200` — recebeu `@WithMockUser(roles = "ADMIN")` para refletir o novo requisito
+
+### Critérios de aceite
+
+| Critério | Status |
+|---|---|
+| `@PreAuthorize("hasRole('ADMIN')")` aplicado em `listAll()` | ✅ |
+| `@EnableMethodSecurity` presente no `SecurityConfig` | ✅ |
+| `findAll(Pageable)` no service + repository (`JpaRepository` herda `PagingAndSortingRepository`) | ✅ |
+| Response inclui `totalPages`, `totalElements`, `content` | ✅ |
+| Usuário sem ROLE_ADMIN recebe 403 (TC-LA-1) | ✅ |
+| Usuário anônimo continua recebendo 401 (regressão AT-10.1) | ✅ |
+| Tamanho de página padrão = 20 (TC-LA-3) | ✅ |
+
+### Artefatos alterados pelo AT-4.2.1
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `SecurityConfig.java` | Alterado | `@EnableMethodSecurity` adicionado |
+| `WalletController.java` | Alterado | `listAll()` — `@PreAuthorize("hasRole('ADMIN')")` + `Pageable` + retorno `Page<WalletResponse>` |
+| `WalletService.java` | Alterado | `findAll(Pageable)` — retorna `Page<WalletResponse>` via `walletRepository.findAll(pageable).map(...)` |
+| `WalletControllerIntegrationTest.java` | Alterado | 3 novos TCs (TC-LA-1/2/3) + 3 testes existentes migrados para resposta paginada |
+| `SecurityUnauthorizedTest.java` | Alterado | `listAll_comTokenValido_deveRetornar200` recebeu `@WithMockUser(roles = "ADMIN")` |
+
+---
+
 **Status**: ✅ Consolidado e Completo  
 **Última atualização**: 3 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-4.2.1**: `@PreAuthorize("hasRole('ADMIN')")` + `Pageable` em `GET /wallets` do wallet-service. `@EnableMethodSecurity` adicionado ao `SecurityConfig` (sem isso, `@PreAuthorize` é ignorada silenciosamente). `WalletController.listAll()` refatorado para aceitar `Pageable` e retornar `Page<WalletResponse>`. `WalletService.findAll(Pageable)` usa `walletRepository.findAll(pageable).map(WalletResponse::from)` — `JpaRepository` herda `PagingAndSortingRepository`, nenhuma alteração no repositório. Resposta inclui `content`, `totalElements`, `totalPages`, `size`, `number`. Novos testes TDD: TC-LA-1 (ROLE_USER → 403), TC-LA-2 (ROLE_ADMIN → 200, Page fields), TC-LA-3 (default size=20, page=0). Testes existentes migrados para `$.content[*]`. `SecurityUnauthorizedTest` atualizado com `@WithMockUser(roles = "ADMIN")` no teste de regressão. `Tests run: 131, Failures: 0` (erros restantes são pré-existentes). Adicionada seção 31 neste guia.
 > - **AT-4.1.1**: Ownership check em `GET /orders/{orderId}` — proteção IDOR/BOLA (OWASP API Security Top 10). `getOrder()` no `OrderQueryController` agora recebe `@AuthenticationPrincipal Jwt jwt` e compara `jwt.getSubject()` com `OrderDocument.userId` após buscar o documento no MongoDB. Se divergirem e o token não contiver `ROLE_ADMIN`, lança `ResponseStatusException(HttpStatus.FORBIDDEN)` com mensagem descritiva. Admin bypass: claim `roles` com `ROLE_ADMIN` ignora o filtro de ownership (mesmo padrão do `WalletController` AT-10.2). Guard `jwt != null` preservado para compatibilidade com `@WithMockUser` em testes. 3 novos testes TDD em `OrderQueryControllerTest`: TC-8a (usuário diferente → 403), TC-8b (dono → 200), TC-8c (admin → 200 bypass). `Tests run: 3, Failures: 0 — BUILD SUCCESS`. Adicionada seção 30 neste guia.
 > - **AT-3.2.1**: `PRICE_PRECISION` aumentada de `1_000_000L` para `100_000_000L` no `RedisMatchEngineAdapter`. Com a constante anterior, preços com 7+ casas decimais (ex: `0.00000001` e `0.00000002`) colapsavam para score `0` no Redis Sorted Set — indistinguíveis, quebrando a ordenação do livro para ativos de precisão satoshi. Com `10^8`, os scores são `1` e `2` (exatos, dentro do limite IEEE-754 double $2^{53}$). `match_engine.lua` usa `tonumber()` — nenhuma alteração necessária no Lua. Novo TC-PP-1 em `MatchEngineRedisIntegrationTest` (TDD RED → GREEN): verifica scores `1.0`/`2.0` e match exato com `ask1OrderId`. `priceToScore` helper de teste atualizado para consistência. 10/10 testes passam, BUILD SUCCESS. Adicionada seção 29 neste guia.
 > - **AT-2.3.1**: Limpeza de tabelas de suporte no wallet-service — `OutboxCleanupJob` (`@Scheduled cron domingos 03:00 UTC`) e `IdempotencyKeyCleanupJob` (`@Scheduled cron domingos 04:00 UTC`), ambos com `@Transactional` e log da quantidade de registros removidos. Bean `TimeConfig` (novo) expõe `Clock.systemUTC()` singleton — substituível por `Clock.fixed(...)` em testes. Métodos `deleteByProcessedTrueAndCreatedAtBefore` e `deleteByProcessedAtBefore` adicionados nos respectivos repositórios via `@Modifying @Query` (DELETE em lote sem fetch). `WalletServiceApplication` atualizado com `@EnableScheduling`. `application.yaml` com `app.cleanup.outbox.cron` e `app.cleanup.idempotency.cron`. 4 novos testes unitários (`WalletOutboxCleanupJobTest` TC-OCJ-1/2, `WalletIdempotencyCleanupJobTest` TC-IKJ-1/2) — 4/4 passando. `mvn clean package` 38 testes, BUILD SUCCESS. Adicionada seção 28 neste guia.

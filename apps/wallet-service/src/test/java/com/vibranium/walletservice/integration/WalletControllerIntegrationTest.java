@@ -20,6 +20,9 @@ import static org.hamcrest.Matchers.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
+// AT-4.2.1: import para testes de controle de acesso via @PreAuthorize
+import org.springframework.security.test.context.support.WithMockUser;
+
 /**
  * FASE RED — Testa os endpoints REST do {@code WalletController}.
  *
@@ -121,41 +124,47 @@ class WalletControllerIntegrationTest extends AbstractIntegrationTest {
     // -------------------------------------------------------------------------
 
     @Test
-    @DisplayName("GET /wallets deve retornar 200 com lista de carteiras (id do cliente, id da carteira, saldos)")
+    @WithMockUser(roles = "ADMIN")
+    @DisplayName("GET /wallets deve retornar 200 com Page de carteiras (id do cliente, id da carteira, saldos)")
     void listWallets_shouldReturn200WithWalletList() throws Exception {
         mockMvc.perform(get("/api/v1/wallets")
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                // Deve haver pelo menos 2 carteiras (criadas no @BeforeEach)
-                .andExpect(jsonPath("$", hasSize(greaterThanOrEqualTo(2))))
+                // AT-4.2.1: resposta é Page<WalletResponse> — conteúdo em $.content
+                .andExpect(jsonPath("$.content", hasSize(greaterThanOrEqualTo(2))))
                 // Cada item deve ter os campos mapeados no contrato
-                .andExpect(jsonPath("$[*].walletId").exists())
-                .andExpect(jsonPath("$[*].userId").exists())
-                .andExpect(jsonPath("$[*].brlAvailable").exists())
-                .andExpect(jsonPath("$[*].vibAvailable").exists());
+                .andExpect(jsonPath("$.content[*].walletId").exists())
+                .andExpect(jsonPath("$.content[*].userId").exists())
+                .andExpect(jsonPath("$.content[*].brlAvailable").exists())
+                .andExpect(jsonPath("$.content[*].vibAvailable").exists());
     }
 
     @Test
-    @DisplayName("GET /wallets deve retornar lista vazia quando não há carteiras")
+    @WithMockUser(roles = "ADMIN")
+    @DisplayName("GET /wallets deve retornar Page vazia quando não há carteiras")
     void listWallets_shouldReturnEmptyListWhenNoWalletsExist() throws Exception {
         walletRepository.deleteAll();
 
         mockMvc.perform(get("/api/v1/wallets")
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$", hasSize(0)));
+                // AT-4.2.1: Page com content vazio, totalElements = 0
+                .andExpect(jsonPath("$.content", hasSize(0)))
+                .andExpect(jsonPath("$.totalElements").value(0));
     }
 
     @Test
+    @WithMockUser(roles = "ADMIN")
     @DisplayName("GET /wallets deve incluir carteira com saldo correto de ambos os assets")
     void listWallets_shouldContainWalletWithCorrectBalancesForBothAssets() throws Exception {
         mockMvc.perform(get("/api/v1/wallets")
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[?(@.userId == '" + userIdWithFunds + "')].brlAvailable",
+                // AT-4.2.1: conteúdo está em $.content (Page<WalletResponse>)
+                .andExpect(jsonPath("$.content[?(@.userId == '" + userIdWithFunds + "')].brlAvailable",
                         contains(500.0)))
-                .andExpect(jsonPath("$[?(@.userId == '" + userIdWithFunds + "')].vibAvailable",
+                .andExpect(jsonPath("$.content[?(@.userId == '" + userIdWithFunds + "')].vibAvailable",
                         contains(25.0)));
     }
 
@@ -190,5 +199,72 @@ class WalletControllerIntegrationTest extends AbstractIntegrationTest {
         assertThat(elapsed)
                 .as("GET /wallets/{userId} deve responder em < 200ms, mas levou %dms", elapsed)
                 .isLessThan(200L);
+    }
+
+    // -------------------------------------------------------------------------
+    // AT-4.2.1 — @PreAuthorize("hasRole('ADMIN')") + paginação em GET /wallets
+    // -------------------------------------------------------------------------
+
+    /**
+     * TC-LA-1: usuário sem ROLE_ADMIN deve receber 403 ao listar carteiras.
+     *
+     * <p>A classe base {@link com.vibranium.walletservice.AbstractIntegrationTest}
+     * aplica {@code @WithMockUser} com ROLE_USER. Após adicionar
+     * {@code @PreAuthorize("hasRole('ADMIN')")}, qualquer usuário
+     * sem ROLE_ADMIN deve ser barrado.</p>
+     */
+    @Test
+    @DisplayName("[AT-4.2.1] GET /wallets sem ROLE_ADMIN deve retornar 403 Forbidden")
+    void testListAll_withoutAdminRole_returns403() throws Exception {
+        // @WithMockUser da classe base concede apenas ROLE_USER — sem ROLE_ADMIN.
+        // Espera 403 após a adição de @PreAuthorize("hasRole('ADMIN')").
+        mockMvc.perform(get("/api/v1/wallets")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isForbidden());
+    }
+
+    /**
+     * TC-LA-2: usuário com ROLE_ADMIN deve receber Page com campos de paginação.
+     *
+     * <p>Valida que a resposta é um {@code Page<WalletResponse>} com os campos
+     * obrigatórios: {@code content}, {@code totalPages}, {@code totalElements}.</p>
+     */
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    @DisplayName("[AT-4.2.1] GET /wallets com ROLE_ADMIN deve retornar resultados paginados (content + totalPages + totalElements)")
+    void testListAll_withAdminRole_returnsPaginatedResults() throws Exception {
+        mockMvc.perform(get("/api/v1/wallets")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                // Page<WalletResponse>: fields obrigatórios
+                .andExpect(jsonPath("$.content").isArray())
+                .andExpect(jsonPath("$.totalElements").isNumber())
+                .andExpect(jsonPath("$.totalPages").isNumber())
+                // Conteúdo mínimo — 2 carteiras criadas no @BeforeEach
+                .andExpect(jsonPath("$.content", hasSize(greaterThanOrEqualTo(2))))
+                .andExpect(jsonPath("$.content[*].walletId").exists())
+                .andExpect(jsonPath("$.content[*].userId").exists());
+    }
+
+    /**
+     * TC-LA-3: tamanho de página padrão deve ser 20; page=0 deve ser retornada por padrão.
+     *
+     * <p>Sem parâmetros de paginação, o Spring Data usa {@code PageRequest.of(0, 20)}.
+     * Verifica que {@code $.size} é 20 e {@code $.number} é 0.</p>
+     */
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    @DisplayName("[AT-4.2.1] GET /wallets sem parâmetros deve retornar page=0 com size=20 (default Spring Data)")
+    void testListAll_pagination_defaultSize20() throws Exception {
+        mockMvc.perform(get("/api/v1/wallets")
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                // Tamanho de página default do Spring Data é 20
+                .andExpect(jsonPath("$.size").value(20))
+                // Primeira página (0-based)
+                .andExpect(jsonPath("$.number").value(0))
+                // totalElements deve refletir as 2 carteiras do @BeforeEach
+                .andExpect(jsonPath("$.totalElements").value(greaterThanOrEqualTo(2)));
     }
 }

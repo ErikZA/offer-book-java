@@ -3,6 +3,7 @@ package com.vibranium.walletservice.config;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -44,6 +45,9 @@ import org.springframework.security.web.SecurityFilterChain;
  */
 @Configuration
 @EnableWebSecurity
+// AT-4.2.1: habilita anotações @PreAuthorize / @PostAuthorize nos controllers e services.
+// Sem esta anotação, @PreAuthorize é ignorada silenciosamente pelo Spring Security.
+@EnableMethodSecurity
 public class SecurityConfig {
 
     /**

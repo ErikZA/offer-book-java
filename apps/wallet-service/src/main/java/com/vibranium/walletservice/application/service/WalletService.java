@@ -19,11 +19,12 @@ import com.vibranium.walletservice.exception.InsufficientLockedFundsException;
 import com.vibranium.walletservice.exception.WalletNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.util.List;
 import java.util.UUID;
 
 /**
@@ -430,14 +431,22 @@ public class WalletService {
     }
 
     /**
-     * Retorna todas as carteiras cadastradas.
-     * Utilizado pelo endpoint admin {@code GET /api/v1/wallets}.
+     * Retorna todas as carteiras cadastradas com paginação.
+     *
+     * <p>Utilizado pelo endpoint admin {@code GET /api/v1/wallets} — restrito a ROLE_ADMIN
+     * (AT-4.2.1). O {@link Pageable} é passado diretamente ao repository, que delega
+     * ao {@code LIMIT}/{@code OFFSET} do SQL. O retorno é {@link Page} com
+     * {@code content}, {@code totalElements} e {@code totalPages}.</p>
+     *
+     * @param pageable parâmetros de paginação (page, size, sort).
+     * @return página de {@link WalletResponse}.
      */
     @Transactional(readOnly = true)
-    public List<WalletResponse> findAll() {
-        return walletRepository.findAll().stream()
-                .map(WalletResponse::from)
-                .toList();
+    public Page<WalletResponse> findAll(Pageable pageable) {
+        // JpaRepository herda PagingAndSortingRepository.findAll(Pageable)
+        // que executa SELECT com LIMIT/OFFSET + COUNT(*) automático para totalElements.
+        return walletRepository.findAll(pageable)
+                .map(WalletResponse::from);
     }
 
     // -------------------------------------------------------------------------

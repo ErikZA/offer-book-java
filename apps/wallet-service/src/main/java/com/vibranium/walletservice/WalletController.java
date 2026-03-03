@@ -4,14 +4,16 @@ import com.vibranium.walletservice.application.dto.BalanceUpdateRequest;
 import com.vibranium.walletservice.application.dto.WalletResponse;
 import com.vibranium.walletservice.application.service.WalletService;
 import jakarta.validation.Valid;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.util.List;
 import java.util.UUID;
 
 /**
@@ -78,14 +80,24 @@ public class WalletController {
     }
 
     /**
-     * Lista todas as carteiras cadastradas.
-     * Útil para fins administrativos e de debugging.
+     * Lista todas as carteiras cadastradas com paginação.
      *
-     * @return 200 com lista de {@link WalletResponse} (pode ser vazia).
+     * <p><b>Controle de acesso (AT-4.2.1):</b> apenas usuários com {@code ROLE_ADMIN}
+     * podem listar carteiras de todos os usuários. Usuários comuns não possuem
+     * visibilidade sobre carteiras alheias — isso seria uma violação IDOR massiva.</p>
+     *
+     * <p>Suporta os parâmetros de URL {@code page} (0-based), {@code size} e {@code sort}
+     * via Spring Data {@link Pageable}. Default: page=0, size=20.</p>
+     *
+     * @param pageable parâmetros de paginação injetados pelo Spring MVC.
+     * @return 200 com {@link Page} de {@link WalletResponse} contendo
+     *         {@code content}, {@code totalPages}, {@code totalElements}.
      */
     @GetMapping
-    public ResponseEntity<List<WalletResponse>> listAll() {
-        return ResponseEntity.ok(walletService.findAll());
+    // AT-4.2.1: restringe listagem a ROLE_ADMIN — evita exposição massiva de dados de usuários.
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<Page<WalletResponse>> listAll(Pageable pageable) {
+        return ResponseEntity.ok(walletService.findAll(pageable));
     }
 
     // -------------------------------------------------------------------------

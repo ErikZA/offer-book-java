@@ -7,6 +7,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.security.test.context.support.WithAnonymousUser;
+// AT-4.2.1: import para testar listAll com ROLE_ADMIN
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -101,13 +103,21 @@ class SecurityUnauthorizedTest extends AbstractIntegrationTest {
     // =========================================================================
 
     /**
-     * Valida que com token presente (simulado via {@code @WithMockUser} herdado),
-     * o endpoint retorna {@code 200 OK} — segurança não bloqueia usuários autenticados.
+     * Valida que com ROLE_ADMIN (simulado via {@code @WithMockUser(roles = "ADMIN")}),
+     * o endpoint retorna {@code 200 OK} — segurança não bloqueia admins autenticados.
+     *
+     * <p>AT-4.2.1: {@code @PreAuthorize("hasRole('ADMIN')")} foi adicionado ao endpoint.
+     * Usuários sem ROLE_ADMIN recebem {@code 403 Forbidden} (testado em
+     * {@code WalletControllerIntegrationTest.testListAll_withoutAdminRole_returns403}).
+     * Este teste verifica que ROLE_ADMIN continua sendo aceito sem bloqueio indevido.</p>
      */
     @Test
-    @DisplayName("GET /api/v1/wallets com usuário autenticado deve retornar 200")
+    // AT-4.2.1: endpoint agora exige ROLE_ADMIN — @WithMockUser da superclasse (ROLE_USER)
+    // retornaria 403. Override com roles = "ADMIN" para manter a semântica do teste.
+    @WithMockUser(roles = "ADMIN")
+    @DisplayName("GET /api/v1/wallets com ROLE_ADMIN deve retornar 200 (AT-4.2.1)")
     void listAll_comTokenValido_deveRetornar200() throws Exception {
-        // @WithMockUser da superclasse está ativo — simula token válido
+        // @WithMockUser(roles = "ADMIN") garante que ROLE_ADMIN está no SecurityContext
         mockMvc.perform(get("/api/v1/wallets"))
                 .andExpect(status().isOk());
     }
