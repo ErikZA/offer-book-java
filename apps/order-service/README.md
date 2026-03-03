@@ -12,7 +12,10 @@ Implementa CQRS com PostgreSQL no Command Side (escrita) e MongoDB no Query Side
   em `tb_order_outbox` dentro da **mesma transação** (Outbox Pattern — AT-01.1)
 - ✅ `OrderOutboxPublisherService` (scheduler) faz o relay atômico para o RabbitMQ de forma eventual
 - ✅ Consumir eventos `FundsReservedEvent` / `FundsReservationFailedEvent` do wallet-service
-- ✅ Executar o Motor de Match atômico via Script Lua no Redis Sorted Set
+- ✅ Executar o Motor de Match atômico via Script Lua no Redis Sorted Set com **Saga TCC**:
+  `FundsReservedEventConsumer` separa a operação Redis do escopo JPA em 3 fases via
+  `TransactionTemplate` (Fase 1: JPA TX; Fase 2: `tryMatch` sem TX; Fase 3: JPA TX + Outbox).
+  Compensação automática (`removeFromBook` + `cancelOrder`) em falha da Fase 3 (AT-2.1.1)
 - ✅ Consumir eventos `REGISTER` do Keycloak (plugin aznamier) via `amq.topic` e popular `tb_user_registry`
 - ✅ Rotear mensagens falhas para Dead Letter Queue (`order.dead-letter`) após retry esgotado
 - ✅ Propagação W3C TraceContext em mensagens AMQP (`traceparent` header) e enriquecimento de spans com `saga.correlation_id` e `order.id` (AT-14.1)
@@ -164,8 +167,13 @@ POST /api/v1/orders
       │       ↓
       │   wallet-service
       │      ├── Fundos OK → FundsReservedEvent
-      │      │      → FundsReservedEventConsumer
-      │      │            → Lua no Redis
+      │      │      → FundsReservedEventConsumer (Saga TCC — AT-2.1.1)
+      │      │            ┌─ Fase 1 JPA TX: idempotência + markAsOpen + save
+      │      │            ├─ Fase 2 (sem TX): Lua no Redis
+      │      │            │      ├── match → MatchResult
+      │      │            │      └── no match → OrderAddedToBook
+      │      │            └─ Fase 3 JPA TX: Outbox (match / no-match)
+      │      │               [falha Fase 3]: removeFromBook + cancelOrder
       │      │                ├── match → FILLED
       │      │                └── no match → OPEN
       │      └── Insuficiente → FundsReservationFailed

@@ -26,7 +26,8 @@
 22. [Auto ACK em Listeners de Projeção MongoDB (AT-1.2.1)](#auto-ack-em-listeners-de-projeção-mongodb-at-121)
 23. [MongoDB Replica Set rs0 no Staging (AT-1.3.2)](#mongodb-replica-set-rs0-no-staging-at-132)
 24. [Segurança de Container — Non-Root User + Shell Form ENTRYPOINT (AT-1.5.1)](#segurança-de-container--non-root-user--shell-form-entrypoint-at-151)
-25. [Referências](#referências)
+25. [Saga TCC — tryMatch() fora de @Transactional + Compensação Redis (AT-2.1.1)](#saga-tcc--trymatch-fora-de-transactional--compensação-redis-at-211)
+26. [Referências](#referências)
 
 ---
 
@@ -2982,10 +2983,120 @@ A forma adotada (`["sh", "-c", "..."]`) é a combinação mais segura: shell par
 
 ---
 
+## Saga TCC — tryMatch() fora de @Transactional + Compensação Redis (AT-2.1.1)
+
+### Problema
+
+O método `onFundsReserved()` em `FundsReservedEventConsumer` era anotado com `@Transactional`
+e chamava `matchEngine.tryMatch()` internamente. Isso criava uma falsa atomicidade entre dois
+stores distintos — o PostgreSQL (JPA) e o Redis (Sorted Set) — incompatível com um único
+transaction manager JPA:
+
+- A transação JPA não controla o Redis: um `tryMatch()` bem-sucedido no Redis **não** é
+  revertido se o commit JPA subsequente falhar.
+- Em caso de falha do commit JPA após o `tryMatch()`, a ordem ficava inserida no livro
+  Redis mas sem persistência no banco — estado inconsistente irreversível.
+
+### Solução: Saga TCC (Try-Confirm-Cancel)
+
+O `onFundsReserved()` foi decomposto em **3 fases explícitas** via `TransactionTemplate`,
+separando a operação Redis do escopo transacional JPA:
+
+| Fase | Escopo | O que faz |
+|---|---|---|
+| **Fase 1 — JPA TX** | `txTemplate.execute()` | Idempotência (`processedEvents.saveAndFlush`), `order.markAsOpen()`, `orderRepository.save()` |
+| **Fase 2 — sem TX** | Código direto | `matchEngine.tryMatch()` — operação Redis atômica via Lua |
+| **Fase 3 — JPA TX** | `txTemplate.execute()` | Persiste Outbox (`handleMatch` ou `handleNoMatch`) |
+
+### Estratégia de Compensação (TCC Cancel)
+
+Se a **Fase 3** falhar (ex: `outboxRepository.save()` lança exceção), a compensação é
+acionada automaticamente:
+
+```java
+// AT-2.1.1 — TCC compensation: desfaz a inserção no livro Redis antes de relançar
+} catch (Exception compensationTarget) {
+    matchEngine.removeFromBook(order.getId(), order.getOrderType());
+    cancelOrder(order, correlationId, "MATCH_ENGINE_OUTBOX_FAILURE");
+    throw compensationTarget;
+}
+```
+
+| Passo de compensação | Ação | Garantia |
+|---|---|---|
+| `removeFromBook()` | Remove a ordem do Sorted Set Redis | Livro de ofertas não fica com ordem "fantasma" |
+| `cancelOrder()` | Marca `CANCELLED` + evento no outbox em nova TX | Estado final consistente no PostgreSQL |
+
+> **Nota:** A compensação é "best-effort" para o Redis — se `removeFromBook()` também falhar
+> (Redis indisponível), o `SagaTimeoutCleanupJob` (AT-09.1) cancela a ordem presa após o
+> timeout configurado.
+
+### Injeção via Bean `sagaTransactionTemplate`
+
+O `TransactionTemplate` é exposto como bean nomeado em `RabbitMQConfig`:
+
+```java
+// RabbitMQConfig.java
+@Bean
+TransactionTemplate sagaTransactionTemplate(PlatformTransactionManager transactionManager) {
+    return new TransactionTemplate(transactionManager);
+}
+```
+
+`FundsReservedEventConsumer` o recebe via injeção por construtor:
+
+```java
+public FundsReservedEventConsumer(
+        ...,
+        TransactionTemplate txTemplate) { ... }
+```
+
+### Critérios de Aceite
+
+| ID | Critério | Implementação | Teste |
+|---|---|---|---|
+| AT22-C1 | `tryMatch()` fora de `@Transactional` | `@Transactional` removido; fases via `txTemplate` | AT22-02 — `InOrder` verifica `txTemplate → tryMatch → txTemplate` |
+| AT22-C2 | Compensação em falha da Fase 3 | `catch` após Fase 3 chama `removeFromBook` + `cancelOrder` | AT22-01 — falha em `outboxRepository.save` aciona compensação |
+| AT22-C3 | Ordens existentes não regridem | 8 testes pré-existentes continuam passando | 10/10 em `FundsReservedEventConsumerTest` |
+
+### Testes: `FundsReservedEventConsumerTest` — `SagaTccTests`
+
+Arquivo: `apps/order-service/src/test/java/.../adapter/messaging/FundsReservedEventConsumerTest.java`
+
+| ID | Teste | Fase RED | Fase GREEN |
+|---|---|---|---|
+| AT22-01 | `givenPhase3Failure_thenCompensationRemovesFromBook` | Sem `catch` → compensação nunca ocorre | `catch` com `removeFromBook` + `basicAck` |
+| AT22-02 | `givenFundsReserved_thenPhaseOrderIsTccCompliant` | `@Transactional` → `InOrder` falha (tryMatch no mesmo TX) | 3 fases → `txTemplate → tryMatch → txTemplate` |
+
+**Padrão de mock para `TransactionTemplate` em testes:**
+
+```java
+// setUp() — lenient para não quebrar testes que falham antes da Fase 2/3
+lenient().when(txTemplate.execute(any()))
+         .thenAnswer(inv ->
+             ((TransactionCallback<?>) inv.getArgument(0)).doInTransaction(null));
+```
+
+> O `lenient()` é necessário porque testes que lançam exceção na Fase 1 nunca chegam
+> às chamadas subsequentes de `txTemplate.execute()`, tornando os stubs "não usados"
+> (estrito por padrão no Mockito). Sem `lenient()`, o teste falharia com
+> `UnnecessaryStubbingException`.
+
+### Artefatos gerados pelo AT-2.1.1
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `FundsReservedEventConsumer` | Refatorado | `@Transactional` removido; 3 fases via `TransactionTemplate`; compensação TCC no `catch` da Fase 3 |
+| `RabbitMQConfig` | Atualizado | Bean `sagaTransactionTemplate(PlatformTransactionManager)` adicionado |
+| `FundsReservedEventConsumerTest.SagaTccTests` | Novo | 2 testes TDD: AT22-01 (compensação Fase 3) e AT22-02 (ordem TCC das fases) |
+
+---
+
 **Status**: ✅ Consolidado e Completo  
 **Última atualização**: 3 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-2.1.1**: Saga TCC — `tryMatch()` fora de `@Transactional` com compensação Redis. `onFundsReserved()` decomposto em 3 fases via `TransactionTemplate`: Fase 1 JPA TX (idempotência + `markAsOpen` + save), Fase 2 sem TX (`tryMatch` Redis/Lua), Fase 3 JPA TX (outbox). Compensação TCC no `catch` da Fase 3: `removeFromBook()` + `cancelOrder("MATCH_ENGINE_OUTBOX_FAILURE")`. Bean `sagaTransactionTemplate` adicionado em `RabbitMQConfig`. Novos testes `FundsReservedEventConsumerTest.SagaTccTests` (AT22-01 compensação, AT22-02 ordem das fases via `InOrder`). 10/10 passando. Adicionada seção 25 neste guia.
 > - **AT-1.5.1**: Segurança de Container — ENTRYPOINT shell form + non-root user em ambos os serviços. Exec form `["java", "-jar", "app.jar"]` substituído por `["sh", "-c", "java $JAVA_OPTS -jar app.jar"]` (expansão de variáveis). Adicionado `RUN addgroup -S appgroup && adduser -S appuser -G appgroup` + `USER appuser` antes do ENTRYPOINT. COPY permanece antes do USER (root tem permissão de escrita; appuser lê 644). Validado: `whoami` → `appuser`; `MaxRAMPercentage = 75.000000 {command line}`. Adicionada seção 24 neste guia.
 > - **AT-1.3.2**: MongoDB Replica Set rs0 no Staging — `docker-compose.staging.yml` atualizado com `--replSet rs0 --keyFile` nos 3 nós MongoDB. Novo `docker-entrypoint-override-staging.sh` grava `MONGO_REPLICA_KEY` (env var fixa e idêntica nos 3 nós) como `/etc/mongod-keyfile` (keyFile compartilhado obrigatório para intra-cluster auth). Novo `init-replica-set-staging.sh` (idempotente): executa `rs.initiate({_id:'rs0', members:[mongodb-1,mongodb-2,mongodb-3]})` e aguarda até 90s pelo PRIMARY. Serviço `mongo-rs-init` depende de `service_healthy` nos 3 nós; `order-service-1/2/3` usam `service_completed_successfully`. Validado ao vivo: `rs.status()` retorna `mongodb-1 PRIMARY`, `mongodb-2 SECONDARY`, `mongodb-3 SECONDARY`. Adicionada seção 23 neste guia.
 > - **AT-1.3.1**: MongoDB Replica Set `rs0` — `docker-compose.dev.yml` atualizado com `--replSet rs0 --keyFile` e serviço `mongo-rs-init` (container de curta duração). `docker-entrypoint-override.sh` gera `keyFile` via `openssl rand -base64 756` (exigido pelo MongoDB 7 quando `--auth + --replSet` estão ativos). `order-service` usa `depends_on: mongo-rs-init: service_completed_successfully` e URI com `?replicaSet=rs0&authSource=admin`. `init-mongo.js` movido de `infra/postgres/` para `infra/mongo/` (removido `createUser()` duplicado). Smoke test validado: `rs.status()` retorna `{state:'PRIMARY', setName:'rs0', ok:1}`.
