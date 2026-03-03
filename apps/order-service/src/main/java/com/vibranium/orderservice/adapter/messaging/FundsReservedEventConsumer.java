@@ -29,7 +29,7 @@ import org.springframework.amqp.support.AmqpHeaders;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -38,23 +38,34 @@ import java.util.UUID;
  * Consumidor do evento que confirma o bloqueio de fundos na carteira.
  *
  * <p>Quando o wallet-service bloqueia os fundos com sucesso, publica um
- * {@link FundsReservedEvent}. Este consumidor recebe esse evento e
- * executa o Motor de Match no Redis e persiste os eventos no {@code tb_order_outbox}:</p>
+ * {@link FundsReservedEvent}. Este consumidor recebe esse evento e executa
+ * o fluxo Saga TCC em 3 fases:</p>
  * <ol>
- *   <li>Insere o {@code eventId} em {@code tb_order_idempotency_keys} (idempotencia por tabela).</li>
- *   <li>Localiza a ordem pelo {@code correlationId}.</li>
- *   <li>Executa o Script Lua atomicamente no Redis Sorted Set.</li>
- *   <li>Se houver match:
+ *   <li><strong>Fase 1 — TX JPA ({@code txTemplate}):</strong>
  *     <ul>
- *       <li>Grava {@link MatchExecutedEvent} no Outbox (evento de infraestrutura/projecao MongoDB).</li>
- *       <li>Grava {@link OrderFilledEvent} ou {@link OrderPartiallyFilledEvent} no Outbox
- *           (Domain Event explícito da transicao de status — AT-15.1).</li>
- *       <li>Atualiza o status da ordem para {@code FILLED} ou {@code PARTIAL}.</li>
+ *       <li>Insere {@code eventId} em {@code tb_order_idempotency_keys} (idempotencia).</li>
+ *       <li>Localiza a ordem pelo {@code correlationId}.</li>
+ *       <li>Transita para OPEN e persiste a ordem. Commit imediato.</li>
  *     </ul>
  *   </li>
- *   <li>Se nao houver match - grava {@link OrderAddedToBookEvent} no Outbox (ordem entra no livro).</li>
- *   <li>Se Redis falhar - grava {@link OrderCancelledEvent} no Outbox (resiliencia).</li>
- *   <li>Apos commit JPA - envia {@code basicAck} manual ao RabbitMQ.</li>
+ *   <li><strong>Fase 2 — Redis (sem @Transactional):</strong>
+ *     <ul>
+ *       <li>Executa o Script Lua atomicamente no Redis Sorted Set ({@code tryMatch()}).</li>
+ *       <li>Redis NAO participa da TX JPA — isolamento explícito evita ilusao de atomicidade
+ *           cross-store (padrao TCC).</li>
+ *       <li>Falha aqui: compensacao via {@code cancelOrder()} em nova TX.</li>
+ *     </ul>
+ *   </li>
+ *   <li><strong>Fase 3 — TX JPA nova ({@code txTemplate}):</strong>
+ *     <ul>
+ *       <li>Se houver match: grava {@link MatchExecutedEvent} + fill event no Outbox;
+ *           atualiza status para FILLED ou PARTIAL.</li>
+ *       <li>Se nao houver match: grava {@link OrderAddedToBookEvent} no Outbox.</li>
+ *       <li>Falha aqui: compensacao Redis ({@code removeFromBook} se no-match)
+ *           + {@code cancelOrder()} em nova TX.</li>
+ *     </ul>
+ *   </li>
+ *   <li>Apos sucesso total: envia {@code basicAck} manual ao RabbitMQ.</li>
  * </ol>
  *
  * <p><strong>Outbox Pattern (AT-02.1):</strong> Nenhum evento e publicado diretamente no broker
@@ -80,11 +91,10 @@ import java.util.UUID;
  * {@code try-with-resources}, garantindo que todas as linhas de log — incluindo caminhos
  * de duplicata, erro de Redis e compensação — incluam os campos de correlação da Saga.</p>
  *
- * <p><strong>Sequencia garantida:</strong>
- * {@code (1) INSERT idempotency_key -> (2) UPDATE Order -> (3) INSERT outbox -> (4) Commit -> (5) basicAck}</p>
+ * <p><strong>Sequencia garantida (Saga TCC AT-2.1.1):</strong>
+ * {@code [TX1: idempotency + OPEN] -> [Redis: match] -> [TX2: outbox + status] -> basicAck}</p>
  * <p><strong>Sequencia garantida (match):</strong>
- * {@code (1) INSERT idempotency_key -> (2) UPDATE Order -> (3) INSERT MatchExecutedEvent outbox
- * -> (4) INSERT FillEvent outbox -> (5) Commit -> (6) basicAck}</p>
+ * {@code TX1-commit -> tryMatch -> TX2(applyMatch + MatchExecutedEvent + FillEvent) -> basicAck}</p>
  */
 @Component
 public class FundsReservedEventConsumer {
@@ -105,19 +115,25 @@ public class FundsReservedEventConsumer {
     // receber a mensagem. Tracer.currentSpan() retorna null se não houver span ativo
     // (ex.: execução fora de contexto AMQP observado), por isso a checagem isNotNull.
     private final Tracer                   tracer;
+    // AT-2.1.1: TransactionTemplate para separação explícita de fases Saga.
+    // O consumer extrai tryMatch() para fora de qualquer TX JPA,
+    // eliminando a ilusão de atomicidade cross-store Redis+JPA.
+    private final TransactionTemplate      txTemplate;
 
     public FundsReservedEventConsumer(OrderRepository orderRepository,
                                       ProcessedEventRepository processedEventRepository,
                                       RedisMatchEngineAdapter matchEngine,
                                       OrderOutboxRepository outboxRepository,
                                       ObjectMapper objectMapper,
-                                      Tracer tracer) {
+                                      Tracer tracer,
+                                      TransactionTemplate txTemplate) {
         this.orderRepository          = orderRepository;
         this.processedEventRepository = processedEventRepository;
         this.matchEngine              = matchEngine;
         this.outboxRepository         = outboxRepository;
         this.objectMapper             = objectMapper;
         this.tracer                   = tracer;
+        this.txTemplate               = txTemplate;
     }
 
     /**
@@ -134,6 +150,18 @@ public class FundsReservedEventConsumer {
      * O par {@code try/finally} interno garante que {@code orderId} seja removido mesmo
      * em excepções — o try-with-resources remove {@code correlationId} automaticamente.</p>
      *
+     * <p><strong>Execução em 3 fases Saga TCC (AT-2.1.1):</strong></p>
+     * <ol>
+     *   <li><strong>Fase 1 (TX JPA):</strong> idempotência, localiza ordem, marca como OPEN
+     *       e persiste estado no PostgreSQL. Commit imediato via {@code txTemplate}.</li>
+     *   <li><strong>Fase 2 (sem TX):</strong> {@code tryMatch()} executado inteiramente fora
+     *       de qualquer {@code @Transactional} — Redis não participa da TX JPA.
+     *       Falha aqui aciona compensação: {@code cancelOrder} em nova TX.</li>
+     *   <li><strong>Fase 3 (TX JPA nova):</strong> persiste resultado do match no Outbox.
+     *       Falha aqui aciona compensação Redis ({@code removeFromBook} se no-match)
+     *       mais {@code cancelOrder} em nova TX.</li>
+     * </ol>
+     *
      * @param event       Evento publicado pelo wallet-service confirmando o bloqueio.
      * @param channel     Canal AMQP para envio do ACK/NACK manual.
      * @param deliveryTag Tag de entrega fornecida pelo broker.
@@ -143,57 +171,77 @@ public class FundsReservedEventConsumer {
             concurrency = "5",
             containerFactory = "manualAckContainerFactory"
     )
-    @Transactional
     public void onFundsReserved(FundsReservedEvent event,
                                 Channel channel,
                                 @Header(AmqpHeaders.DELIVERY_TAG) long deliveryTag) throws Exception {
         String eventId = event.eventId().toString();
 
-        // AT-14.2: MDC popula correlationId e orderId para que todas as linhas de log
-        // desta execução incluam os campos de rastreabilidade sem passá-los manualmente
-        // a cada chamada de logger. try-with-resources remove correlationId ao sair do bloco
-        // e o finally remove orderId — prevenindo memory leak em threads do pool AMQP.
+        // AT-14.2: MDC popula correlationId e orderId para rastreabilidade em todas as letras de log.
         try (var ignoredCorr = MDC.putCloseable("correlationId", event.correlationId().toString())) {
             MDC.put("orderId", event.orderId().toString());
             try {
                 logger.info("FundsReservedEvent recebido: eventId={} correlationId={} orderId={}",
                         eventId, event.correlationId(), event.orderId());
 
-                // 1. Idempotencia por tabela: INSERT com eventId como PK unica
-                //    DataIntegrityViolationException indica duplicata -> descarta com ACK
+                // ================================================================
+                // FASE 1 — TX JPA: idempotência + localiza ordem + markAsOpen + save
+                // ================================================================
+                // DataIntegrityViolationException (duplicata) propaga para fora do lambda
+                // e é capturada pelo catch externo, evitando reprocessamento.
+                final Optional<Order> orderOpt;
                 try {
-                    processedEventRepository.saveAndFlush(new ProcessedEvent(event.eventId()));
+                    orderOpt = txTemplate.execute(s -> {
+                        // Idempotência por tabela: INSERT com eventId como PK única.
+                        // DIVE indica duplicata → propaga automaticamente para o catch externo.
+                        processedEventRepository.saveAndFlush(new ProcessedEvent(event.eventId()));
+
+                        // Localiza a ordem pelo correlationId da Saga
+                        Optional<Order> opt = orderRepository.findByCorrelationId(event.correlationId());
+                        if (opt.isEmpty()) {
+                            logger.warn("Ordem nao encontrada para correlationId={} -- descartando FundsReservedEvent",
+                                    event.correlationId());
+                            return Optional.empty();
+                        }
+
+                        Order o = opt.get();
+
+                        // AT-14.1: Enriquece o span ativo com atributos de domínio da Saga.
+                        io.micrometer.tracing.Span currentSpan = tracer.currentSpan();
+                        if (currentSpan != null) {
+                            currentSpan
+                                    .tag("saga.correlation_id", event.correlationId().toString())
+                                    .tag("order.id",            o.getId().toString());
+                        }
+
+                        // Fase 1 de domínio: transita de PENDING → OPEN e persiste.
+                        // O commit desta TX garante que o estado OPEN seja visível a outros
+                        // consumidores antes de executar o match no Redis.
+                        o.markAsOpen();
+                        orderRepository.save(o);
+                        return Optional.of(o);
+                    });
                 } catch (DataIntegrityViolationException ex) {
+                    // Evento duplicado: idempotência por tabela bloqueou o reprocessamento.
                     logger.info("FundsReservedEvent duplicado (idempotente): eventId={}", eventId);
                     channel.basicAck(deliveryTag, false);
                     return;
                 }
 
-                // 2. Localiza a ordem pelo correlationId da Saga
-                Optional<Order> orderOpt = orderRepository.findByCorrelationId(event.correlationId());
-                if (orderOpt.isEmpty()) {
-                    logger.warn("Ordem nao encontrada para correlationId={} -- descartando FundsReservedEvent",
-                            event.correlationId());
+                if (orderOpt == null || orderOpt.isEmpty()) {
                     channel.basicAck(deliveryTag, false);
                     return;
                 }
 
-                Order order = orderOpt.get();
+                final Order order = orderOpt.get();
 
-                // AT-14.1: Enriquece o span ativo com atributos de domínio da Saga.
-                // saga.correlation_id: vincula este span ao trace da Saga inteira no Jaeger.
-                // order.id:            identifica o agregado Order neste span.
-                // Spring AMQP cria um span produtor/consumidor por mensagem via RabbitListenerObservation.
-                // tracer.currentSpan() retorna o span do listener; pode ser null em testes a frio.
-                io.micrometer.tracing.Span currentSpan = tracer.currentSpan();
-                if (currentSpan != null) {
-                    currentSpan
-                            .tag("saga.correlation_id", event.correlationId().toString())
-                            .tag("order.id",            order.getId().toString());
-                }
-
-                // 3. Tenta executar o match no Redis via Lua atomico
-                MatchResult result;
+                // ================================================================
+                // FASE 2 — Redis: tryMatch() SEM @Transactional
+                // ================================================================
+                // Redis NÃO participa de transações JPA. Executar tryMatch() dentro de
+                // @Transactional cria ilusão de atomicidade cross-store.
+                // Isolamento explícito aqui garante que o commit JPA da Fase 1 ocorreu
+                // ANTES do match e que qualquer falha Redis não contamina a TX JPA.
+                final MatchResult result;
                 try {
                     result = matchEngine.tryMatch(
                             order.getId(),
@@ -204,24 +252,73 @@ public class FundsReservedEventConsumer {
                             order.getRemainingAmount(),
                             order.getCorrelationId()
                     );
-                } catch (Exception e) {
-                    // Redis indisponivel ou timeout: cancela a ordem como compensacao
+                } catch (Exception redisEx) {
+                    // Redis indisponível ou timeout: compensa cancelando a ordem em nova TX.
+                    // A Fase 1 já commitou OPEN; esta TX reverte para CANCELLED com registro
+                    // no Outbox para que sistemas downstream sejam notificados.
                     logger.error("Falha no Redis match engine: orderId={} error={}",
-                            order.getId(), e.getMessage());
-                    cancelOrder(order, FailureReason.INTERNAL_ERROR, "REDIS_UNAVAILABLE: " + e.getMessage());
-                    // 4. ACK manual apos commit (mesmo em casos de erro tratado)
+                            order.getId(), redisEx.getMessage());
+                    txTemplate.execute(s -> {
+                        cancelOrder(order, FailureReason.INTERNAL_ERROR,
+                                "REDIS_UNAVAILABLE: " + redisEx.getMessage());
+                        return null;
+                    });
                     channel.basicAck(deliveryTag, false);
                     return;
                 }
 
-                // 4. Processa o resultado do match
-                if (result.matched()) {
-                    handleMatch(order, result, event);
-                } else {
-                    handleNoMatch(order);
+                // ================================================================
+                // FASE 3 — TX JPA: persiste resultado do match no Outbox
+                // ================================================================
+                try {
+                    final MatchResult finalResult = result;
+                    txTemplate.execute(s -> {
+                        if (finalResult.matched()) {
+                            handleMatch(order, finalResult, event);
+                        } else {
+                            handleNoMatch(order);
+                        }
+                        return null;
+                    });
+                } catch (Exception phase3Ex) {
+                    // Falha de persistência pós-match: padrão de compensação TCC.
+                    logger.error("Fase 3 falhou — falha ao persistir resultado: orderId={} matched={} error={}",
+                            order.getId(), result.matched(), phase3Ex.getMessage(), phase3Ex);
+
+                    // Compensação Redis: se no-match, a ordem foi inserida no livro pelo Lua
+                    // porém a persistência JPA falhou. Remove do livro para manter consistência.
+                    // Para match: o Lua já consumiu a contraparte atomicamente — impossível
+                    // desfazer no Redis; apenas cancelamos a ordem no banco.
+                    if (!result.matched()) {
+                        try {
+                            matchEngine.removeFromBook(order.getId(), order.getOrderType());
+                            logger.info("Compensação Redis removeFromBook executada: orderId={}", order.getId());
+                        } catch (Exception removeEx) {
+                            logger.error("Compensação removeFromBook falhou (Redis indisponível): orderId={} error={}",
+                                    order.getId(), removeEx.getMessage());
+                        }
+                    }
+
+                    // Compensação JPA: recarrega ordem do banco para obter estado real commitado
+                    // (Fase 3 pode ter chamado applyMatch() mutando o objeto em memória antes
+                    // de falhar, tornando o in-memory stale em relação ao banco).
+                    try {
+                        txTemplate.execute(s -> {
+                            Order freshOrder = orderRepository.findById(order.getId()).orElse(order);
+                            cancelOrder(freshOrder, FailureReason.INTERNAL_ERROR,
+                                    "FASE3_PERSISTENCE_FAILURE: " + phase3Ex.getMessage());
+                            return null;
+                        });
+                    } catch (Exception cancelEx) {
+                        logger.error("Compensação cancelOrder falhou: orderId={} error={}",
+                                order.getId(), cancelEx.getMessage());
+                    }
+
+                    channel.basicAck(deliveryTag, false);
+                    return;
                 }
 
-                // 5. ACK manual apos commit bem-sucedido do JPA
+                // Todas as fases concluídas com sucesso: ACK após commit JPA da Fase 3.
                 channel.basicAck(deliveryTag, false);
 
             } finally {
@@ -236,8 +333,12 @@ public class FundsReservedEventConsumer {
     // =========================================================================
 
     /**
-     * Processa um match executado: atualiza estado da ordem e grava {@link MatchExecutedEvent}
-     * no Outbox dentro da mesma transação.
+     * Processa um match executado: aplica o match na ordem e grava eventos no Outbox.
+     *
+     * <p><strong>AT-2.1.1:</strong> {@code markAsOpen()} NÃO é chamado aqui.
+     * A Fase 1 ({@link TransactionTemplate}) já transitou a ordem de PENDING → OPEN
+     * e commitou antes de {@code tryMatch()}. Este método recebe a ordem no estado
+     * OPEN e aplica diretamente {@code applyMatch()} → FILLED / PARTIAL.</p>
      *
      * <p>Determina os papeis (comprador/vendedor) baseado no tipo da ordem ingressante.
      * A publicação real ao broker é feita de forma assíncrona pelo
@@ -250,14 +351,11 @@ public class FundsReservedEventConsumer {
      * sistemas downstream reajam à transição de status sem inferir via MatchExecutedEvent.</p>
      */
     private void handleMatch(Order order, MatchResult result, FundsReservedEvent event) {
-        // 1. Um match imediato significa que a ordem foi a mercado e encontrou contraparte.
-        //    A ordem ingressante ainda está em PENDING (FundsReserved acabou de chegar).
-        //    Transitamos para OPEN antes de applyMatch(), que exige OPEN ou PARTIAL.
-        //    Semanticamente: a ordem ficou OPEN por um instante e imediatamente executou.
-        order.markAsOpen();
-        // 2. Aplica o match — transiciona para FILLED ou PARTIAL conforme qty executada
+        // AT-2.1.1: markAsOpen() omitido — já executado e commitado na Fase 1.
+        // A ordem chega aqui em estado OPEN (garantido pelo fluxo 3 fases).
+        // Aplica o match: OPEN → FILLED (qty total) ou OPEN → PARTIAL (qty parcial).
         order.applyMatch(result.matchedQty());
-        // 3. Persiste a ordem atualizada — primeira operação da unidade de trabalho
+        // Persiste a ordem atualizada — primeira operação da Fase 3
         orderRepository.save(order);
 
         boolean isBuyOrder = order.getOrderType().name().equals("BUY");
@@ -331,18 +429,19 @@ public class FundsReservedEventConsumer {
     }
 
     /**
-     * Processa ausencia de contraparte: transiciona para OPEN e grava {@link OrderAddedToBookEvent}
-     * no Outbox dentro da mesma transação.
+     * Processa ausencia de contraparte: registra {@link OrderAddedToBookEvent} no Outbox.
      *
-     * <p>A ordem ja foi inserida no Redis Sorted Set pelo Lua script.
-     * Utiliza {@link Order#markAsOpen()} que valida internamente que a ordem
-     * está em {@code PENDING} antes de transicionar — garantindo que qualquer
-     * race condition neste ponto gere uma exceção rastreável.</p>
+     * <p><strong>AT-2.1.1:</strong> {@code markAsOpen()} e {@code orderRepository.save()}
+     * NÃO são chamados aqui. A Fase 1 ({@link TransactionTemplate}) já transitou a ordem
+     * PENDING → OPEN, persistiu e commitou. A Fase 2 ({@code tryMatch()}) inseriu a ordem
+     * no livro Redis. Este método apenas registra o evento de domínio no Outbox.</p>
+     *
+     * <p>O estado OPEN já está no banco. A invariante
+     * {@code remainingAmount == originalAmount} é mantida (sem applyMatch).</p>
      */
     private void handleNoMatch(Order order) {
-        order.markAsOpen();
-        orderRepository.save(order);
-
+        // AT-2.1.1: markAsOpen() e save(order) omitidos — já executados e commitados na Fase 1.
+        // Apenas registra o evento no Outbox para relay assíncrono pelo scheduler.
         OrderAddedToBookEvent addedEvent = OrderAddedToBookEvent.of(
                 order.getCorrelationId(),
                 order.getId(),

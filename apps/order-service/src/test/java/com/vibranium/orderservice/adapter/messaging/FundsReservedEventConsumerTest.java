@@ -22,9 +22,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -37,6 +40,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.then;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 
@@ -111,6 +116,11 @@ class FundsReservedEventConsumerTest {
     @Mock
     private Tracer tracer;
 
+    // AT-2.1.1: TransactionTemplate mock — necessário após extração do fluxo Saga.
+    // O stub padrão em setUp executa o callback diretamente, simulando a TX.
+    @Mock
+    private TransactionTemplate txTemplate;
+
     @Captor
     private ArgumentCaptor<OrderOutboxMessage> outboxCaptor;
 
@@ -143,13 +153,21 @@ class FundsReservedEventConsumerTest {
          * Cada teste que espera serialização bem-sucedida stubba:
          *   given(objectMapper.writeValueAsString(any())).willReturn("{\"ok\":true}");
          */
+        // AT-2.1.1: stub LENIENT — txTemplate.execute() executa o callback diretamente,
+        // simulando uma TX real sem infraestrutura de banco.
+        // Lenient: evita UnnecessaryStubbingException em testes RED (código ainda não usa
+        // txTemplate) e em testes cujo caminho de execução não aciona o template.
+        lenient().when(txTemplate.execute(any()))
+                .thenAnswer(inv -> ((TransactionCallback<?>) inv.getArgument(0)).doInTransaction(null));
+
         consumer = new FundsReservedEventConsumer(
                 orderRepository,
                 processedEventRepository,
                 matchEngine,
                 outboxRepository,
                 objectMapper,
-                tracer   // AT-14.1: tracer injetado para enriquecimento de spans
+                tracer,    // AT-14.1: tracer injetado para enriquecimento de spans
+                txTemplate // AT-2.1.1: transactionTemplate para separação de fases Saga
         );
     }
 
@@ -285,10 +303,12 @@ class FundsReservedEventConsumerTest {
         @DisplayName("RED-03: handleMatch() — falha antes do commit não deve salvar outbox")
         void handleMatch_exceptionBeforeCommit_shouldNot_saveOutbox() throws Exception {
             /*
-             * Simula falha em orderRepository.save() — que ocorre ANTES do outbox.save().
-             * Como ambas as operações estão no mesmo contexto @Transactional, o rollback
-             * desfaz tudo. No teste unitário validamos que, se save(order) lança exceção,
-             * outboxRepository.save() nunca é chamado.
+             * Simula falha em orderRepository.save() na Fase 1 (markAsOpen + save).
+             * Como save() lança antes de tryMatch() ser chamado, a Fase 2 e a Fase 3
+             * nunca são executadas. O outboxRepository.save() nunca deve ser chamado.
+             *
+             * AT-2.1.1: a exceção propaga da Fase 1 (txTemplate.execute()) e não é
+             * capturada por nenhum catch interno do consumer — portanto o método lança.
              */
             Order order = buildOrder(OrderType.BUY);
             FundsReservedEvent event = buildFundsReservedEvent();
@@ -297,8 +317,7 @@ class FundsReservedEventConsumerTest {
                     .willAnswer(inv -> inv.getArgument(0));
             given(orderRepository.findByCorrelationId(CORRELATION_ID))
                     .willReturn(Optional.of(order));
-            given(matchEngine.tryMatch(any(), any(), any(), any(), any(), any(), any()))
-                    .willReturn(buildMatchResult());
+            // matchEngine.tryMatch NÃO é stubado: Fase 1 lança antes de atingir Fase 2
             doThrow(new RuntimeException("Simulated DB failure on order save"))
                     .when(orderRepository).save(any(Order.class));
 
@@ -565,6 +584,143 @@ class FundsReservedEventConsumerTest {
             assertThat(saved.getPublishedAt()).isNull();
 
             then(rabbitTemplate).shouldHaveNoInteractions();
+        }
+    }
+
+    // =========================================================================
+    // AT-2.1.1 — Saga TCC: tryMatch() fora de @Transactional + compensação
+    // =========================================================================
+
+    /**
+     * Testes RED para o critério AT-2.1.1:
+     * <ul>
+     *   <li>Redis (tryMatch) executado fora de qualquer TX JPA.</li>
+     *   <li>Compensação {@code removeFromBook()} se persistência da Fase 3 falhar.</li>
+     * </ul>
+     *
+     * <h2>Por que estes testes falham em FASE RED</h2>
+     * <p>O código ainda executa {@code tryMatch()} dentro do mesmo {@code @Transactional}
+     * que as operações JPA, sem a separação em fases via {@link TransactionTemplate}.</p>
+     * <ul>
+     *   <li><strong>AT22-01:</strong> {@code removeFromBook()} nunca é chamado no código atual
+     *       após falha de persistência — a compensação Redis não existe.</li>
+     *   <li><strong>AT22-02:</strong> {@code txTemplate.execute()} nunca é invocado no código atual
+     *       (apenas inserido no construtor porém não utilizado); a verificação de ordem falha.</li>
+     * </ul>
+     */
+    @Nested
+    @DisplayName("AT-2.1.1 — Saga TCC: separação de fases e compensação Redis")
+    class SagaTccTests {
+
+        /**
+         * AT22-01 — Compensação Redis: se a Fase 3 (persistência do resultado) falhar
+         * em um cenário de no-match, {@code removeFromBook()} deve ser invocado para
+         * desfazer a inserção da ordem no livro Redis.
+         *
+         * <p><strong>FASE RED:</strong> no código atual não há bloco try-catch ao redor
+         * da Fase 3, nem chamada a {@code removeFromBook()} — o teste falha na
+         * verificação {@code should(times(1)).removeFromBook(...)}.</p>
+         *
+         * <p><strong>Fluxo esperado (FASE GREEN):</strong></p>
+         * <ol>
+         *   <li>Fase 1 (TX): idempotência + findOrder + markAsOpen + save(OPEN).</li>
+         *   <li>Fase 2 (sem TX): {@code tryMatch()} retorna noMatch
+         *       — ordem inserida no livro Redis.</li>
+         *   <li>Fase 3 (TX): {@code handleNoMatch()} → {@code outboxRepository.save()} LANÇA.</li>
+         *   <li>Compensação: {@code removeFromBook(orderId, orderType)} chamado.</li>
+         *   <li>Compensação: {@code cancelOrder()} salva {@code OrderCancelledEvent}.</li>
+         *   <li>ACK enviado ao broker.</li>
+         * </ol>
+         */
+        @Test
+        @DisplayName("AT22-01 [RED]: falha na Fase 3 (no-match) aciona removeFromBook como compensação")
+        void onFundsReserved_noMatchJpaFails_compensatesWithRemoveFromBook() throws Exception {
+            Order order = buildOrder(OrderType.BUY);
+            FundsReservedEvent event = buildFundsReservedEvent();
+
+            // Fase 1: sucesso
+            given(processedEventRepository.saveAndFlush(any(ProcessedEvent.class)))
+                    .willAnswer(inv -> inv.getArgument(0));
+            given(orderRepository.findByCorrelationId(CORRELATION_ID))
+                    .willReturn(Optional.of(order));
+            given(orderRepository.save(any(Order.class)))
+                    .willAnswer(inv -> inv.getArgument(0));
+
+            // Fase 2: no-match — ordem inserida no livro Redis
+            given(matchEngine.tryMatch(any(), any(), any(), any(), any(), any(), any()))
+                    .willReturn(MatchResult.noMatch());
+
+            // objectMapper necessário para handleNoMatch e para cancelOrder na compensação
+            given(objectMapper.writeValueAsString(any())).willReturn("{\"ok\":true}");
+
+            // Fase 3: outboxRepository.save LANÇA na 1ª chamada (Fase 3);
+            //         sucede na 2ª chamada (compensação cancelOrder)
+            given(outboxRepository.save(any(OrderOutboxMessage.class)))
+                    .willThrow(new RuntimeException("Phase 3 DB failure"))
+                    .willAnswer(inv -> inv.getArgument(0));
+
+            // findById usado na compensação para recarregar ordem do banco
+            given(orderRepository.findById(ORDER_ID))
+                    .willReturn(Optional.of(buildOrder(OrderType.BUY)));
+
+            // Executa — em FASE GREEN a compensação é acionada e o método NÃO lança
+            try {
+                consumer.onFundsReserved(event, channel, DELIVERY_TAG);
+            } catch (Exception ignored) {
+                // Em FASE RED o método pode lançar; a compensação ainda não existe
+            }
+
+            // Critério de aceite: removeFromBook deve ter sido chamado como compensação
+            then(matchEngine).should(times(1)).removeFromBook(ORDER_ID, OrderType.BUY);
+            // ACK enviado ao broker mesmo após falha na Fase 3
+            then(channel).should(times(1)).basicAck(DELIVERY_TAG, false);
+        }
+
+        /**
+         * AT22-02 — {@code tryMatch()} deve ser executado ENTRE duas chamadas
+         * a {@code txTemplate.execute()}, provando que o Redis opera fora de
+         * qualquer escopo transacional JPA.
+         *
+         * <p><strong>FASE RED:</strong> {@code txTemplate.execute()} nunca é invocado
+         * (código ainda usa {@code @Transactional} único) — a verificação de ordem
+         * de chamada no {@link InOrder} falha porque o mock {@code txTemplate} não
+         * registra nenhuma interação.</p>
+         *
+         * <p><strong>FASE GREEN:</strong>
+         * <ol>
+         *   <li>{@code txTemplate.execute()} — Fase 1 (JPA: idempotência + OPEN).</li>
+         *   <li>{@code matchEngine.tryMatch()} — Fase 2 (Redis, sem TX).</li>
+         *   <li>{@code txTemplate.execute()} — Fase 3 (JPA: persist match result).</li>
+         * </ol>
+         * </p>
+         */
+        @Test
+        @DisplayName("AT22-02 [RED]: tryMatch() executado entre Fase 1-TX e Fase 3-TX (fora de @Transactional)")
+        void onFundsReserved_tryMatchCalledOutsideTransaction() throws Exception {
+            Order order = buildOrder(OrderType.BUY);
+            FundsReservedEvent event = buildFundsReservedEvent();
+
+            // Configuração completa do caminho feliz
+            given(processedEventRepository.saveAndFlush(any(ProcessedEvent.class)))
+                    .willAnswer(inv -> inv.getArgument(0));
+            given(orderRepository.findByCorrelationId(CORRELATION_ID))
+                    .willReturn(Optional.of(order));
+            given(matchEngine.tryMatch(any(), any(), any(), any(), any(), any(), any()))
+                    .willReturn(buildMatchResult());
+            given(orderRepository.save(any(Order.class)))
+                    .willAnswer(inv -> inv.getArgument(0));
+            given(objectMapper.writeValueAsString(any())).willReturn("{\"ok\":true}");
+            given(outboxRepository.save(any(OrderOutboxMessage.class)))
+                    .willAnswer(inv -> inv.getArgument(0));
+
+            consumer.onFundsReserved(event, channel, DELIVERY_TAG);
+
+            // Critério de aceite: ordem obrigatória txTemplate → tryMatch → txTemplate
+            // Prova que tryMatch é chamado FORA do escopo transacional JPA
+            InOrder inOrder = inOrder(txTemplate, matchEngine);
+            inOrder.verify(txTemplate).execute(any());                              // Fase 1 TX
+            inOrder.verify(matchEngine).tryMatch(any(), any(), any(), any(), any(), any(), any()); // Fase 2 sem TX
+            inOrder.verify(txTemplate).execute(any());                              // Fase 3 TX
         }
     }
 }

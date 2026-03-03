@@ -3,6 +3,8 @@ package com.vibranium.orderservice.config;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.amqp.core.AcknowledgeMode;
 import org.springframework.amqp.core.Binding;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.DirectExchange;
 import org.springframework.amqp.core.Queue;
@@ -475,5 +477,32 @@ public class RabbitMQConfig {
         // a mensagem acumulada indefinidamente no broker sem confirmação.
         factory.setAcknowledgeMode(AcknowledgeMode.AUTO);
         return factory;
+    }
+
+    // -------------------------------------------------------------------------
+    // TransactionTemplate — Saga TCC (AT-2.1.1)
+    // -------------------------------------------------------------------------
+
+    /**
+     * {@link TransactionTemplate} utilizado pelo
+     * {@link com.vibranium.orderservice.adapter.messaging.FundsReservedEventConsumer}
+     * para separar as fases da Saga em transações JPA independentes.
+     *
+     * <p><strong>Motivação (AT-2.1.1):</strong> Redis não participa da transação JPA.
+     * Misturar operações Redis e JPA no mesmo {@code @Transactional} cria a ilusão
+     * de atomicidade distribuída que não existe — violação do padrão TCC
+     * (Try-Confirm-Cancel). O {@link TransactionTemplate} delimita explicitamente
+     * cada fase JPA, mantendo {@code tryMatch()} completamente fora de qualquer
+     * escopo transacional.</p>
+     *
+     * <p>Propagação {@code REQUIRED} (padrão): cria nova TX se nenhuma estiver ativa,
+     * que é justamente o caso no método listener (sem {@code @Transactional} externo).</p>
+     *
+     * @param transactionManager {@link PlatformTransactionManager} auto-configurado
+     *                           pelo Spring Boot JPA.
+     */
+    @Bean
+    TransactionTemplate sagaTransactionTemplate(PlatformTransactionManager transactionManager) {
+        return new TransactionTemplate(transactionManager);
     }
 }
