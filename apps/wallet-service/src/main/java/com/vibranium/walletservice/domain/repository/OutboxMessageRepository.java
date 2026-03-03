@@ -75,5 +75,24 @@ public interface OutboxMessageRepository extends JpaRepository<OutboxMessage, UU
      * @return Quantidade de mensagens com {@code processed = false}.
      */
     long countByProcessedFalseAndEventType(String eventType);
+
+    /**
+     * Remove mensagens já processadas criadas antes do instante {@code cutoff}.
+     *
+     * <p>Utilizado pelo {@link com.vibranium.walletservice.application.service.OutboxCleanupJob}
+     * para aplicar a política de retenção de 7 dias sem carregar entidades em memória.
+     * O DELETE em lote via JPQL é mais eficiente do que o comportamento padrão
+     * de derived delete (fetch + delete por entidade).</p>
+     *
+     * <p>Apenas mensagens com {@code processed=true} são elegíveis, garantindo que
+     * o outbox pendente jamais seja tocado por esta operação.</p>
+     *
+     * @param cutoff Instante limite — mensagens com {@code created_at} anterior a este
+     *               valor e {@code processed=true} serão removidas.
+     * @return Quantidade de registros efetivamente deletados.
+     */
+    @Modifying
+    @Query("DELETE FROM OutboxMessage m WHERE m.processed = true AND m.createdAt < :cutoff")
+    long deleteByProcessedTrueAndCreatedAtBefore(@Param("cutoff") java.time.Instant cutoff);
 }
 

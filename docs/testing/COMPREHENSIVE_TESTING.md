@@ -29,7 +29,8 @@
 25. [Saga TCC — tryMatch() fora de @Transactional + Compensação Redis (AT-2.1.1)](#saga-tcc--trymatch-fora-de-transactional--compensação-redis-at-211)
 26. [DLX nas Filas de Projeção — Mensagens Tóxicas para DLQ (AT-2.2.1)](#dlx-nas-filas-de-projeção--mensagens-tóxicas-para-dlq-at-221)
 27. [DLX na Fila wallet.keycloak.events — DLQ para Registro Keycloak (AT-2.2.2)](#dlx-na-fila-walletkeycloakevents--dlq-para-registro-keycloak-at-222)
-28. [Referências](#referências)
+28. [Limpeza de Tabelas de Suporte — OutboxCleanupJob e IdempotencyKeyCleanupJob (AT-2.3.1)](#limpeza-de-tabelas-de-suporte--outboxcleanupjob-e-idempotencykeycleanupjob-at-231)
+29. [Referências](#referências)
 
 ---
 
@@ -3330,10 +3331,131 @@ assertThat(dlqMessage.getMessageProperties().getHeaders()).containsKey("x-death"
 
 ---
 
+## Limpeza de Tabelas de Suporte — OutboxCleanupJob e IdempotencyKeyCleanupJob (AT-2.3.1)
+
+### Problema
+
+As tabelas `outbox_message` e `idempotency_key` do wallet-service crescem indefinidamente sem mecanismo de purge:
+
+- `outbox_message`: registros com `processed=true` não têm utilidade operacional após a publicação no RabbitMQ, mas ocupam espaço e aumentam o custo de `VACUUM` e do índice parcial `WHERE processed = FALSE` usado pelo relay Debezium.
+- `idempotency_key`: chaves com mais de 7 dias não protegem mais contra re-entrega (o RabbitMQ não re-entrega mensagens tão antigas), mas degradam o lookup por PK.
+
+### Solução
+
+Dois `@Component` com `@Scheduled` + `@Transactional`, seguindo o padrão do `SagaTimeoutCleanupJob` do order-service. O `Clock` é injetado via construtor para testabilidade determinística.
+
+**OutboxCleanupJob** — executa às 03:00 UTC todo domingo:
+
+```java
+@Scheduled(cron = "${app.cleanup.outbox.cron:0 0 3 * * SUN}")
+@Transactional
+public void cleanupProcessedOutboxMessages() {
+    Instant cutoff = clock.instant().minus(RETENTION_DAYS, ChronoUnit.DAYS);
+    long deleted = outboxMessageRepository.deleteByProcessedTrueAndCreatedAtBefore(cutoff);
+    logger.info("Cleanup outbox: concluído — {} registros removidos, cutoff={}", deleted, cutoff);
+}
+```
+
+**IdempotencyKeyCleanupJob** — executa às 04:00 UTC todo domingo:
+
+```java
+@Scheduled(cron = "${app.cleanup.idempotency.cron:0 0 4 * * SUN}")
+@Transactional
+public void cleanupExpiredKeys() {
+    Instant cutoff = clock.instant().minus(RETENTION_DAYS, ChronoUnit.DAYS);
+    long deleted = idempotencyKeyRepository.deleteByProcessedAtBefore(cutoff);
+    logger.info("Cleanup idempotência: concluído — {} registros removidos, cutoff={}", deleted, cutoff);
+}
+```
+
+**DELETE em lote via JPQL** (sem fetch das entidades — mais eficiente):
+
+```java
+// OutboxMessageRepository
+@Modifying
+@Query("DELETE FROM OutboxMessage m WHERE m.processed = true AND m.createdAt < :cutoff")
+long deleteByProcessedTrueAndCreatedAtBefore(@Param("cutoff") Instant cutoff);
+
+// IdempotencyKeyRepository
+@Modifying
+@Query("DELETE FROM IdempotencyKey k WHERE k.processedAt < :cutoff")
+long deleteByProcessedAtBefore(@Param("cutoff") Instant cutoff);
+```
+
+**Bean Clock** (novo `TimeConfig` no wallet-service):
+
+```java
+@Configuration
+public class TimeConfig {
+    @Bean
+    public Clock clock() {
+        return Clock.systemUTC(); // substituído por Clock.fixed em testes
+    }
+}
+```
+
+**Configuração** (`application.yaml`):
+
+```yaml
+app:
+  cleanup:
+    outbox:
+      cron: "0 0 3 * * SUN"
+    idempotency:
+      cron: "0 0 4 * * SUN"
+```
+
+### Testabilidade com Clock.fixed
+
+O `Clock.fixed(FIXED_NOW, ZoneOffset.UTC)` elimina qualquer dependência de tempo real — o cutoff calculado pelo job é sempre `FIXED_NOW - 7 dias`, verificável deterministicamente via `verify()` do Mockito:
+
+```java
+@Test
+void testCleanup_deletesProcessedMessagesOlderThanRetention() {
+    Clock fixedClock = Clock.fixed(Instant.parse("2026-03-01T03:00:00Z"), ZoneOffset.UTC);
+    Instant expectedCutoff = fixedClock.instant().minus(7, ChronoUnit.DAYS);
+    when(outboxMessageRepository.deleteByProcessedTrueAndCreatedAtBefore(expectedCutoff)).thenReturn(5L);
+
+    new OutboxCleanupJob(outboxMessageRepository, fixedClock).cleanupProcessedOutboxMessages();
+
+    verify(outboxMessageRepository).deleteByProcessedTrueAndCreatedAtBefore(expectedCutoff);
+}
+```
+
+### Critérios de aceite
+
+| Critério | Teste | Status |
+|---|---|---|
+| `OutboxCleanupJob` remove mensagens `processed=true` com mais de 7 dias | TC-OCJ-1 | ✅ |
+| `OutboxCleanupJob` preserva mensagens `processed=true` com menos de 7 dias | TC-OCJ-2 | ✅ |
+| `IdempotencyKeyCleanupJob` remove chaves com mais de 7 dias | TC-IKJ-1 | ✅ |
+| `IdempotencyKeyCleanupJob` preserva chaves com menos de 7 dias | TC-IKJ-2 | ✅ |
+| Jobs usam `@Transactional` | Inspeção estática | ✅ |
+| Jobs logam quantidade de registros removidos | Inspeção de código | ✅ |
+| Cron configurável via `application.yaml` | `${app.cleanup.*.cron}` | ✅ |
+| Build completo passa | `mvn clean package` (38 testes) | ✅ |
+
+### Artefatos gerados pelo AT-2.3.1
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `TimeConfig` | Novo | Bean `Clock.systemUTC()` singleton — substituível por `Clock.fixed` em testes via `@Primary` |
+| `OutboxCleanupJob` | Novo | Cleanup semanal de `outbox_message` (domingos 03:00 UTC) com `@Scheduled + @Transactional` |
+| `IdempotencyKeyCleanupJob` | Novo | Cleanup semanal de `idempotency_key` (domingos 04:00 UTC) com `@Scheduled + @Transactional` |
+| `OutboxMessageRepository` | Atualizado | Método `deleteByProcessedTrueAndCreatedAtBefore(Instant)` via `@Modifying @Query` |
+| `IdempotencyKeyRepository` | Atualizado | Método `deleteByProcessedAtBefore(Instant)` via `@Modifying @Query` |
+| `WalletServiceApplication` | Atualizado | `@EnableScheduling` adicionado |
+| `application.yaml` | Atualizado | Seção `app.cleanup.outbox.cron` e `app.cleanup.idempotency.cron` |
+| `WalletOutboxCleanupJobTest` | Novo | TC-OCJ-1 + TC-OCJ-2 com `Clock.fixed` |
+| `WalletIdempotencyCleanupJobTest` | Novo | TC-IKJ-1 + TC-IKJ-2 com `Clock.fixed` |
+
+---
+
 **Status**: ✅ Consolidado e Completo  
 **Última atualização**: 3 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-2.3.1**: Limpeza de tabelas de suporte no wallet-service — `OutboxCleanupJob` (`@Scheduled cron domingos 03:00 UTC`) e `IdempotencyKeyCleanupJob` (`@Scheduled cron domingos 04:00 UTC`), ambos com `@Transactional` e log da quantidade de registros removidos. Bean `TimeConfig` (novo) expõe `Clock.systemUTC()` singleton — substituível por `Clock.fixed(...)` em testes. Métodos `deleteByProcessedTrueAndCreatedAtBefore` e `deleteByProcessedAtBefore` adicionados nos respectivos repositórios via `@Modifying @Query` (DELETE em lote sem fetch). `WalletServiceApplication` atualizado com `@EnableScheduling`. `application.yaml` com `app.cleanup.outbox.cron` e `app.cleanup.idempotency.cron`. 4 novos testes unitários (`WalletOutboxCleanupJobTest` TC-OCJ-1/2, `WalletIdempotencyCleanupJobTest` TC-IKJ-1/2) — 4/4 passando. `mvn clean package` 38 testes, BUILD SUCCESS. Adicionada seção 28 neste guia.
 > - **AT-2.2.2**: DLX na fila `wallet.keycloak.events` — `x-dead-letter-exchange=vibranium.dlq` + `x-dead-letter-routing-key=wallet.keycloak.events.dlq` adicionados no `walletKeycloakEventsQueue()`. Nova fila DLQ `wallet.keycloak.events.dlq` (`durable`) declarada com binding no `vibranium.dlq` exchange. `AbstractIntegrationTest.resetState()` atualizado com purge da DLQ. Novo `KeycloakDlqIntegrationTest` (TC-KC-DLQ-1: estrutural via Management HTTP API; TC-KC-DLQ-2: `@MockBean WalletService` lança `RuntimeException` → listener NACK → mensagem roteada para DLQ com header `x-death`). 2/2 passando. Adicionada seção 27 neste guia.
 > - **AT-2.2.1**: DLX nas 4 filas de projeção — `x-dead-letter-exchange=vibranium.dlq` + `x-dead-letter-routing-key=<queue>.dlq` adicionados em cada `QueueBuilder` de projeção. 4 filas DLQ `durable` declaradas (`order.projection.received.dlq`, `order.projection.funds-reserved.dlq`, `order.projection.match-executed.dlq`, `order.projection.cancelled.dlq`) com bindings no `vibranium.dlq` exchange. `autoAckContainerFactory` atualizado com `setDefaultRequeueRejected(false)` para prevenir loop infinito em exceções de runtime. Novo `ProjectionDlqIntegrationTest` (TC-DLQ-1: mensagem tóxica roteada para DLQ via Management API; TC-DLQ-2: smoke test de declaração das 4 DLQs). 2/2 passando. Adicionada seção 26 neste guia.
 > - **AT-2.1.1**: Saga TCC — `tryMatch()` fora de `@Transactional` com compensação Redis. `onFundsReserved()` decomposto em 3 fases via `TransactionTemplate`: Fase 1 JPA TX (idempotência + `markAsOpen` + save), Fase 2 sem TX (`tryMatch` Redis/Lua), Fase 3 JPA TX (outbox). Compensação TCC no `catch` da Fase 3: `removeFromBook()` + `cancelOrder("MATCH_ENGINE_OUTBOX_FAILURE")`. Bean `sagaTransactionTemplate` adicionado em `RabbitMQConfig`. Novos testes `FundsReservedEventConsumerTest.SagaTccTests` (AT22-01 compensação, AT22-02 ordem das fases via `InOrder`). 10/10 passando. Adicionada seção 25 neste guia.

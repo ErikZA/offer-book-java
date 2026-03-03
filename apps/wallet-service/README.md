@@ -60,6 +60,9 @@ src/
     │       ├── OutboxPublisherIntegrationTest.java
 │       ├── ReserveFundsDlqIntegrationTest.java       # AT-07.1 — DLQ routing para reserve-funds
 │       ├── KeycloakDlqIntegrationTest.java           # AT-2.2.2 — DLQ routing para wallet.keycloak.events
+│   └── unit/
+│       ├── WalletOutboxCleanupJobTest.java            # AT-2.3.1 — TC-OCJ-1/2: Clock.fixed valida janela retenção outbox
+│       └── WalletIdempotencyCleanupJobTest.java       # AT-2.3.1 — TC-IKJ-1/2: Clock.fixed valida janela retenção idempotência
 │       ├── DebeziumJdbcOffsetMigrationTest.java      # AT-08.1 RED — tabela wallet_outbox_offset
 │       └── DebeziumRestartIdempotencyTest.java       # AT-08.1 RED→GREEN — idempotência pós-restart
 │   └── security/
@@ -184,6 +187,10 @@ Exchange: vibranium.dlq (direct) — Dead Letter Exchange
   ├─ wallet.commands.reserve-funds.dlq → Queue: wallet.commands.reserve-funds.dlq
   └─ wallet.commands.release-funds.dlq → Queue: wallet.commands.release-funds.dlq
 ```
+
+> **AT-2.3.1 — Cleanup Jobs:** `OutboxCleanupJob` (domingos 03:00 UTC) e `IdempotencyKeyCleanupJob` (domingos 04:00 UTC) removem
+> registros expirados das tabelas `outbox_message` (processed=true) e `idempotency_key` via DELETE em lote com janela de retenção de 7 dias.
+> `Clock` injetável via `TimeConfig` garante testes determinísticos sem `Thread.sleep`.
 
 > **AT-2.2.2 — DLQ Keycloak:** Mensagens de registro Keycloak NACKed com `requeue=false`
 > (ausência de `messageId` ou falha inesperada em `createWallet()`) são roteadas para

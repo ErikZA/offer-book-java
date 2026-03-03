@@ -75,6 +75,20 @@ server:
 # Outbox Publisher — configuração do relay via Debezium CDC
 # ---------------------------------------------------------------------------
 app:
+    # ---------------------------------------------------------------------------
+    # AT-2.3.1: Jobs de limpeza de tabelas de suporte
+    # ---------------------------------------------------------------------------
+    # OutboxCleanupJob  — domingos às 03:00 UTC: remove outbox_message processados > 7 dias
+    # IdempotencyKeyCleanupJob — domingos às 04:00 UTC: remove idempotency_key > 7 dias
+    #
+    # Janela de retenção de 7 dias: protege contra re-entrega tardia do RabbitMQ sem
+    # acumular registros desnecessários indefinidamente.
+    cleanup:
+        outbox:
+            cron: "0 0 3 * * SUN"
+        idempotency:
+            cron: "0 0 4 * * SUN"
+
     outbox:
         # Tamanho máximo do lote para o overload com Pageable (fallback)
         batch-size: 100
