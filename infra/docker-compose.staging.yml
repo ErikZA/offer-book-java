@@ -351,11 +351,20 @@ services:
             test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
             interval: 10s
             timeout: 5s
-            retries: 5
+            retries: 10
+            # Aguarda o boot inicial do broker antes de contar os retries — evita que o
+            # container seja marcado unhealthy durante o startup lento da VM Erlang.
+            start_period: 20s
 
     rabbitmq-2:
         image: rabbitmq:3.13-management-alpine
         container_name: vibranium-rabbitmq-2
+        # join-cluster.sh: inicia rabbitmq-server em background via entrypoint oficial,
+        # aguarda o nó local responder a `rabbitmq-diagnostics ping`, depois executa
+        # stop_app / reset / join_cluster rabbit@rabbitmq-1 / start_app e devolve o
+        # controle ao processo RabbitMQ em foreground. O cookie Erlang compartilhado
+        # (RABBITMQ_ERLANG_COOKIE) autentica a conexão entre os nós durante o join.
+        entrypoint: ['/bin/sh', '/scripts/join-cluster.sh']
         ports:
             - '5673:5672'
             - '15673:15672'
@@ -366,10 +375,15 @@ services:
             RABBITMQ_NODENAME: rabbit@rabbitmq-2
         volumes:
             - rabbitmq_2_data:/var/lib/rabbitmq
+            # Script montado como somente leitura — não polui o volume de dados do broker.
+            - ./rabbitmq/join-cluster.sh:/scripts/join-cluster.sh:ro
         networks:
             - vibranium-staging-network
         depends_on:
-            - rabbitmq-1
+            # service_healthy garante que rabbitmq-1 aceita conexões Erlang antes do
+            # join_cluster — sem isso há race condition no handshake do distribution.
+            rabbitmq-1:
+                condition: service_healthy
         deploy:
             resources:
                 limits:
@@ -377,14 +391,20 @@ services:
                 reservations:
                     cpus: '0.5'
         healthcheck:
-            test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+            # Valida responsividade do broker E associação ao cluster.
+            # O container só fica healthy após join_cluster rabbitmq-1 concluído,
+            # garantindo que rabbitmq-cluster-init encontre os 3 nós formados.
+            test: ['CMD-SHELL', 'rabbitmq-diagnostics -q ping && rabbitmqctl cluster_status | grep -q "rabbit@rabbitmq-1"']
             interval: 10s
-            timeout: 5s
-            retries: 5
+            timeout: 10s
+            retries: 15
+            start_period: 30s
 
     rabbitmq-3:
         image: rabbitmq:3.13-management-alpine
         container_name: vibranium-rabbitmq-3
+        # Mesma estratégia de join-cluster.sh do rabbitmq-2 — ver comentário acima.
+        entrypoint: ['/bin/sh', '/scripts/join-cluster.sh']
         ports:
             - '5674:5672'
             - '15674:15672'
@@ -395,10 +415,12 @@ services:
             RABBITMQ_NODENAME: rabbit@rabbitmq-3
         volumes:
             - rabbitmq_3_data:/var/lib/rabbitmq
+            - ./rabbitmq/join-cluster.sh:/scripts/join-cluster.sh:ro
         networks:
             - vibranium-staging-network
         depends_on:
-            - rabbitmq-1
+            rabbitmq-1:
+                condition: service_healthy
         deploy:
             resources:
                 limits:
@@ -406,12 +428,67 @@ services:
                 reservations:
                     cpus: '0.5'
         healthcheck:
-            test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+            test: ['CMD-SHELL', 'rabbitmq-diagnostics -q ping && rabbitmqctl cluster_status | grep -q "rabbit@rabbitmq-1"']
             interval: 10s
-            timeout: 5s
-            retries: 5
+            timeout: 10s
+            retries: 15
+            start_period: 30s
+
+    # ================== RabbitMQ Cluster Init ==================
+    # Container de curta duração: aguarda os 3 nós estarem healthy (join concluído),
+    # aplica a policy ha-all em todas as filas e encerra com código 0.
+    # Serviços de aplicação aguardam service_completed_successfully antes de conectar.
+    rabbitmq-cluster-init:
+        image: rabbitmq:3.13-management-alpine
+        container_name: vibranium-rabbitmq-cluster-init
+        restart: 'no'
+        entrypoint: ['/bin/sh']
+        command:
+            - -c
+            - |
+                # Escreve o cookie Erlang para que rabbitmqctl possa se conectar aos nós
+                # remotos via Erlang distribution. Permissão 400 é exigida pelo OTP.
+                echo "$$RABBITMQ_ERLANG_COOKIE" > /root/.erlang.cookie
+                chmod 400 /root/.erlang.cookie
+
+                echo '[cluster-init] Verificando status do cluster...'
+                rabbitmqctl -n rabbit@rabbitmq-1 cluster_status --formatter=compact
+
+                echo '[cluster-init] Aplicando policy ha-all em todas as filas...'
+                # ha-mode: all — todas as filas são espelhadas nos 3 nós.
+                # ha-sync-mode: automatic — novos mirrors sincronizam automaticamente
+                # sem intervenção manual após o join de um nó.
+                # apply-to: queues — não afeta exchanges nem bindings.
+                rabbitmqctl -n rabbit@rabbitmq-1 set_policy ha-all '.*' \
+                    '{"ha-mode":"all","ha-sync-mode":"automatic"}' \
+                    --apply-to queues
+
+                echo '[cluster-init] Policy aplicada com sucesso.'
+                rabbitmqctl -n rabbit@rabbitmq-1 list_policies
+
+                echo '[cluster-init] Cluster RabbitMQ formado e HA configurado.'
+        environment:
+            RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?RABBITMQ_ERLANG_COOKIE is required — copie .env.example para .env}
+        depends_on:
+            # Os 3 nós devem estar healthy (join concluído via healthcheck de cluster_status)
+            # antes de tentar aplicar a policy — garante que a replicação está ativa.
+            rabbitmq-1:
+                condition: service_healthy
+            rabbitmq-2:
+                condition: service_healthy
+            rabbitmq-3:
+                condition: service_healthy
+        networks:
+            - vibranium-staging-network
+        deploy:
+            resources:
+                limits:
+                    memory: 64M
+                    cpus: '0.1'
 
     # ================== Order Service (3 Replicas) ==================
+    # ——— NOTA: Os order-services aguardam rabbitmq-cluster-init (service_completed_successfully)
+    #     em vez de rabbitmq-1 standalone — garante HA ativa no momento da primeira conexão.
     order-service-1:
         image: order-service:latest
         container_name: vibranium-order-service-1
@@ -439,8 +516,11 @@ services:
             # CLUSTERDOWN: Hash slot not served no primeiro startup.
             redis-cluster-init:
                 condition: service_completed_successfully
-            rabbitmq-1:
-                condition: service_started
+            # Aguarda o cluster RabbitMQ estar formado (3 nós) e a policy ha-all aplicada
+            # antes de o order-service conectar — filas criadas pelo Spring já nascem com
+            # replicação HA habilitada e não precisam de migrate/recreate posterior.
+            rabbitmq-cluster-init:
+                condition: service_completed_successfully
         networks:
             - vibranium-staging-network
         deploy:
@@ -534,8 +614,12 @@ services:
             SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
             SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
         depends_on:
-            - postgres-primary
-            - rabbitmq-1
+            postgres-primary:
+                condition: service_started
+            # Aguarda cluster RabbitMQ completo (ha-all policy ativa) antes de conectar —
+            # garante que filas criadas no boot já são espelhadas nos 3 nós.
+            rabbitmq-cluster-init:
+                condition: service_completed_successfully
         networks:
             - vibranium-staging-network
         deploy:
