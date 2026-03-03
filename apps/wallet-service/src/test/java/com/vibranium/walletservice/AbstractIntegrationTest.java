@@ -1,6 +1,9 @@
 package com.vibranium.walletservice;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vibranium.walletservice.domain.repository.IdempotencyKeyRepository;
+import com.vibranium.walletservice.domain.repository.OutboxMessageRepository;
+import com.vibranium.walletservice.domain.repository.WalletRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
@@ -126,17 +129,35 @@ public abstract class AbstractIntegrationTest {
     @Autowired
     protected ObjectMapper objectMapper;
 
+    @Autowired
+    protected WalletRepository walletRepository;
+
+    @Autowired
+    protected OutboxMessageRepository outboxMessageRepository;
+
+    @Autowired
+    protected IdempotencyKeyRepository idempotencyKeyRepository;
+
     /**
-     * Limpa a tabela de idempotência entre os testes para evitar
-     * interferência entre cenários de duplicidade.
+     * Limpa todo o estado mutável entre os testes para garantir isolamento total.
      *
-     * <p>Subclasses podem sobrescrever e chamar {@code super.resetDb()} para
-     * adicionar limpezas extras de suas próprias entidades.</p>
+     * <p>Executa <b>antes de cada teste</b> (via {@code @BeforeEach} do JUnit 5),
+     * rodando antes dos métodos {@code @BeforeEach} das subclasses — que podem então
+     * inserir dados de teste em uma base limpa.</p>
+     *
+     * <h3>Ordem de limpeza:</h3>
+     * <ol>
+     *   <li>Filas RabbitMQ — purga primeiro para interromper a entrega de mensagens
+     *       residuais ao listener <b>antes</b> de remover os dados do banco.</li>
+     *   <li>Chaves de idempotência — independente.</li>
+     *   <li>Outbox messages — {@code aggregate_id} é VARCHAR, sem FK para wallet.</li>
+     *   <li>Wallets — tabela raiz, sem dependentes restantes.</li>
+     * </ol>
      */
     @BeforeEach
-    void resetRabbitQueues() {
-        // Purga todas as filas entre cenários para garantir isolamento total.
-        // Inclui a fila dedicada de reserve-funds e sua DLQ (AT-07.1).
+    void resetState() {
+        // --- RabbitMQ: purga ANTES do DB para evitar que o listener processe
+        //     mensagens residuais contra wallets recém-deletadas ---
         for (String queue : new String[]{
                 "wallet.keycloak.events",
                 "wallet.commands",
@@ -151,5 +172,10 @@ public abstract class AbstractIntegrationTest {
                 // Fila ainda não existe — será declarada automaticamente pelo contexto Spring
             }
         }
+
+        // --- DB cleanup: garante base vazia para cada teste ---
+        idempotencyKeyRepository.deleteAll();
+        outboxMessageRepository.deleteAll();
+        walletRepository.deleteAll();
     }
 }

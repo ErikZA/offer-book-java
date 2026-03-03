@@ -1459,6 +1459,93 @@ apps/order-service/src/test/java/.../integration/MatchEngineRedisIntegrationTest
 ([Toxiproxy](https://github.com/Shopify/toxiproxy)) para introduzir falhas sem derrubar
 ios outros containers que usam o mesmo Redis.
 
+### Wallet-Service: Bugs de Integração Corrigidos (2026-03-03)
+
+Ao executar `mvn clean package` no `wallet-service`, foram encontrados **12 testes falhando**
+(4 failures + 9 errors, em 8 suítes). A análise identificou **5 causas-raiz distintas**,
+todas corrigidas:
+
+#### 1. `@DataJpaTest` + `@ComponentScan` amplo → `NoSuchBeanDefinitionException`
+
+**Suíte:** `OutboxMessageRepositoryTest` (5 errors)
+
+**Problema:** O `@ComponentScan(basePackages = {"com.vibranium.walletservice", ...})` em
+`WalletServiceApplication` faz o `@DataJpaTest` carregar beans de infraestrutura (Security,
+RabbitMQ, `OrderCommandRabbitListener`) que exigem `Tracer`, `JwtDecoder`, `RabbitTemplate` —
+ausentes no slice JPA.
+
+**Correção:** Introduzida classe interna `JpaSliceConfig` com `@ContextConfiguration` que
+substitui a aplicação como raiz do contexto. Usa `@Configuration` + `@EnableAutoConfiguration`
++ `@EntityScan` + `@EnableJpaRepositories` apontando apenas para o pacote `domain`.
+
+> **Armadilha:** usar `@SpringBootConfiguration` em vez de `@Configuration` na inner class
+> faz o bootstrap de **outros** testes (`@SpringBootTest`) encontrarem essa classe como
+> aplicação raiz, causando 404 em todos os endpoints REST.
+
+#### 2. Debezium `offset_val` BYTEA vs VARCHAR → `PSQLException`
+
+**Suíte:** `DebeziumRestartIdempotencyTest` (1 failure)
+
+**Problema:** Migração V5 criou `offset_val BYTEA`, mas `JdbcOffsetBackingStore` do
+Debezium 2.7.x grava o offset como `String` (VARCHAR).
+
+**Correção:** Nova migração `V6__fix_wallet_outbox_offset_val_type.sql`:
+```sql
+ALTER TABLE wallet_outbox_offset ALTER COLUMN offset_val TYPE VARCHAR(1255);
+```
+
+#### 3. `catch(Exception)` não captura `AssertionError` em teste concorrente
+
+**Suíte:** `WalletBalanceUpdateIntegrationTest` (1 failure)
+
+**Problema:** No teste de 10 depósitos simultâneos, `catch(Exception e)` não captura
+`AssertionError` (que estende `Error`, não `Exception`). O resultado: `successCount=0`
+com lista de erros vazia → assertion `assertThat(errors).isEmpty()` passa mas
+`assertThat(successCount.get()).isEqualTo(10)` falha sem contexto.
+
+**Correção:** Trocado para `catch(Throwable t)` com `errors.add(new RuntimeException(t))`.
+
+#### 4. `@WithMockUser` não propaga para threads do `ExecutorService`
+
+**Suíte:** `WalletBalanceUpdateIntegrationTest` (exposto pelo fix #3)
+
+**Problema:** `@WithMockUser` configura o `SecurityContext` apenas na thread principal.
+Threads do `ExecutorService` não herdam o contexto de segurança → todas as requisições
+MockMvc retornam 401 (Unauthorized).
+
+**Correção:** Adicionado `.with(user("test-user"))` diretamente na request MockMvc dentro
+do `Runnable`, propagando a autenticação explicitamente para cada thread.
+
+#### 5. Isolamento de estado entre testes de integração → `ConditionTimeout`
+
+**Suítes:** Reserve, Settle, Idempotency, Release, Keycloak (6 errors)
+
+**Problema:** Subclasses de `AbstractIntegrationTest` faziam limpeza parcial nos seus
+`@BeforeEach` (e.g., `outboxMessageRepository.deleteAll()` mas não `walletRepository`).
+Mensagens residuais no RabbitMQ processadas pelo listener de background encontravam
+wallets de testes anteriores, gerando eventos inesperados.
+
+**Correção:**
+- Centralizada limpeza total no `@BeforeEach resetState()` de `AbstractIntegrationTest`:
+  purge de 6 filas RabbitMQ **antes** do `deleteAll()` em `idempotencyKey`, `outboxMessage`
+  e `wallet` (nesta ordem para respeitar FKs).
+- Removidos campos `@Autowired private` sombreadores e `deleteAll()` redundantes das
+  5 subclasses — agora usam os campos `protected` herdados.
+
+#### Resultado final
+
+| Métrica | Antes | Depois |
+|---------|-------|--------|
+| Failures | 4 | 1 (AT-14.1 RED intencional) |
+| Errors | 9 | 0 (determinísticos) |
+| Suítes com falha | 8 | 1 |
+
+> **Nota sobre ConditionTimeout flaky:** Alguns testes baseados em `Awaitility` podem
+> apresentar timeout esporádico quando executados na suíte completa, por interferência
+> do listener RabbitMQ de background entre suítes. Todos passam em isolamento.
+> Solução definitiva: configurar Surefire com `forkCount > 1` e `reuseForks=false`
+> ou aumentar os timeouts do Awaitility.
+
 **Como habilitar no futuro:**
 
 1. Adicionar `ghcr.io/shopify/toxiproxy` ao `docker-compose-test.yml` como proxy na frente do Redis.

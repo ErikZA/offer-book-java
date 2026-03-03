@@ -3,7 +3,6 @@ package com.vibranium.walletservice.integration;
 import com.vibranium.walletservice.AbstractIntegrationTest;
 import com.vibranium.walletservice.application.dto.BalanceUpdateRequest;
 import com.vibranium.walletservice.domain.model.Wallet;
-import com.vibranium.walletservice.domain.repository.WalletRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -24,6 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -51,14 +51,10 @@ class WalletBalanceUpdateIntegrationTest extends AbstractIntegrationTest {
     @Autowired
     private MockMvc mockMvc;
 
-    @Autowired
-    private WalletRepository walletRepository;
-
     private Wallet testWallet;
 
     @BeforeEach
     void setup() {
-        walletRepository.deleteAll();
         testWallet = walletRepository.save(
                 Wallet.create(UUID.randomUUID(), new BigDecimal("100.00"), new BigDecimal("10"))
         );
@@ -302,12 +298,13 @@ class WalletBalanceUpdateIntegrationTest extends AbstractIntegrationTest {
                     startGate.await();
                     String body = "{ \"brlAmount\": 10.00 }";
                     mockMvc.perform(patch("/api/v1/wallets/{walletId}/balance", testWallet.getId())
+                                    .with(user("test-user"))
                                     .contentType(MediaType.APPLICATION_JSON)
                                     .content(body))
                             .andExpect(status().isOk());
                     successCount.incrementAndGet();
-                } catch (Exception e) {
-                    synchronized (errors) { errors.add(e); }
+                } catch (Throwable t) {
+                    synchronized (errors) { errors.add(new RuntimeException(t)); }
                 } finally {
                     doneLatch.countDown();
                 }

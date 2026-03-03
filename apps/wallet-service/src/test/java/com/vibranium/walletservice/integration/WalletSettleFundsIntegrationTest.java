@@ -4,14 +4,11 @@ import com.vibranium.contracts.commands.wallet.SettleFundsCommand;
 import com.vibranium.contracts.enums.AssetType;
 import com.vibranium.walletservice.AbstractIntegrationTest;
 import com.vibranium.walletservice.domain.model.Wallet;
-import com.vibranium.walletservice.domain.repository.OutboxMessageRepository;
-import com.vibranium.walletservice.domain.repository.WalletRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageProperties;
-import org.springframework.beans.factory.annotation.Autowired;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -41,12 +38,6 @@ class WalletSettleFundsIntegrationTest extends AbstractIntegrationTest {
     private static final String WALLET_COMMANDS_EXCHANGE = "wallet.commands";
     private static final String SETTLE_FUNDS_ROUTING_KEY = "wallet.command.settle-funds";
 
-    @Autowired
-    private WalletRepository walletRepository;
-
-    @Autowired
-    private OutboxMessageRepository outboxMessageRepository;
-
     private Wallet buyerWallet;
     private Wallet sellerWallet;
     private UUID buyOrderId;
@@ -66,8 +57,6 @@ class WalletSettleFundsIntegrationTest extends AbstractIntegrationTest {
 
         buyOrderId = UUID.randomUUID();
         sellOrderId = UUID.randomUUID();
-
-        outboxMessageRepository.deleteAll();
     }
 
     // -------------------------------------------------------------------------

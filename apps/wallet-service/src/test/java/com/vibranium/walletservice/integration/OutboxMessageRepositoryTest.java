@@ -2,15 +2,19 @@ package com.vibranium.walletservice.integration;
 
 import com.vibranium.walletservice.domain.model.OutboxMessage;
 import com.vibranium.walletservice.domain.repository.OutboxMessageRepository;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
+import org.springframework.boot.autoconfigure.domain.EntityScan;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -23,21 +27,42 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * FASE RED — Testa o repositório do Transactional Outbox em isolamento.
+ * Testa o repositório do Transactional Outbox em isolamento JPA puro.
  *
- * <p>Usa {@code @DataJpaTest} para carregar apenas a camada JPA,
- * sem subir o contexto completo. O container PostgreSQL é exclusivo
- * desta classe para garantir isolamento total.</p>
+ * <p>Usa {@code @DataJpaTest} com {@link ContextConfiguration} apontando para
+ * {@link JpaSliceConfig} — uma configuração interna que <b>substitui</b>
+ * {@link com.vibranium.walletservice.WalletServiceApplication} como raiz de
+ * contexto neste teste. Isso evita que o {@code @ComponentScan} amplo da
+ * aplicação instancie beans de infraestrutura (Security, RabbitMQ, Tracer)
+ * que não existem no slice JPA.</p>
  *
- * <p><b>RED:</b> Falharão até que {@code OutboxMessage} e
- * {@code OutboxMessageRepository} estejam implementados.</p>
+ * <p><b>Importante:</b> {@code JpaSliceConfig} usa
+ * {@code @Configuration + @EnableAutoConfiguration}, e <b>não</b>
+ * {@code @SpringBootConfiguration}, para que o bootstrap de outros testes
+ * ({@code @SpringBootTest}) não o encontre por engano como aplicação raiz.</p>
+ *
+ * <p>O container PostgreSQL é exclusivo desta classe para garantir isolamento total.</p>
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+@ContextConfiguration(classes = OutboxMessageRepositoryTest.JpaSliceConfig.class)
 @Testcontainers
 @ActiveProfiles("test")
 @DisplayName("[RED] OutboxMessageRepository - Persistência e consultas do Transactional Outbox")
 class OutboxMessageRepositoryTest {
+
+    /**
+     * Configuração JPA mínima para slice test. Usa {@code @Configuration}
+     * (não {@code @SpringBootConfiguration}) para evitar que
+     * {@code @SpringBootTest} em outras classes descubra esta classe
+     * como raiz de contexto, o que causaria 404 em endpoints REST.
+     */
+    @Configuration
+    @EnableAutoConfiguration
+    @EntityScan(basePackages = "com.vibranium.walletservice.domain.model")
+    @EnableJpaRepositories(basePackages = "com.vibranium.walletservice.domain.repository")
+    static class JpaSliceConfig {
+    }
 
     @Container
     static final PostgreSQLContainer<?> POSTGRES =

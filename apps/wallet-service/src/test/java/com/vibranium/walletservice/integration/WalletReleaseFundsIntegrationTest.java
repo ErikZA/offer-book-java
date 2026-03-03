@@ -4,15 +4,11 @@ import com.vibranium.contracts.commands.wallet.ReleaseFundsCommand;
 import com.vibranium.contracts.enums.AssetType;
 import com.vibranium.walletservice.AbstractIntegrationTest;
 import com.vibranium.walletservice.domain.model.Wallet;
-import com.vibranium.walletservice.domain.repository.IdempotencyKeyRepository;
-import com.vibranium.walletservice.domain.repository.OutboxMessageRepository;
-import com.vibranium.walletservice.domain.repository.WalletRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageProperties;
-import org.springframework.beans.factory.annotation.Autowired;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -42,15 +38,6 @@ class WalletReleaseFundsIntegrationTest extends AbstractIntegrationTest {
     private static final String WALLET_COMMANDS_EXCHANGE  = "wallet.commands";
     private static final String RELEASE_FUNDS_ROUTING_KEY = "wallet.command.release-funds";
 
-    @Autowired
-    private WalletRepository walletRepository;
-
-    @Autowired
-    private OutboxMessageRepository outboxMessageRepository;
-
-    @Autowired
-    private IdempotencyKeyRepository idempotencyKeyRepository;
-
     /**
      * Carteira de teste com R$100,00 disponíveis e R$50,00 bloqueados —
      * simulando uma reserva prévia bem-sucedida.
@@ -64,9 +51,6 @@ class WalletReleaseFundsIntegrationTest extends AbstractIntegrationTest {
         Wallet w = Wallet.create(UUID.randomUUID(), new BigDecimal("100.00"), BigDecimal.ZERO);
         w.reserveFunds(AssetType.BRL, new BigDecimal("50.00")); // available=50, locked=50
         testWallet = walletRepository.save(w);
-
-        outboxMessageRepository.deleteAll();
-        idempotencyKeyRepository.deleteAll();
     }
 
     // -------------------------------------------------------------------------

@@ -4,14 +4,11 @@ import com.vibranium.contracts.commands.wallet.ReserveFundsCommand;
 import com.vibranium.contracts.enums.AssetType;
 import com.vibranium.walletservice.AbstractIntegrationTest;
 import com.vibranium.walletservice.domain.model.Wallet;
-import com.vibranium.walletservice.domain.repository.OutboxMessageRepository;
-import com.vibranium.walletservice.domain.repository.WalletRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageProperties;
-import org.springframework.beans.factory.annotation.Autowired;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -46,12 +43,6 @@ class WalletReserveFundsIntegrationTest extends AbstractIntegrationTest {
     private static final String WALLET_COMMANDS_EXCHANGE = "wallet.commands";
     private static final String RESERVE_FUNDS_ROUTING_KEY = "wallet.command.reserve-funds";
 
-    @Autowired
-    private WalletRepository walletRepository;
-
-    @Autowired
-    private OutboxMessageRepository outboxMessageRepository;
-
     /** Carteira de teste com R$ 100,00 e 50 VIB disponíveis. */
     private Wallet testWallet;
     private UUID testUserId;
@@ -61,7 +52,6 @@ class WalletReserveFundsIntegrationTest extends AbstractIntegrationTest {
         // Persiste uma carteira com saldo para uso nos cenários
         testUserId = UUID.randomUUID();
         testWallet = walletRepository.save(Wallet.create(testUserId, new BigDecimal("100.00"), new BigDecimal("50")));
-        outboxMessageRepository.deleteAll();
     }
 
     // -------------------------------------------------------------------------
