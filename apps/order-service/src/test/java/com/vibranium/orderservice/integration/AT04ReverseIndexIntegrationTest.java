@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -98,11 +99,11 @@ class AT04ReverseIndexIntegrationTest extends AbstractIntegrationTest {
         BigDecimal qty   = new BigDecimal("5.00000000");
 
         // BUY em preço baixo — sem ASK contraparte → NO_MATCH
-        RedisMatchEngineAdapter.MatchResult result = matchEngine.tryMatch(
+        List<RedisMatchEngineAdapter.MatchResult> results1 = matchEngine.tryMatch(
                 orderId, "user-test", UUID.randomUUID(),
                 OrderType.BUY, price, qty, UUID.randomUUID());
 
-        assertThat(result.matched()).isFalse();
+        assertThat(results1).as("BUY sem ASK deve retornar lista vazia (NO_MATCH)").isEmpty();
 
         // Sorted set deve conter a ordem
         assertThat(redisTemplate.opsForZSet().zCard(bidsKey))
@@ -150,11 +151,11 @@ class AT04ReverseIndexIntegrationTest extends AbstractIntegrationTest {
         BigDecimal qty   = new BigDecimal("3.00000000");
 
         // SELL em preço alto — sem BID contraparte → NO_MATCH
-        RedisMatchEngineAdapter.MatchResult result = matchEngine.tryMatch(
+        List<RedisMatchEngineAdapter.MatchResult> results2 = matchEngine.tryMatch(
                 orderId, "user-test", UUID.randomUUID(),
                 OrderType.SELL, price, qty, UUID.randomUUID());
 
-        assertThat(result.matched()).isFalse();
+        assertThat(results2).as("SELL sem BID deve retornar lista vazia (NO_MATCH)").isEmpty();
 
         assertThat(redisTemplate.opsForZSet().zCard(asksKey))
                 .as("ASK deve estar inserido em {vibranium}:asks após NO_MATCH")

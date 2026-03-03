@@ -57,21 +57,19 @@ class RedisMatchEngineAdapterParseResultTest {
         @Test
         @DisplayName("Quando result é null: deve retornar noMatch")
         void whenResultIsNull_returnsNoMatch() {
-            RedisMatchEngineAdapter.MatchResult result =
+            List<RedisMatchEngineAdapter.MatchResult> results =
                     RedisMatchEngineAdapter.parseResult(null);
 
-            assertThat(result.matched()).isFalse();
-            assertThat(result.fillType()).isEqualTo("NO_MATCH");
+            assertThat(results).isEmpty();
         }
 
         @Test
         @DisplayName("Quando result é lista vazia: deve retornar noMatch")
         void whenResultIsEmpty_returnsNoMatch() {
-            RedisMatchEngineAdapter.MatchResult result =
+            List<RedisMatchEngineAdapter.MatchResult> results =
                     RedisMatchEngineAdapter.parseResult(Collections.emptyList());
 
-            assertThat(result.matched()).isFalse();
-            assertThat(result.fillType()).isEqualTo("NO_MATCH");
+            assertThat(results).isEmpty();
         }
     }
 
@@ -88,10 +86,10 @@ class RedisMatchEngineAdapterParseResultTest {
         void whenFirstElementIsNoMatch_returnsNoMatch() {
             List<Object> luaResponse = List.of("NO_MATCH");
 
-            RedisMatchEngineAdapter.MatchResult result =
+            List<RedisMatchEngineAdapter.MatchResult> results =
                     RedisMatchEngineAdapter.parseResult(luaResponse);
 
-            assertThat(result.matched()).isFalse();
+            assertThat(results).isEmpty();
         }
 
         @Test
@@ -99,10 +97,10 @@ class RedisMatchEngineAdapterParseResultTest {
         void whenFirstElementIsArbitraryString_returnsNoMatch() {
             List<Object> luaResponse = List.of("UNKNOWN_VALUE");
 
-            RedisMatchEngineAdapter.MatchResult result =
+            List<RedisMatchEngineAdapter.MatchResult> results =
                     RedisMatchEngineAdapter.parseResult(luaResponse);
 
-            assertThat(result.matched()).isFalse();
+            assertThat(results).isEmpty();
         }
 
         @Test
@@ -113,10 +111,10 @@ class RedisMatchEngineAdapterParseResultTest {
                     "10.00", "FULL"
             );
 
-            RedisMatchEngineAdapter.MatchResult result =
+            List<RedisMatchEngineAdapter.MatchResult> results =
                     RedisMatchEngineAdapter.parseResult(luaResponse);
 
-            assertThat(result.matched()).isFalse();
+            assertThat(results).isEmpty();
         }
     }
 
@@ -133,10 +131,10 @@ class RedisMatchEngineAdapterParseResultTest {
         void whenResultHasOnly1Element_returnsNoMatch() {
             List<Object> luaResponse = List.of("MATCH");
 
-            RedisMatchEngineAdapter.MatchResult result =
+            List<RedisMatchEngineAdapter.MatchResult> results =
                     RedisMatchEngineAdapter.parseResult(luaResponse);
 
-            assertThat(result.matched()).isFalse();
+            assertThat(results).isEmpty();
         }
 
         @Test
@@ -149,10 +147,10 @@ class RedisMatchEngineAdapterParseResultTest {
                     // falta o 4º elemento: fillType
             );
 
-            RedisMatchEngineAdapter.MatchResult result =
+            List<RedisMatchEngineAdapter.MatchResult> results =
                     RedisMatchEngineAdapter.parseResult(luaResponse);
 
-            assertThat(result.matched()).isFalse();
+            assertThat(results).isEmpty();
         }
     }
 
@@ -174,10 +172,10 @@ class RedisMatchEngineAdapterParseResultTest {
                     "MATCH", malformedValue, "10.00", "FULL"
             );
 
-            RedisMatchEngineAdapter.MatchResult result =
+            List<RedisMatchEngineAdapter.MatchResult> results =
                     RedisMatchEngineAdapter.parseResult(luaResponse);
 
-            assertThat(result.matched()).isFalse();
+            assertThat(results).isEmpty();
         }
 
         @Test
@@ -190,10 +188,10 @@ class RedisMatchEngineAdapterParseResultTest {
                     "MATCH", malformedUUID, "10.00", "FULL"
             );
 
-            RedisMatchEngineAdapter.MatchResult result =
+            List<RedisMatchEngineAdapter.MatchResult> results =
                     RedisMatchEngineAdapter.parseResult(luaResponse);
 
-            assertThat(result.matched()).isFalse();
+            assertThat(results).isEmpty();
         }
 
         @Test
@@ -205,10 +203,10 @@ class RedisMatchEngineAdapterParseResultTest {
                     "MATCH", malformedWallet, "10.00", "FULL"
             );
 
-            RedisMatchEngineAdapter.MatchResult result =
+            List<RedisMatchEngineAdapter.MatchResult> results =
                     RedisMatchEngineAdapter.parseResult(luaResponse);
 
-            assertThat(result.matched()).isFalse();
+            assertThat(results).isEmpty();
         }
     }
 
@@ -242,8 +240,10 @@ class RedisMatchEngineAdapterParseResultTest {
                     "MATCH", counterpartValue, matchedQty, fillType
             );
 
-            RedisMatchEngineAdapter.MatchResult result =
+            List<RedisMatchEngineAdapter.MatchResult> results =
                     RedisMatchEngineAdapter.parseResult(luaResponse);
+            assertThat(results).hasSize(1);
+            RedisMatchEngineAdapter.MatchResult result = results.get(0);
 
             assertThat(result.matched()).isTrue();
             assertThat(result.counterpartId()).isEqualTo(counterpartOrderId);
@@ -274,8 +274,10 @@ class RedisMatchEngineAdapterParseResultTest {
                     "MATCH", counterpartValue, "3.00", "PARTIAL_ASK", "7.00"
             );
 
-            RedisMatchEngineAdapter.MatchResult result =
+            List<RedisMatchEngineAdapter.MatchResult> results =
                     RedisMatchEngineAdapter.parseResult(luaResponse);
+            assertThat(results).hasSize(1);
+            RedisMatchEngineAdapter.MatchResult result = results.get(0);
 
             assertThat(result.matched()).isTrue();
             assertThat(result.matchedQty()).isEqualByComparingTo("3.00");
@@ -299,8 +301,10 @@ class RedisMatchEngineAdapterParseResultTest {
                     "MATCH", counterpartValue, "4.00", "PARTIAL_BID", "6.00"
             );
 
-            RedisMatchEngineAdapter.MatchResult result =
+            List<RedisMatchEngineAdapter.MatchResult> results =
                     RedisMatchEngineAdapter.parseResult(luaResponse);
+            assertThat(results).hasSize(1);
+            RedisMatchEngineAdapter.MatchResult result = results.get(0);
 
             assertThat(result.matched()).isTrue();
             assertThat(result.fillType()).isEqualTo("PARTIAL_BID");
@@ -341,8 +345,10 @@ class RedisMatchEngineAdapterParseResultTest {
                     "FULL".getBytes(StandardCharsets.UTF_8)
             );
 
-            RedisMatchEngineAdapter.MatchResult result =
+            List<RedisMatchEngineAdapter.MatchResult> results =
                     RedisMatchEngineAdapter.parseResult(luaResponse);
+            assertThat(results).hasSize(1);
+            RedisMatchEngineAdapter.MatchResult result = results.get(0);
 
             assertThat(result.matched()).isTrue();
             assertThat(result.counterpartId()).isEqualTo(counterpartOrderId);
@@ -359,10 +365,10 @@ class RedisMatchEngineAdapterParseResultTest {
                     "NO_MATCH".getBytes(StandardCharsets.UTF_8)
             );
 
-            RedisMatchEngineAdapter.MatchResult result =
+            List<RedisMatchEngineAdapter.MatchResult> results =
                     RedisMatchEngineAdapter.parseResult(luaResponse);
 
-            assertThat(result.matched()).isFalse();
+            assertThat(results).isEmpty();
         }
 
         @Test
@@ -381,8 +387,10 @@ class RedisMatchEngineAdapterParseResultTest {
                     "6.00".getBytes(StandardCharsets.UTF_8)
             );
 
-            RedisMatchEngineAdapter.MatchResult result =
+            List<RedisMatchEngineAdapter.MatchResult> results =
                     RedisMatchEngineAdapter.parseResult(luaResponse);
+            assertThat(results).hasSize(1);
+            RedisMatchEngineAdapter.MatchResult result = results.get(0);
 
             assertThat(result.matched()).isTrue();
             assertThat(result.remainingCounterpartQty()).isEqualByComparingTo("6.00");
@@ -410,12 +418,158 @@ class RedisMatchEngineAdapterParseResultTest {
                     "MATCH", counterpartValue, "5.00", "FULL", "NOT_A_NUMBER"
             );
 
-            RedisMatchEngineAdapter.MatchResult result =
+            List<RedisMatchEngineAdapter.MatchResult> results =
                     RedisMatchEngineAdapter.parseResult(luaResponse);
+            assertThat(results).hasSize(1);
+            RedisMatchEngineAdapter.MatchResult result = results.get(0);
 
             // Fallback: ZERO quando o 5º elemento não pôde ser parseado
             assertThat(result.matched()).isTrue();
             assertThat(result.remainingCounterpartQty()).isEqualByComparingTo(BigDecimal.ZERO);
+        }
+    }
+
+    // =========================================================================
+    // Formato novo MULTI_MATCH / PARTIAL (AT-3.1.1)
+    // =========================================================================
+
+    @Nested
+    @DisplayName("Formato MULTI_MATCH — N matches, ordem totalmente preenchida")
+    class MultiMatchFormatTests {
+
+        private String makeCounterpart(UUID orderId, String userId, UUID walletId) {
+            return String.join("|",
+                    orderId.toString(), userId, walletId.toString(),
+                    "20.00", UUID.randomUUID().toString(), String.valueOf(System.currentTimeMillis()));
+        }
+
+        @Test
+        @DisplayName("MULTI_MATCH com 2 contrapartes: deve retornar 2 MatchResults")
+        void whenMultiMatch2Counterparts_returns2Results() {
+            UUID c1Id = UUID.randomUUID();
+            UUID c1Wallet = UUID.randomUUID();
+            UUID c2Id = UUID.randomUUID();
+            UUID c2Wallet = UUID.randomUUID();
+
+            String c1val = makeCounterpart(c1Id, "user1", c1Wallet);
+            String c2val = makeCounterpart(c2Id, "user2", c2Wallet);
+
+            // ["MULTI_MATCH", "2", c1val, "20.00", "FULL", "0.00000000", c2val, "20.00", "FULL", "0.00000000"]
+            List<Object> luaResponse = Arrays.asList(
+                    "MULTI_MATCH", "2",
+                    c1val, "20.00000000", "FULL", "0.00000000",
+                    c2val, "20.00000000", "FULL", "0.00000000"
+            );
+
+            List<RedisMatchEngineAdapter.MatchResult> results =
+                    RedisMatchEngineAdapter.parseResult(luaResponse);
+
+            assertThat(results).hasSize(2);
+            assertThat(results.get(0).counterpartId()).isEqualTo(c1Id);
+            assertThat(results.get(0).matchedQty()).isEqualByComparingTo("20.00");
+            assertThat(results.get(0).fillType()).isEqualTo("FULL");
+            assertThat(results.get(0).remainingCounterpartQty()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(results.get(1).counterpartId()).isEqualTo(c2Id);
+            assertThat(results.get(1).matchedQty()).isEqualByComparingTo("20.00");
+            assertThat(results.get(1).fillType()).isEqualTo("FULL");
+        }
+
+        @Test
+        @DisplayName("MULTI_MATCH com count=0: deve retornar lista vazia")
+        void whenMultiMatch0Count_returnsEmptyList() {
+            List<Object> luaResponse = Arrays.asList("MULTI_MATCH", "0");
+
+            List<RedisMatchEngineAdapter.MatchResult> results =
+                    RedisMatchEngineAdapter.parseResult(luaResponse);
+
+            assertThat(results).isEmpty();
+        }
+
+        @Test
+        @DisplayName("MULTI_MATCH sem campo count: deve retornar lista vazia")
+        void whenMultiMatchMissingCount_returnsEmptyList() {
+            List<Object> luaResponse = List.of("MULTI_MATCH");
+
+            List<RedisMatchEngineAdapter.MatchResult> results =
+                    RedisMatchEngineAdapter.parseResult(luaResponse);
+
+            assertThat(results).isEmpty();
+        }
+
+        @Test
+        @DisplayName("MULTI_MATCH com último match PARTIAL_ASK: deve preservar remainingQty")
+        void whenMultiMatchLastIsPartialAsk_returnsCorrectRemaining() {
+            UUID cId = UUID.randomUUID();
+            String cval = makeCounterpart(cId, "seller", UUID.randomUUID());
+
+            // Último match: BID consumiu qty=15 de um ASK de 20 → ASK remaining = 5
+            List<Object> luaResponse = Arrays.asList(
+                    "MULTI_MATCH", "1",
+                    cval, "15.00000000", "PARTIAL_ASK", "5.00000000"
+            );
+
+            List<RedisMatchEngineAdapter.MatchResult> results =
+                    RedisMatchEngineAdapter.parseResult(luaResponse);
+
+            assertThat(results).hasSize(1);
+            assertThat(results.get(0).fillType()).isEqualTo("PARTIAL_ASK");
+            assertThat(results.get(0).matchedQty()).isEqualByComparingTo("15.00000000");
+            assertThat(results.get(0).remainingCounterpartQty()).isEqualByComparingTo("5.00000000");
+        }
+    }
+
+    @Nested
+    @DisplayName("Formato PARTIAL — N matches, livro esgotou antes de preencher a ordem")
+    class PartialFormatTests {
+
+        private String makeCounterpart() {
+            return String.join("|",
+                    UUID.randomUUID().toString(), "seller", UUID.randomUUID().toString(),
+                    "30.00", UUID.randomUUID().toString(), String.valueOf(System.currentTimeMillis()));
+        }
+
+        @Test
+        @DisplayName("PARTIAL com 2 matches: deve retornar 2 MatchResults (remainingIncoming ignorado)")
+        void whenPartial2Matches_returns2Results() {
+            String c1val = makeCounterpart();
+            String c2val = makeCounterpart();
+
+            // ["PARTIAL", "2", c1val, "30", "FULL", "0", c2val, "30", "FULL", "0", "40.00000000"]
+            // último elemento é remainingIncoming — ignorado no parsing de MatchResult
+            List<Object> luaResponse = Arrays.asList(
+                    "PARTIAL", "2",
+                    c1val, "30.00000000", "FULL", "0.00000000",
+                    c2val, "30.00000000", "FULL", "0.00000000",
+                    "40.00000000"   // remainingIncoming (não incluído nos MatchResult)
+            );
+
+            List<RedisMatchEngineAdapter.MatchResult> results =
+                    RedisMatchEngineAdapter.parseResult(luaResponse);
+
+            assertThat(results).hasSize(2);
+            assertThat(results.get(0).fillType()).isEqualTo("FULL");
+            assertThat(results.get(0).matchedQty()).isEqualByComparingTo("30.00");
+            assertThat(results.get(1).fillType()).isEqualTo("FULL");
+            assertThat(results.get(1).matchedQty()).isEqualByComparingTo("30.00");
+        }
+
+        @Test
+        @DisplayName("PARTIAL com 1 match e remainingIncoming: deve retornar 1 MatchResult")
+        void whenPartial1Match_returns1Result() {
+            String cval = makeCounterpart();
+
+            List<Object> luaResponse = Arrays.asList(
+                    "PARTIAL", "1",
+                    cval, "30.00000000", "FULL", "0.00000000",
+                    "70.00000000"   // remainingIncoming — BUY de 100 consumiu 30, restam 70
+            );
+
+            List<RedisMatchEngineAdapter.MatchResult> results =
+                    RedisMatchEngineAdapter.parseResult(luaResponse);
+
+            assertThat(results).hasSize(1);
+            assertThat(results.get(0).matched()).isTrue();
+            assertThat(results.get(0).matchedQty()).isEqualByComparingTo("30.00");
         }
     }
 }

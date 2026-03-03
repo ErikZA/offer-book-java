@@ -31,6 +31,7 @@ import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -241,7 +242,7 @@ public class FundsReservedEventConsumer {
                 // @Transactional cria ilusão de atomicidade cross-store.
                 // Isolamento explícito aqui garante que o commit JPA da Fase 1 ocorreu
                 // ANTES do match e que qualquer falha Redis não contamina a TX JPA.
-                final MatchResult result;
+                final List<MatchResult> result;
                 try {
                     result = matchEngine.tryMatch(
                             order.getId(),
@@ -271,10 +272,10 @@ public class FundsReservedEventConsumer {
                 // FASE 3 — TX JPA: persiste resultado do match no Outbox
                 // ================================================================
                 try {
-                    final MatchResult finalResult = result;
+                    final List<MatchResult> finalResult = result;
                     txTemplate.execute(s -> {
-                        if (finalResult.matched()) {
-                            handleMatch(order, finalResult, event);
+                        if (!finalResult.isEmpty()) {
+                            handleMatches(order, finalResult, event);
                         } else {
                             handleNoMatch(order);
                         }
@@ -283,13 +284,13 @@ public class FundsReservedEventConsumer {
                 } catch (Exception phase3Ex) {
                     // Falha de persistência pós-match: padrão de compensação TCC.
                     logger.error("Fase 3 falhou — falha ao persistir resultado: orderId={} matched={} error={}",
-                            order.getId(), result.matched(), phase3Ex.getMessage(), phase3Ex);
+                            order.getId(), !result.isEmpty(), phase3Ex.getMessage(), phase3Ex);
 
                     // Compensação Redis: se no-match, a ordem foi inserida no livro pelo Lua
                     // porém a persistência JPA falhou. Remove do livro para manter consistência.
                     // Para match: o Lua já consumiu a contraparte atomicamente — impossível
                     // desfazer no Redis; apenas cancelamos a ordem no banco.
-                    if (!result.matched()) {
+                    if (result.isEmpty()) {
                         try {
                             matchEngine.removeFromBook(order.getId(), order.getOrderType());
                             logger.info("Compensação Redis removeFromBook executada: orderId={}", order.getId());
@@ -333,67 +334,65 @@ public class FundsReservedEventConsumer {
     // =========================================================================
 
     /**
-     * Processa um match executado: aplica o match na ordem e grava eventos no Outbox.
+     * Processa todos os matches executados: aplica cada match na ordem e grava um
+     * {@link MatchExecutedEvent} por contraparte no Outbox. Ao final, emite exatamente
+     * um evento de preenchimento ({@link OrderFilledEvent} ou {@link OrderPartiallyFilledEvent})
+     * baseado no status final da ordem após todos os matches.
+     *
+     * <p><strong>AT-3.1.1 Multi-match:</strong> o script Lua pode retornar N matches em um único
+     * tick atômico. Este método itera sobre todos eles, acumulando o estado da ordem até o
+     * estado final, e então emite um único evento de fill — evitando eventos intermediários
+     * espúrios de PARTIAL para cada contraparte intermediária.</p>
      *
      * <p><strong>AT-2.1.1:</strong> {@code markAsOpen()} NÃO é chamado aqui.
      * A Fase 1 ({@link TransactionTemplate}) já transitou a ordem de PENDING → OPEN
      * e commitou antes de {@code tryMatch()}. Este método recebe a ordem no estado
      * OPEN e aplica diretamente {@code applyMatch()} → FILLED / PARTIAL.</p>
-     *
-     * <p>Determina os papeis (comprador/vendedor) baseado no tipo da ordem ingressante.
-     * A publicação real ao broker é feita de forma assíncrona pelo
-     * {@link com.vibranium.orderservice.application.service.OrderOutboxPublisherService},
-     * garantindo atomicidade entre a atualização do estado da ordem e o registro do evento.</p>
-     *
-     * <p>[AT-15.1] Além do {@link MatchExecutedEvent}, publica o Domain Event de preenchimento
-     * explícito ({@link OrderFilledEvent} ou {@link OrderPartiallyFilledEvent}) no mesmo outbox,
-     * na mesma transação. Isso elimina a divergência contrato ↔ implementação e permite que
-     * sistemas downstream reajam à transição de status sem inferir via MatchExecutedEvent.</p>
      */
-    private void handleMatch(Order order, MatchResult result, FundsReservedEvent event) {
-        // AT-2.1.1: markAsOpen() omitido — já executado e commitado na Fase 1.
-        // A ordem chega aqui em estado OPEN (garantido pelo fluxo 3 fases).
-        // Aplica o match: OPEN → FILLED (qty total) ou OPEN → PARTIAL (qty parcial).
-        order.applyMatch(result.matchedQty());
-        // Persiste a ordem atualizada — primeira operação da Fase 3
+    private void handleMatches(Order order, List<MatchResult> results, FundsReservedEvent event) {
+        boolean isBuyOrder       = order.getOrderType().name().equals("BUY");
+        UUID    orderUserUUID    = UUID.fromString(order.getUserId());
+
+        // 1. Itera sobre cada contraparte: aplica o match e grava um MatchExecutedEvent por par.
+        //    order.applyMatch() acumula as subtrações sobre remainingAmount — OPEN→PARTIAL→FILLED.
+        for (MatchResult result : results) {
+            order.applyMatch(result.matchedQty());
+
+            UUID counterpartUserUUID = UUID.fromString(result.counterpartUserId());
+
+            MatchExecutedEvent matchEvent = MatchExecutedEvent.of(
+                    order.getCorrelationId(),
+                    isBuyOrder ? order.getId()                : result.counterpartId(),
+                    isBuyOrder ? result.counterpartId()       : order.getId(),
+                    isBuyOrder ? orderUserUUID                : counterpartUserUUID,
+                    isBuyOrder ? counterpartUserUUID          : orderUserUUID,
+                    isBuyOrder ? order.getWalletId()          : result.counterpartWalletId(),
+                    isBuyOrder ? result.counterpartWalletId() : order.getWalletId(),
+                    order.getPrice(),
+                    result.matchedQty()
+            );
+
+            saveToOutbox(
+                    order.getId(),
+                    "MatchExecutedEvent",
+                    RabbitMQConfig.EVENTS_EXCHANGE,
+                    RabbitMQConfig.RK_MATCH_EXECUTED,
+                    matchEvent
+            );
+
+            logger.info("Match executado (outbox): correlationId={} orderId={} qty={} fillType={}",
+                    order.getCorrelationId(), order.getId(), result.matchedQty(), result.fillType());
+        }
+
+        // 2. Persiste a ordem com o estado final acumulado (único save para todos os matches).
         orderRepository.save(order);
 
-        boolean isBuyOrder = order.getOrderType().name().equals("BUY");
+        // 3. [AT-15.1] Emite exatamente UM evento de fill baseado no status FINAL da ordem.
+        //    Regra: somente FILLED ou PARTIAL são possíveis após applyMatch().
+        //    Último MatchResult usado como referência para o matchId do evento PARTIAL.
+        MatchResult lastResult = results.get(results.size() - 1);
 
-        UUID orderUserUUID       = UUID.fromString(order.getUserId());
-        UUID counterpartUserUUID = UUID.fromString(result.counterpartUserId());
-
-        MatchExecutedEvent matchEvent = MatchExecutedEvent.of(
-                order.getCorrelationId(),
-                isBuyOrder ? order.getId()                : result.counterpartId(),
-                isBuyOrder ? result.counterpartId()       : order.getId(),
-                isBuyOrder ? orderUserUUID                : counterpartUserUUID,
-                isBuyOrder ? counterpartUserUUID          : orderUserUUID,
-                isBuyOrder ? order.getWalletId()          : result.counterpartWalletId(),
-                isBuyOrder ? result.counterpartWalletId() : order.getWalletId(),
-                order.getPrice(),
-                result.matchedQty()
-        );
-
-        // 4. Grava MatchExecutedEvent no Outbox — infraestrutura/projeção MongoDB.
-        saveToOutbox(
-                order.getId(),
-                "MatchExecutedEvent",
-                RabbitMQConfig.EVENTS_EXCHANGE,
-                RabbitMQConfig.RK_MATCH_EXECUTED,
-                matchEvent
-        );
-
-        // 5. [AT-15.1] Publica Domain Event explícito de preenchimento, baseado na transição
-        //    de status produzida por applyMatch().
-        //    Regra: somente FILLED ou PARTIAL geram evento — nenhum outro status é possível
-        //    após applyMatch(), mas o guard explícito previne regressão.
-        //
-        //    Ambos os saves ocorrem NA MESMA TRANSAÇÃO que atualizou a Order acima,
-        //    garantindo atomicidade total via Outbox Pattern.
         if (order.getStatus() == OrderStatus.FILLED) {
-            // Ordem totalmente executada: informa quantidade total e preço de execução.
-            // Preço médio = order.getPrice() (match único; extensão futura pode calcular VWAP).
             saveToOutbox(
                     order.getId(),
                     "OrderFilledEvent",
@@ -407,8 +406,6 @@ public class FundsReservedEventConsumer {
                     )
             );
         } else if (order.getStatus() == OrderStatus.PARTIAL) {
-            // Ordem parcialmente executada: informa quanto foi executado neste match
-            // e quanto ainda resta no livro. matchId = counterpartId (contraparte deste match).
             saveToOutbox(
                     order.getId(),
                     "OrderPartiallyFilledEvent",
@@ -417,15 +414,12 @@ public class FundsReservedEventConsumer {
                     OrderPartiallyFilledEvent.of(
                             order.getCorrelationId(),
                             order.getId(),
-                            result.counterpartId(),       // matchId = ID da ordem contraparte
-                            result.matchedQty(),          // filledAmount = executado neste match
-                            order.getRemainingAmount()    // remainingAmount = saldo restante
+                            lastResult.counterpartId(),    // matchId = ID da última contraparte
+                            lastResult.matchedQty(),       // filledAmount = qty executada no último match
+                            order.getRemainingAmount()     // remainingAmount = saldo total restante
                     )
             );
         }
-
-        logger.info("Match executado (outbox): correlationId={} orderId={} qty={} fillType={}",
-                order.getCorrelationId(), order.getId(), result.matchedQty(), result.fillType());
     }
 
     /**

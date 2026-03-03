@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 import jakarta.annotation.PostConstruct;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
@@ -150,7 +151,11 @@ public class RedisMatchEngineAdapter {
     }
 
     /**
-     * Tenta casar uma ordem com contraparte no livro de ofertas Redis.
+     * Tenta casar uma ordem com contraparte(s) no livro de ofertas Redis.
+     *
+     * <p>Executa o Script Lua {@code match_engine.lua} que percorre o livro em loop
+     * até que {@code remainingQty == 0} ou o livro esteja esgotado (ou MAX_MATCHES
+     * atingido). Retorna todos os matches ocorridos em um único tick atômico.</p>
      *
      * @param orderId       UUID da ordem ingressante.
      * @param userId        keycloakId do usuário.
@@ -159,12 +164,13 @@ public class RedisMatchEngineAdapter {
      * @param price         Preço limite da ordem.
      * @param quantity      Quantidade desejada.
      * @param correlationId UUID de correlação da Saga.
-     * @return {@link MatchResult} com o resultado do match.
+     * @return Lista de {@link MatchResult} com todos os matches ocorridos; vazia se sem match.
+     *         Cada elemento representa uma contraparte distinta executada.
      */
     @SuppressWarnings("unchecked")
-    public MatchResult tryMatch(UUID orderId, String userId, UUID walletId,
-                                OrderType orderType, BigDecimal price,
-                                BigDecimal quantity, UUID correlationId) {
+    public List<MatchResult> tryMatch(UUID orderId, String userId, UUID walletId,
+                                      OrderType orderType, BigDecimal price,
+                                      BigDecimal quantity, UUID correlationId) {
 
         // Monta o valor do membro do Sorted Set
         String orderValue = buildValue(orderId, userId, walletId, quantity, correlationId);
@@ -206,70 +212,135 @@ public class RedisMatchEngineAdapter {
     }
 
     /**
-     * Parseia o resultado Lua (lista de strings):
+     * Parseia o resultado Lua retornando todos os matches ocorridos.
+     *
+     * <p>Suporta dois formatos de resposta do script Lua:</p>
      * <ul>
-     *   <li>{@code ["NO_MATCH"]} → sem match</li>
-     *   <li>{@code ["MATCH", counterpartValue, matchedQty, fillType]} → match</li>
+     *   <li><strong>Legado</strong> {@code ["MATCH", val, qty, fill, rem?]} — single-match;
+     *       retorna lista com 1 elemento (compatibilidade com scripts antigos).</li>
+     *   <li><strong>Novo</strong> {@code ["MULTI_MATCH"|"PARTIAL", N, (val, qty, fill, rem)×N, ?rem]}
+     *       — multi-match; retorna lista com N elementos.</li>
+     *   <li>{@code ["NO_MATCH"]} ou lista nula/vazia → lista vazia.</li>
      * </ul>
      *
      * <p>Redis devolve os elementos como {@code byte[]} ou {@code String},
-     * dependendo do serializer. Cobrimos os dois casos.</p>
+     * dependendo do serializer. Ambos são cobertos via {@link #asString}.</p>
      *
      * <p><strong>Visibilidade package-private</strong> intencional: permite testes
      * unitários diretos em {@code RedisMatchEngineAdapterParseResultTest} sem
      * necessidade de mock de {@code StringRedisTemplate}.</p>
      */
-    static MatchResult parseResult(List<Object> result) {
+    static List<MatchResult> parseResult(List<Object> result) {
         if (result == null || result.isEmpty()) {
-            return MatchResult.noMatch();
+            return List.of();
         }
 
         String first = asString(result.get(0));
-        if (!"MATCH".equals(first)) {
-            return MatchResult.noMatch();
-        }
 
-        if (result.size() < 4) {
-            logger.warn("Resultado do Lua incompleto: {}", result);
-            return MatchResult.noMatch();
-        }
-
-        String counterpartValue = asString(result.get(1));
-        String matchedQtyStr    = asString(result.get(2));
-        String fillType         = asString(result.get(3));
-
-        // 5º elemento: remainingCounterpartQty — adicionado no Subtask 2.1 (US-002)
-        // Fallback para BigDecimal.ZERO por compatibilidade com versões antigas do script Lua
-        BigDecimal remainingCounterpartQty = BigDecimal.ZERO;
-        if (result.size() >= 5) {
-            try {
-                remainingCounterpartQty = new BigDecimal(asString(result.get(4)));
-            } catch (NumberFormatException nfe) {
-                logger.warn("5º elemento do Lua não pôde ser parseado como BigDecimal: {}",
-                        asString(result.get(4)));
+        // ── Formato legado: ["MATCH", val, qty, fill, rem?] ───────────────────
+        if ("MATCH".equals(first)) {
+            if (result.size() < 4) {
+                logger.warn("Resultado Lua legado incompleto (MATCH): {}", result);
+                return List.of();
             }
+            MatchResult mr = parseSingleMatchEntry(
+                    asString(result.get(1)),
+                    asString(result.get(2)),
+                    asString(result.get(3)),
+                    result.size() >= 5 ? asString(result.get(4)) : null
+            );
+            return mr == null ? List.of() : List.of(mr);
         }
 
+        // ── Sem match ────────────────────────────────────────────────────────
+        if ("NO_MATCH".equals(first)) {
+            return List.of();
+        }
+
+        // ── Formato novo: ["MULTI_MATCH"|"PARTIAL", N, (val,qty,fill,rem)×N, ?rem] ──
+        if ("MULTI_MATCH".equals(first) || "PARTIAL".equals(first)) {
+            if (result.size() < 2) {
+                logger.warn("Resultado Lua incompleto ({}): sem count", first);
+                return List.of();
+            }
+            int count;
+            try {
+                count = Integer.parseInt(asString(result.get(1)));
+            } catch (NumberFormatException e) {
+                logger.warn("Count do Lua inválido: {}", asString(result.get(1)));
+                return List.of();
+            }
+            // Cada match ocupa exatamente 4 posições iniciando no índice 2
+            List<MatchResult> matches = new ArrayList<>(count);
+            int baseIndex = 2;
+            for (int i = 0; i < count; i++) {
+                int offset = baseIndex + i * 4;
+                // offset+3 deve existir (4 campos por match)
+                if (offset + 3 >= result.size()) {
+                    logger.warn("Resultado Lua truncado: {} matches declarados, {} disponíveis",
+                            count, i);
+                    break;
+                }
+                String rem = (offset + 3 < result.size() - 1)
+                        // campo rem está dentro do bloco (não é o último elemento da lista PARTIAL)
+                        ? asString(result.get(offset + 3))
+                        // último bloco: o 4º campo pode coexistir com remainingIncoming
+                        : asString(result.get(offset + 3));
+                MatchResult mr = parseSingleMatchEntry(
+                        asString(result.get(offset)),
+                        asString(result.get(offset + 1)),
+                        asString(result.get(offset + 2)),
+                        rem
+                );
+                if (mr != null) matches.add(mr);
+            }
+            return matches;
+        }
+
+        logger.warn("Formato de resposta Lua desconhecido: primeiro elemento = '{}'", first);
+        return List.of();
+    }
+
+    /**
+     * Parseia um único bloco de match a partir dos campos individuais extraídos do array Lua.
+     *
+     * @param counterpartValue valor pipe-delimited da contraparte
+     * @param matchedQtyStr    quantidade executada como string
+     * @param fillType         "FULL", "PARTIAL_ASK" ou "PARTIAL_BID"
+     * @param remainingStr     quantidade residual da contraparte como string (pode ser null)
+     * @return {@link MatchResult} populado, ou {@code null} se o valor for malformado.
+     */
+    private static MatchResult parseSingleMatchEntry(String counterpartValue,
+                                                      String matchedQtyStr,
+                                                      String fillType,
+                                                      String remainingStr) {
         String[] parts = counterpartValue.split("\\|");
         if (parts.length < 5) {
-            logger.error("Valor da contraparte malformado: {}", counterpartValue);
-            return MatchResult.noMatch();
+            logger.error("Valor da contraparte malformado (< 5 partes): {}", counterpartValue);
+            return null;
         }
-
+        BigDecimal remainingCounterpartQty = BigDecimal.ZERO;
+        if (remainingStr != null) {
+            try {
+                remainingCounterpartQty = new BigDecimal(remainingStr);
+            } catch (NumberFormatException nfe) {
+                logger.warn("remainingQty do Lua não pôde ser parseado: {}", remainingStr);
+            }
+        }
         try {
             return new MatchResult(
                     true,
-                    UUID.fromString(parts[0]),   // orderId da contraparte
-                    parts[1],                    // userId da contraparte
-                    UUID.fromString(parts[2]),   // walletId da contraparte
+                    UUID.fromString(parts[0]),        // orderId da contraparte
+                    parts[1],                         // userId da contraparte
+                    UUID.fromString(parts[2]),        // walletId da contraparte
                     new BigDecimal(matchedQtyStr),
                     remainingCounterpartQty,
                     fillType
             );
         } catch (Exception e) {
-            logger.error("Erro ao parsear resultado do match engine: value={} error={}",
+            logger.error("Erro ao parsear entrada de match: value={} error={}",
                     counterpartValue, e.getMessage());
-            return MatchResult.noMatch();
+            return null;
         }
     }
 

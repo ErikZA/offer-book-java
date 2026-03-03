@@ -7,6 +7,7 @@ import com.vibranium.contracts.enums.OrderType;
 import com.vibranium.contracts.events.wallet.FundsReservedEvent;
 import com.vibranium.orderservice.adapter.redis.RedisMatchEngineAdapter;
 import com.vibranium.orderservice.adapter.redis.RedisMatchEngineAdapter.MatchResult;
+import java.util.List;
 import com.vibranium.orderservice.config.RabbitMQConfig;
 import com.vibranium.orderservice.domain.model.Order;
 import com.vibranium.orderservice.domain.model.OrderOutboxMessage;
@@ -228,7 +229,7 @@ class FundsReservedEventConsumerTest {
             given(orderRepository.findByCorrelationId(CORRELATION_ID))
                     .willReturn(Optional.of(order));
             given(matchEngine.tryMatch(any(), any(), any(), any(), any(), any(), any()))
-                    .willReturn(buildMatchResult());
+                    .willReturn(List.of(buildMatchResult()));
             given(orderRepository.save(any(Order.class))).willAnswer(inv -> inv.getArgument(0));
             given(objectMapper.writeValueAsString(any())).willReturn("{\"ok\":true}");
             given(outboxRepository.save(any(OrderOutboxMessage.class)))
@@ -258,7 +259,7 @@ class FundsReservedEventConsumerTest {
             given(orderRepository.findByCorrelationId(CORRELATION_ID))
                     .willReturn(Optional.of(order));
             given(matchEngine.tryMatch(any(), any(), any(), any(), any(), any(), any()))
-                    .willReturn(buildMatchResult());
+                    .willReturn(List.of(buildMatchResult()));
             given(orderRepository.save(any(Order.class))).willAnswer(inv -> inv.getArgument(0));
             given(objectMapper.writeValueAsString(any())).willReturn("{\"ok\":true}");
             given(outboxRepository.save(any(OrderOutboxMessage.class)))
@@ -348,7 +349,7 @@ class FundsReservedEventConsumerTest {
             given(orderRepository.findByCorrelationId(CORRELATION_ID))
                     .willReturn(Optional.of(order));
             given(matchEngine.tryMatch(any(), any(), any(), any(), any(), any(), any()))
-                    .willReturn(MatchResult.noMatch());
+                    .willReturn(List.of());
             given(orderRepository.save(any(Order.class))).willAnswer(inv -> inv.getArgument(0));
             given(objectMapper.writeValueAsString(any())).willReturn("{\"ok\":true}");
             given(outboxRepository.save(any(OrderOutboxMessage.class)))
@@ -411,7 +412,7 @@ class FundsReservedEventConsumerTest {
             given(orderRepository.findByCorrelationId(CORRELATION_ID))
                     .willReturn(Optional.of(order));
             given(matchEngine.tryMatch(any(), any(), any(), any(), any(), any(), any()))
-                    .willReturn(partialResult);
+                    .willReturn(List.of(partialResult));
             given(orderRepository.save(any(Order.class))).willAnswer(inv -> inv.getArgument(0));
             given(objectMapper.writeValueAsString(any())).willReturn("{\"ok\":true}");
             given(outboxRepository.save(any(OrderOutboxMessage.class)))
@@ -479,7 +480,7 @@ class FundsReservedEventConsumerTest {
             given(orderRepository.findByCorrelationId(CORRELATION_ID))
                     .willReturn(Optional.of(order));
             given(matchEngine.tryMatch(any(), any(), any(), any(), any(), any(), any()))
-                    .willReturn(fullResult);
+                    .willReturn(List.of(fullResult));
             given(orderRepository.save(any(Order.class))).willAnswer(inv -> inv.getArgument(0));
             given(objectMapper.writeValueAsString(any())).willReturn("{\"ok\":true}");
             given(outboxRepository.save(any(OrderOutboxMessage.class)))
@@ -531,7 +532,7 @@ class FundsReservedEventConsumerTest {
             given(orderRepository.findByCorrelationId(CORRELATION_ID))
                     .willReturn(Optional.of(order));
             given(matchEngine.tryMatch(any(), any(), any(), any(), any(), any(), any()))
-                    .willReturn(MatchResult.noMatch());
+                    .willReturn(List.of());
             given(orderRepository.save(any(Order.class))).willAnswer(inv -> inv.getArgument(0));
             given(objectMapper.writeValueAsString(any())).willReturn("{\"ok\":true}");
             given(outboxRepository.save(any(OrderOutboxMessage.class)))
@@ -648,7 +649,7 @@ class FundsReservedEventConsumerTest {
 
             // Fase 2: no-match — ordem inserida no livro Redis
             given(matchEngine.tryMatch(any(), any(), any(), any(), any(), any(), any()))
-                    .willReturn(MatchResult.noMatch());
+                    .willReturn(List.of());
 
             // objectMapper necessário para handleNoMatch e para cancelOrder na compensação
             given(objectMapper.writeValueAsString(any())).willReturn("{\"ok\":true}");
@@ -706,7 +707,7 @@ class FundsReservedEventConsumerTest {
             given(orderRepository.findByCorrelationId(CORRELATION_ID))
                     .willReturn(Optional.of(order));
             given(matchEngine.tryMatch(any(), any(), any(), any(), any(), any(), any()))
-                    .willReturn(buildMatchResult());
+                    .willReturn(List.of(buildMatchResult()));
             given(orderRepository.save(any(Order.class)))
                     .willAnswer(inv -> inv.getArgument(0));
             given(objectMapper.writeValueAsString(any())).willReturn("{\"ok\":true}");

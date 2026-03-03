@@ -390,14 +390,14 @@ class MatchEngineRedisIntegrationTest extends AbstractIntegrationTest {
                             .isEqualTo(bidOrderId);
                 });
 
-        // Validação direta do MatchResult via tryMatch — confirma remainingCounterpartQty
-        // FASE RED: esta linha não compilará até MatchResult ter o campo remainingCounterpartQty
-        MatchResult partialResult = matchEngine.tryMatch(
+        // Validação direta do MatchResult via tryMatch — confirma API multi-match
+        // Após o BID de 100 já ter consumido o ASK, novo tryMatch insere novo BID no livro
+        List<MatchResult> partialResults = matchEngine.tryMatch(
                 UUID.randomUUID(), UUID.randomUUID().toString(), UUID.randomUUID(),
                 OrderType.BUY, price, new BigDecimal("5.00000000"), UUID.randomUUID());
-        // Após o BID de 100 já ter consumido o ASK, novo tryMatch retorna NO_MATCH
-        assertThat(partialResult.remainingCounterpartQty())
-                .as("remainingCounterpartQty deve existir no MatchResult")
+        // tryMatch retorna lista (possivelmente vazia ou com 1 match se houver residual no livro)
+        assertThat(partialResults)
+                .as("tryMatch retorna List<MatchResult> (API multi-match validada)")
                 .isNotNull();
     }
 
@@ -477,12 +477,12 @@ class MatchEngineRedisIntegrationTest extends AbstractIntegrationTest {
                             .isEqualTo(askOrderId);
                 });
 
-        // Validação direta do MatchResult — FASE RED: remainingCounterpartQty deve existir
-        MatchResult directResult = matchEngine.tryMatch(
+        // Validação direta do MatchResult — confirma API multi-match
+        List<MatchResult> directResults = matchEngine.tryMatch(
                 UUID.randomUUID(), UUID.randomUUID().toString(), UUID.randomUUID(),
                 OrderType.SELL, price, new BigDecimal("5.00000000"), UUID.randomUUID());
-        assertThat(directResult.remainingCounterpartQty())
-                .as("remainingCounterpartQty deve existir no MatchResult")
+        assertThat(directResults)
+                .as("tryMatch retorna List<MatchResult> (API multi-match validada)")
                 .isNotNull();
     }
 
@@ -630,13 +630,13 @@ class MatchEngineRedisIntegrationTest extends AbstractIntegrationTest {
         UUID ask2CorrelId = UUID.randomUUID();
 
         // Insere 2 SELLs com preços microscopicamente diferentes — sem BID disponível → NO_MATCH
-        MatchResult r1 = matchEngine.tryMatch(ask1OrderId, "user-a", ask1WalletId,
+        List<MatchResult> r1s = matchEngine.tryMatch(ask1OrderId, "user-a", ask1WalletId,
                 OrderType.SELL, price1, qty, ask1CorrelId);
-        MatchResult r2 = matchEngine.tryMatch(ask2OrderId, "user-b", ask2WalletId,
+        List<MatchResult> r2s = matchEngine.tryMatch(ask2OrderId, "user-b", ask2WalletId,
                 OrderType.SELL, price2, qty, ask2CorrelId);
 
-        assertThat(r1.matched()).as("SELL a 0.00000001 não deve casar (sem BID)").isFalse();
-        assertThat(r2.matched()).as("SELL a 0.00000002 não deve casar (sem BID)").isFalse();
+        assertThat(r1s).as("SELL a 0.00000001 não deve casar (sem BID)").isEmpty();
+        assertThat(r2s).as("SELL a 0.00000002 não deve casar (sem BID)").isEmpty();
 
         // Ambos os ASKs devem estar no livro
         assertThat(redisTemplate.opsForZSet().zCard(asksKey))
@@ -662,12 +662,13 @@ class MatchEngineRedisIntegrationTest extends AbstractIntegrationTest {
 
         // BID a price1 deve casar APENAS com o ASK mais barato (price1), não com price2
         UUID bidOrderId = UUID.randomUUID();
-        MatchResult bidResult = matchEngine.tryMatch(bidOrderId, "user-c", UUID.randomUUID(),
+        List<MatchResult> bidResults = matchEngine.tryMatch(bidOrderId, "user-c", UUID.randomUUID(),
                 OrderType.BUY, price1, qty, UUID.randomUUID());
 
-        assertThat(bidResult.matched())
+        assertThat(bidResults)
                 .as("BID a 0.00000001 deve casar com o ASK mais barato")
-                .isTrue();
+                .hasSize(1);
+        MatchResult bidResult = bidResults.get(0);
         assertThat(bidResult.counterpartId())
                 .as("Contraparte deve ser o ASK de 0.00000001 (ask1OrderId)")
                 .isEqualTo(ask1OrderId);
@@ -676,6 +677,215 @@ class MatchEngineRedisIntegrationTest extends AbstractIntegrationTest {
         assertThat(redisTemplate.opsForZSet().zCard(asksKey))
                 .as("Apenas o ASK de 0.00000002 deve permanecer no livro")
                 .isEqualTo(1L);
+    }
+
+    // =========================================================================
+    // AT-3.1.1 — Multi-Match Loop (FASE RED → GREEN)
+    // =========================================================================
+
+    /**
+     * TC-MM-1: BUY 100 vs 5 ASKs de 20 cada → 5 matches retornados, livro vazio.
+     *
+     * <p>O script Lua deve consumir as 5 contrapartes em um único tick atômico.<br>
+     * FASE RED: Lua single-match retorna apenas 1 MatchResult → falha em {@code hasSize(5)}.<br>
+     * FASE GREEN: Lua multi-match retorna lista de 5 MatchResults.</p>
+     */
+    @Test
+    @DisplayName("TC-MM-1: BUY 100 vs 5 ASKs de 20 → 5 matches, livro vazio")
+    void testMultiMatch_buyOf100_against5AsksOf20_returns5Matches() {
+        BigDecimal price  = new BigDecimal("500.00");
+        BigDecimal askQty = new BigDecimal("20.00000000");
+        BigDecimal bidQty = new BigDecimal("100.00000000");
+
+        // Insere 5 ASKs de 20 cada
+        for (int i = 0; i < 5; i++) {
+            redisTemplate.opsForZSet().add(asksKey,
+                    buildRedisValue(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                            askQty, UUID.randomUUID()),
+                    priceToScore(price));
+        }
+        assertThat(redisTemplate.opsForZSet().zCard(asksKey)).isEqualTo(5L);
+
+        UUID bidOrderId  = UUID.randomUUID();
+        UUID bidWalletId = UUID.randomUUID();
+        UUID bidCorrelId = UUID.randomUUID();
+
+        // Executa multi-match diretamente via adapter
+        List<MatchResult> results = matchEngine.tryMatch(
+                bidOrderId, "buyer-mm1", bidWalletId,
+                OrderType.BUY, price, bidQty, bidCorrelId);
+
+        // TC-MM-1a: deve retornar 5 matches
+        assertThat(results)
+                .as("TC-MM-1: BUY 100 vs 5 ASKs de 20 deve retornar 5 MatchResults")
+                .hasSize(5);
+
+        // TC-MM-1b: todos os matches devem ser FULL (cada ASK é totalmente consumido)
+        results.forEach(r -> {
+            assertThat(r.matched()).isTrue();
+            assertThat(r.matchedQty()).isEqualByComparingTo(askQty);
+            assertThat(r.fillType()).isEqualTo("FULL");
+            assertThat(r.remainingCounterpartQty()).isEqualByComparingTo(BigDecimal.ZERO);
+        });
+
+        // TC-MM-1c: Redis — todos os 5 ASKs foram consumidos
+        assertThat(redisTemplate.opsForZSet().zCard(asksKey))
+                .as("TC-MM-1: livro de ASKs deve estar vazio após 5 matches")
+                .isZero();
+
+        // TC-MM-1d: Redis — BID não deve ter sido inserido (preenchimento completo)
+        assertThat(redisTemplate.opsForZSet().zCard(bidsKey))
+                .as("TC-MM-1: nenhum residual de BID no livro")
+                .isZero();
+    }
+
+    /**
+     * TC-MM-2: BUY 100 vs 3 ASKs de 50 cada → 2 matches, 3º ASK permanece no livro.
+     *
+     * <p>O BUY de 100 consome exatamente 2 ASKs de 50 (total=100) → preenchimento completo.
+     * O 3º ASK de 50 permanece intacto no livro de ASKs.</p>
+     */
+    @Test
+    @DisplayName("TC-MM-2: BUY 100 vs 3 ASKs de 50 → 2 matches, 3º ASK restante no livro")
+    void testMultiMatch_buyOf100_against3AsksOf50_matchesTwoAndRemainder50InBook() {
+        BigDecimal price  = new BigDecimal("500.00");
+        BigDecimal askQty = new BigDecimal("50.00000000");
+        BigDecimal bidQty = new BigDecimal("100.00000000");
+
+        // Insere 3 ASKs de 50 cada (total disponível = 150)
+        for (int i = 0; i < 3; i++) {
+            redisTemplate.opsForZSet().add(asksKey,
+                    buildRedisValue(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                            askQty, UUID.randomUUID()),
+                    priceToScore(price));
+        }
+
+        List<MatchResult> results = matchEngine.tryMatch(
+                UUID.randomUUID(), "buyer-mm2", UUID.randomUUID(),
+                OrderType.BUY, price, bidQty, UUID.randomUUID());
+
+        // TC-MM-2a: deve retornar 2 matches (50+50=100 = BID qty exata)
+        assertThat(results)
+                .as("TC-MM-2: BUY 100 vs 3 ASKs de 50 deve retornar 2 MatchResults")
+                .hasSize(2);
+
+        // TC-MM-2b: ambos FULL (cada ASK de 50 totalmente consumido)
+        results.forEach(r -> {
+            assertThat(r.fillType()).isEqualTo("FULL");
+            assertThat(r.matchedQty()).isEqualByComparingTo(askQty);
+        });
+
+        // TC-MM-2c: Redis — apenas o 3º ASK deve permanecer
+        assertThat(redisTemplate.opsForZSet().zCard(asksKey))
+                .as("TC-MM-2: 3º ASK deve permanecer no livro")
+                .isEqualTo(1L);
+
+        String remainingAsk = (String) redisTemplate.opsForZSet()
+                .rangeByScore(asksKey, priceToScore(price), priceToScore(price))
+                .stream().findFirst().orElse(null);
+        assertThat(remainingAsk).isNotNull();
+        assertThat(extractQty(remainingAsk))
+                .as("TC-MM-2: ASK restante deve ter qty=50")
+                .isEqualByComparingTo(askQty);
+
+        // TC-MM-2d: Redis — BID não deve estar no livro (preenchimento exato)
+        assertThat(redisTemplate.opsForZSet().zCard(bidsKey))
+                .as("TC-MM-2: nenhum residual de BID")
+                .isZero();
+    }
+
+    /**
+     * TC-MM-3: Livro vazio → NO_MATCH (lista vazia).
+     *
+     * <p>Comportamento inalterado em relação ao single-match: retorna lista vazia
+     * e insere o BID no livro.</p>
+     */
+    @Test
+    @DisplayName("TC-MM-3: livro vazio → NO_MATCH (lista vazia), BID inserido no livro")
+    void testMultiMatch_emptyBook_returnsNoMatch() {
+        BigDecimal price  = new BigDecimal("500.00");
+        BigDecimal bidQty = new BigDecimal("100.00000000");
+
+        // Livro vazio
+        assertThat(redisTemplate.opsForZSet().zCard(asksKey)).isZero();
+
+        UUID bidOrderId = UUID.randomUUID();
+        List<MatchResult> results = matchEngine.tryMatch(
+                bidOrderId, "buyer-mm3", UUID.randomUUID(),
+                OrderType.BUY, price, bidQty, UUID.randomUUID());
+
+        // TC-MM-3a: lista vazia = NO_MATCH
+        assertThat(results)
+                .as("TC-MM-3: livro vazio deve retornar lista vazia")
+                .isEmpty();
+
+        // TC-MM-3b: BID deve ter sido inserido no livro
+        assertThat(redisTemplate.opsForZSet().zCard(bidsKey))
+                .as("TC-MM-3: BID deve estar no livro após NO_MATCH")
+                .isEqualTo(1L);
+
+        String insertedBid = (String) redisTemplate.opsForZSet()
+                .rangeByScore(bidsKey, priceToScore(price), priceToScore(price))
+                .stream().findFirst().orElse(null);
+        assertThat(insertedBid).isNotNull();
+        assertThat(extractOrderId(insertedBid))
+                .as("TC-MM-3: BID inserido deve ter o orderId correto")
+                .isEqualTo(bidOrderId);
+    }
+
+    /**
+     * TC-MM-4: MAX_MATCHES=100 — BUY 110 vs 101 ASKs de 1 → 100 matches, residual de 10 no livro.
+     *
+     * <p>Após 100 iterações (MAX_MATCHES), o loop encerra. O BUY ainda tem 10 de residual
+     * que é inserido no livro. O 101º ASK permanece intacto.</p>
+     */
+    @Test
+    @DisplayName("TC-MM-4: MAX_MATCHES=100 — BUY 110 vs 101 ASKs de 1 → 100 matches, BUY residual 10 no livro")
+    void testMultiMatch_maxIterationsReached_returnsPartialWithRemaining() {
+        BigDecimal price  = new BigDecimal("500.00");
+        BigDecimal askQty = new BigDecimal("1.00000000");
+        BigDecimal bidQty = new BigDecimal("110.00000000");
+
+        // Insere 101 ASKs de 1 cada — cada um com orderId único (member distinto no Sorted Set)
+        for (int i = 0; i < 101; i++) {
+            redisTemplate.opsForZSet().add(asksKey,
+                    buildRedisValue(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                            askQty, UUID.randomUUID()),
+                    priceToScore(price));
+        }
+        assertThat(redisTemplate.opsForZSet().zCard(asksKey)).isEqualTo(101L);
+
+        List<MatchResult> results = matchEngine.tryMatch(
+                UUID.randomUUID(), "buyer-mm4", UUID.randomUUID(),
+                OrderType.BUY, price, bidQty, UUID.randomUUID());
+
+        // TC-MM-4a: exatamente 100 matches (MAX_MATCHES atingido)
+        assertThat(results)
+                .as("TC-MM-4: MAX_MATCHES=100 deve limitar o número de matches")
+                .hasSize(100);
+
+        // TC-MM-4b: todos os 100 matches são FULL (cada ASK de qty=1 totalmente consumido)
+        results.forEach(r -> {
+            assertThat(r.fillType()).isEqualTo("FULL");
+            assertThat(r.matchedQty()).isEqualByComparingTo(askQty);
+        });
+
+        // TC-MM-4c: Redis — 1 ASK restante (o 101º, nunca tocado)
+        assertThat(redisTemplate.opsForZSet().zCard(asksKey))
+                .as("TC-MM-4: 101º ASK deve permanecer no livro")
+                .isEqualTo(1L);
+
+        // TC-MM-4d: Redis — BID residual de 10 inserido no livro
+        assertThat(redisTemplate.opsForZSet().zCard(bidsKey))
+                .as("TC-MM-4: BID residual de 10 deve estar no livro")
+                .isEqualTo(1L);
+        String residualBid = (String) redisTemplate.opsForZSet()
+                .rangeByScore(bidsKey, priceToScore(price), priceToScore(price))
+                .stream().findFirst().orElse(null);
+        assertThat(residualBid).isNotNull();
+        assertThat(extractQty(residualBid))
+                .as("TC-MM-4: BID residual deve ter qty=10 (110 - 100 matches de 1)")
+                .isEqualByComparingTo(new BigDecimal("10.00000000"));
     }
 
     // =========================================================================
