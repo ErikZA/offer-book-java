@@ -35,7 +35,8 @@
 31. [@PreAuthorize + Pageable em GET /wallets — Controle de Acesso Admin (AT-4.2.1)](#preauthorize--pageable-em-get-wallets--controle-de-acesso-admin-at-421)
 32. [Externalização de Senhas via Variáveis de Ambiente — Compose Files (AT-4.3.1)](#externalização-de-senhas-via-variáveis-de-ambiente--compose-files-at-431)
 33. [Multi-Match Loop Atômico no Lua EVAL — Consumo de Liquidez Total (AT-3.1.1)](#multi-match-loop-atômico-no-lua-eval--consumo-de-liquidez-total-at-311)
-34. [Referências](#referências)
+34. [@JsonIgnoreProperties em Todos os Records — Forward Compatibility (AT-5.2.1)](#jsonignoreproperties-em-todos-os-records--forward-compatibility-at-521)
+35. [Referências](#referências)
 
 ---
 
@@ -2916,6 +2917,123 @@ docker exec vibranium-mongodb-1 mongosh \
 
 ---
 
+## @JsonIgnoreProperties em Todos os Records — Forward Compatibility (AT-5.2.1)
+
+### Problema
+
+Os 18 records de `libs/common-contracts` (13 eventos + 5 comandos) não toleravam campos
+desconhecidos no JSON quando desserializados por um `ObjectMapper` **sem configuração**.
+O padrão do Jackson é `FAIL_ON_UNKNOWN_PROPERTIES = true`; qualquer campo extra enviado
+por um producer futuro lançaria `UnrecognizedPropertyException` no consumer — bloqueando
+o deploy independente de microsserviços.
+
+O risco era real: um consumer que não usasse o `VibraniumJacksonConfig` de `common-utils`
+(ex.: novo serviço, serviço externo, consumer de testes) travaria ao processar mensagens
+de um producer atualizado.
+
+### Solução
+
+Adicionar `@JsonIgnoreProperties(ignoreUnknown = true)` em todos os records.
+A anotação em nível de tipo tem **precedência sobre** a configuração global do mapper:
+mesmo um `ObjectMapper` com `FAIL_ON_UNKNOWN_PROPERTIES = true` ignorará campos
+desconhecidos ao desserializar um record anotado — o contrato é **auto-protegido**
+independente de como o consumer está configurado.
+
+```java
+// Antes (AT-5.2.1) — sem anotação: lança UnrecognizedPropertyException
+public record WalletCreatedEvent(
+        UUID eventId, ...
+) implements DomainEvent { ... }
+
+// Depois — record auto-protegido contra campos futuros
+@JsonIgnoreProperties(ignoreUnknown = true)
+public record WalletCreatedEvent(
+        UUID eventId, ...
+) implements DomainEvent { ... }
+```
+
+### Records anotados
+
+| Grupo | Arquivo |
+|---|---|
+| Evento | `WalletCreatedEvent` |
+| Evento | `FundsReservedEvent` |
+| Evento | `FundsReservationFailedEvent` |
+| Evento | `FundsSettledEvent` |
+| Evento | `FundsSettlementFailedEvent` |
+| Evento | `FundsReleasedEvent` |
+| Evento | `FundsReleaseFailedEvent` |
+| Evento | `OrderReceivedEvent` |
+| Evento | `OrderAddedToBookEvent` |
+| Evento | `OrderPartiallyFilledEvent` |
+| Evento | `OrderFilledEvent` |
+| Evento | `OrderCancelledEvent` |
+| Evento | `MatchExecutedEvent` |
+| Comando | `CreateWalletCommand` |
+| Comando | `ReserveFundsCommand` |
+| Comando | `ReleaseFundsCommand` |
+| Comando | `SettleFundsCommand` |
+| Comando | `CreateOrderCommand` |
+
+### Precedência da anotação de tipo sobre a config do mapper
+
+| Cenário | `FAIL_ON_UNKNOWN_PROPERTIES` | Sem `@JsonIgnoreProperties` | Com `@JsonIgnoreProperties` |
+|---|---|---|---|
+| `configuredMapper` (VibraniumJacksonConfig) | `false` | ✅ Ignora | ✅ Ignora |
+| `strictMapper` (legado/externo) | `true` | ❌ Lança exceção | ✅ Ignora |
+| `new ObjectMapper()` (padrão) | `true` (default) | ❌ Lança exceção | ✅ Ignora |
+
+### Testes TDD (ContractSchemaVersionTest — Cenário 4)
+
+```java
+// FASE RED: falha com UnrecognizedPropertyException (ObjectMapper padrão, FAIL=true por default)
+// FASE GREEN: passa após @JsonIgnoreProperties(ignoreUnknown = true) nos records
+@Test
+@DisplayName("ObjectMapper padrão + campo desconhecido → não lança exceção (AT-5.2.1)")
+void testForwardCompat_withDefaultObjectMapper_unknownFieldsIgnored() {
+
+    ObjectMapper defaultMapper = new ObjectMapper()
+            .registerModule(new JavaTimeModule()); // SEM configurar FAIL_ON_UNKNOWN_PROPERTIES
+
+    String jsonWithExtraField = """
+            {
+              "eventId": "11111111-...",
+              "schemaVersion": 1,
+              "campoFuturoDesconhecido": "deve ser ignorado pelo record anotado"
+            }
+            """;
+
+    assertThatCode(() ->
+            defaultMapper.readValue(jsonWithExtraField, WalletCreatedEvent.class))
+            .doesNotThrowAnyException();
+}
+```
+
+**Teste atualizado:** `givenJsonWithUnknownField_withStrictMapper_*` foi atualizado de
+`assertThatThrownBy(...UnrecognizedPropertyException.class)` para
+`assertThatCode(...).doesNotThrowAnyException()`, documentando que records são
+auto-protegidos mesmo com `strictMapper (FAIL=true)`.
+
+### Critérios de aceite
+
+| # | Critério | Status |
+|---|---|---|
+| 1 | Todos os 18 records anotados com `@JsonIgnoreProperties(ignoreUnknown = true)` | ✅ |
+| 2 | `testForwardCompat_withDefaultObjectMapper_unknownFieldsIgnored` passa (Cenário 4) | ✅ |
+| 3 | `ObjectMapper` padrão (sem config global) tolera campo extra em qualquer record | ✅ |
+| 4 | Anotação de tipo sobrepõe `FAIL_ON_UNKNOWN_PROPERTIES=true` do mapper | ✅ |
+| 5 | 64 testes executados, 0 falhas — `mvn clean package` BUILD SUCCESS | ✅ |
+
+### Artefatos alterados pelo AT-5.2.1
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| 13 eventos em `libs/common-contracts/src/main/java/` | Alterado | `@JsonIgnoreProperties(ignoreUnknown = true)` + import |
+| 5 comandos em `libs/common-contracts/src/main/java/` | Alterado | `@JsonIgnoreProperties(ignoreUnknown = true)` + import |
+| `ContractSchemaVersionTest.java` | Alterado | Cenário 4 adicionado (`ForwardCompatAnnotation`); teste `strictMapper` atualizado para `doesNotThrowAnyException`; import `assertThatThrownBy` removido |
+
+---
+
 ## Referências
 
 - [JUnit 5 Documentation](https://junit.org/junit5/docs/current/user-guide/)
@@ -4043,6 +4161,7 @@ mvn test -pl apps/order-service -Dtest=RedisMatchEngineAdapterParseResultTest
 **Última atualização**: 3 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-5.2.1**: `@JsonIgnoreProperties(ignoreUnknown = true)` adicionado a todos os 18 records de `common-contracts` (13 eventos + 5 comandos). A anotação em nível de tipo sobrepõe `FAIL_ON_UNKNOWN_PROPERTIES=true` do mapper — records são auto-protegidos contra campos futuros independente da configuração do consumer. `ContractSchemaVersionTest` ampliado com Cenário 4 (`ForwardCompatAnnotation`): novo teste `testForwardCompat_withDefaultObjectMapper_unknownFieldsIgnored()` usa `new ObjectMapper().registerModule(new JavaTimeModule())` sem config global de `FAIL_ON_UNKNOWN_PROPERTIES` e asserta `doesNotThrowAnyException()`; teste `givenJsonWithUnknownField_withStrictMapper_*` atualizado para refletir que a anotação sobrepõe o mapper estrito. 18 arquivos alterados (imports + anotação), 64 testes, 0 falhas, BUILD SUCCESS. Adicionada seção 34 neste guia.
 > - **AT-3.1.1**: Multi-Match Loop Atômico no Lua EVAL — `match_engine.lua` refatorado de `LIMIT 0 1` para loop `while remainingQty > 0 and iterations < MAX_MATCHES` (MAX=100). Protocolo de retorno novo: array plano `{STATUS, N, v₁, q₁, f₁, r₁, …}` com STATUS ∈ {MULTI_MATCH, PARTIAL, NO_MATCH}; formato `MATCH` legado suportado por retrocompatibilidade. `RedisMatchEngineAdapter.tryMatch()` e `parseResult()` passaram a retornar `List<MatchResult>`; helper `parseSingleMatchEntry()` extraiu lógica compartilhada. `FundsReservedEventConsumer.handleMatches()` itera a lista, emite `MatchExecutedEvent` por contraparte e um único evento de fill ao final (`OrderFilledEvent` ou `OrderPartiallyFilledEvent` baseado no status final da ordem). 7 arquivos alterados: Lua script, adapter, consumer, 2 testes unitários e 2 testes de integração. Novos testes: `MultiMatchFormatTests` (4 casos), `PartialFormatTests` (2 casos), TC-MM-1..4 em `MatchEngineRedisIntegrationTest`. 157 testes executados, zero regressões introduzidas. Adicionada seção 33 neste guia.
 > - **AT-4.3.1**: Externalização de senhas via variáveis de ambiente nos compose files de produção e staging. `infra/docker-compose.yml`: 9 credenciais substituídas — `POSTGRES_PASSWORD`, `KONG_PG_PASSWORD` (×2), `KC_DB_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD`/`KC_BOOTSTRAP_ADMIN_PASSWORD`, `RABBITMQ_DEFAULT_PASS`, `KK_TO_RMQ_PASSWORD`. `infra/docker-compose.staging.yml`: ~25 credenciais substituídas cobrindo MongoDB (×3 nós + healthchecks inline + mongo-rs-init), PostgreSQL (×3 réplicas), RabbitMQ (×3 nós incluindo `RABBITMQ_ERLANG_COOKIE: secret-cookie`), order-service (×3 — URI inline `admin:admin123` + `SPRING_RABBITMQ_PASSWORD`), wallet-service (×3 — `SPRING_DATASOURCE_PASSWORD` + `SPRING_RABBITMQ_PASSWORD`), Keycloak-DB, Keycloak (`KC_DB_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD`, `KK_TO_RMQ_PASSWORD`), kong-database, kong-migration e kong (`KONG_PG_PASSWORD`). Sintaxe `${VAR:?msg}` para falha rápida em variáveis obrigatórias; `${VAR:-default}` para nomes de usuário sem segredo. `.env.example` expandido: header referencia os 3 compose files; novas entradas de staging `MONGO_REPLICA_KEY` (gerado via `openssl rand -base64 756`), `RABBITMQ_ERLANG_COOKIE` (via `openssl rand -hex 32`) e `KONG_DB_PASSWORD`. `.gitignore`: `.env` já listado — sem alteração. Verificação FASE GREEN: `grep` retornou 0 matches de senhas literais em ambos os arquivos. Adicionada seção 32 neste guia.
 > - **AT-4.2.1**: `@PreAuthorize("hasRole('ADMIN')")` + `Pageable` em `GET /wallets` do wallet-service. `@EnableMethodSecurity` adicionado ao `SecurityConfig` (sem isso, `@PreAuthorize` é ignorada silenciosamente). `WalletController.listAll()` refatorado para aceitar `Pageable` e retornar `Page<WalletResponse>`. `WalletService.findAll(Pageable)` usa `walletRepository.findAll(pageable).map(WalletResponse::from)` — `JpaRepository` herda `PagingAndSortingRepository`, nenhuma alteração no repositório. Resposta inclui `content`, `totalElements`, `totalPages`, `size`, `number`. Novos testes TDD: TC-LA-1 (ROLE_USER → 403), TC-LA-2 (ROLE_ADMIN → 200, Page fields), TC-LA-3 (default size=20, page=0). Testes existentes migrados para `$.content[*]`. `SecurityUnauthorizedTest` atualizado com `@WithMockUser(roles = "ADMIN")` no teste de regressão. `Tests run: 131, Failures: 0` (erros restantes são pré-existentes). Adicionada seção 31 neste guia.
