@@ -21,6 +21,13 @@ services:
     mongodb:
         image: mongo:7.0
         container_name: vibranium-mongodb
+        # docker-entrypoint-override.sh: gera /etc/mongod-keyfile antes de chamar o
+        # entrypoint oficial. MongoDB 7 exige keyFile quando --auth + --replSet estão ativos.
+        # --keyFile: caminho do keyFile (intra-cluster auth, exigido mesmo em single-node)
+        # --replSet rs0: habilita replica set single-node (obrigatório para MongoTransactionManager)
+        # --bind_ip_all: aceita conexões de qualquer interface dentro da Docker network
+        entrypoint: ['bash', '/scripts/docker-entrypoint-override.sh']
+        command: ['mongod', '--replSet', 'rs0', '--bind_ip_all', '--keyFile', '/etc/mongod-keyfile']
         ports:
             - '27017:27017'
         environment:
@@ -30,6 +37,11 @@ services:
             MONGO_INITDB_DATABASE: vibranium_orders
         volumes:
             - mongodb_data:/data/db
+            # Entrypoint override: gera keyFile e delega ao entrypoint oficial
+            - ./mongo/docker-entrypoint-override.sh:/scripts/docker-entrypoint-override.sh:ro
+            # Script de inicialização das collections (executa apenas no 1º boot do volume)
+            # Movido de infra/postgres/ para infra/mongo/ (localização correta)
+            - ./mongo/init-mongo.js:/docker-entrypoint-initdb.d/01-init-mongo.js:ro
         networks:
             - vibranium-network-dev
         healthcheck:
@@ -37,6 +49,30 @@ services:
             interval: 10s
             timeout: 5s
             retries: 5
+
+    # ================================================================================
+    # mongo-rs-init — Inicializa o replica set rs0 após MongoDB estar pronto
+    # ================================================================================
+    # Container de curta duração: executa rs.initiate() e sai com código 0.
+    # O order-service aguarda service_completed_successfully antes de conectar.
+    # Reutiliza a imagem mongo:7.0 (sem pull extra) — apenas mongosh é necessário.
+    # ================================================================================
+    mongo-rs-init:
+        image: mongo:7.0
+        container_name: vibranium-mongo-rs-init
+        environment:
+            MONGO_ROOT_USER: ${MONGO_ROOT_USER:-admin}
+            MONGO_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+        volumes:
+            - ./mongo/init-replica-set.sh:/scripts/init-replica-set.sh:ro
+        command: ['bash', '/scripts/init-replica-set.sh']
+        depends_on:
+            mongodb:
+                condition: service_healthy
+        networks:
+            - vibranium-network-dev
+        # restart: no — container de inicialização, não deve reiniciar em loop
+        restart: 'no'
 
     # ================================================================================
     # PostgreSQL 16 — Banco relacional compartilhado entre order-service e wallet-service
@@ -314,7 +350,8 @@ services:
             SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
             # Redis e MongoDB: sobrescrevem os defaults 'localhost' do application.yaml
             SPRING_DATA_REDIS_HOST: redis
-            SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD}@mongodb:27017/vibranium_orders?authSource=admin
+            # replicaSet=rs0: obrigatório para MongoTransactionManager criar sessões de transação
+            SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD}@mongodb:27017/vibranium_orders?replicaSet=rs0&authSource=admin
             SPRING_RABBITMQ_HOST: rabbitmq
             SPRING_RABBITMQ_PORT: '5672'
             SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
@@ -336,8 +373,9 @@ services:
             # postgres healthy = vibranium_orders E vibranium_wallet existem e respondem
             postgres:
                 condition: service_healthy
-            mongodb:
-                condition: service_healthy
+            # mongo-rs-init completed = replica set rs0 está PRIMARY (transações disponíveis)
+            mongo-rs-init:
+                condition: service_completed_successfully
             redis:
                 condition: service_healthy
             rabbitmq:

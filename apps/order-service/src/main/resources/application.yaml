@@ -59,7 +59,10 @@ spring:
     # -----------------------------------------------------------------------
     data:
         mongodb:
-            uri: mongodb://localhost:27017/vibranium_orders
+            # replicaSet=rs0: obrigatório para MongoTransactionManager criar sessões de transação.
+            # Em dev local, inicie MongoDB com: mongod --replSet rs0 --bind_ip_all
+            # Em Docker: gerenciado pelo serviço mongo-rs-init no docker-compose.dev.yml
+            uri: mongodb://localhost:27017/vibranium_orders?replicaSet=rs0
             auto-index-creation: true
 
         # Redis — Motor de Match (Script Lua atômico via StringRedisTemplate)
