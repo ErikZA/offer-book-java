@@ -4,6 +4,7 @@ import com.vibranium.contracts.enums.OrderStatus;
 import com.vibranium.contracts.enums.OrderType;
 import com.vibranium.orderservice.application.service.SagaTimeoutCleanupJob;
 import com.vibranium.orderservice.domain.model.Order;
+import com.vibranium.orderservice.domain.model.OrderOutboxMessage;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -19,6 +20,7 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -154,9 +156,10 @@ class SagaTimeoutCleanupJobTest extends AbstractIntegrationTest {
     }
 
     @Test
-    @DisplayName("Ordem OPEN não deve ser cancelada pelo job (apenas PENDING é elegível)")
+    @DisplayName("[1.1.4] Ordem OPEN expirada deve ser cancelada com OrderCancelledEvent + ReleaseFundsCommand")
     void cancelStalePendingOrders_shouldNotCancelOpenOrder() {
-        // Arrange — cria ordem e transita para OPEN antes de persistir
+        // Comportamento atualizado em AT-1.1.4: ordens OPEN expiradas também são canceladas
+        // e geram ReleaseFundsCommand compensatório, pois os fundos já foram reservados.
         Order openOrder = buildPendingOrder();
         openOrder.markAsOpen(); // PENDING → OPEN
         orderRepository.save(openOrder);
@@ -166,20 +169,100 @@ class SagaTimeoutCleanupJobTest extends AbstractIntegrationTest {
         // Pré-condição
         assertThat(orderRepository.findById(orderId).orElseThrow().getStatus())
                 .isEqualTo(OrderStatus.OPEN);
+        assertThat(outboxRepository.findAll()).isEmpty();
 
         // Act
         sagaTimeoutCleanupJob.cancelStalePendingOrders();
 
-        // Assert — ordem OPEN deve permanecer OPEN
+        // Assert — ordem OPEN deve ser CANCELLED (fundos já reservados → precisa de compensação)
         Order afterJob = orderRepository.findById(orderId).orElseThrow();
         assertThat(afterJob.getStatus())
-                .as("Ordem OPEN não deve ser cancelada pelo job de timeout")
-                .isEqualTo(OrderStatus.OPEN);
+                .as("[AT-1.1.4] Ordem OPEN expirada deve ser CANCELLED")
+                .isEqualTo(OrderStatus.CANCELLED);
+        assertThat(afterJob.getCancellationReason())
+                .as("Motivo deve ser SAGA_TIMEOUT")
+                .isEqualTo("SAGA_TIMEOUT");
 
-        // Assert — outbox vazio: nenhum evento gerado para ordens não-PENDING
-        assertThat(outboxRepository.findAll())
-                .as("Outbox deve permanecer vazio para ordens que não são PENDING")
-                .isEmpty();
+        // Assert — outbox deve ter 2 mensagens: OrderCancelledEvent + ReleaseFundsCommand
+        List<OrderOutboxMessage> outboxMessages = outboxRepository.findAll();
+        assertThat(outboxMessages)
+                .as("[AT-1.1.4] Outbox deve ter OrderCancelledEvent + ReleaseFundsCommand para ordem OPEN")
+                .hasSize(2);
+        assertThat(outboxMessages.stream().map(OrderOutboxMessage::getEventType))
+                .containsExactlyInAnyOrder("OrderCancelledEvent", "ReleaseFundsCommand");
+    }
+
+    // =========================================================================
+    // AT-1.1.4 — Emissão do ReleaseFundsCommand para ordens com fundos reservados
+    // =========================================================================
+
+    @Test
+    @DisplayName("[AT-1.1.4 RED] Timeout de ordem OPEN deve gerar OrderCancelledEvent + ReleaseFundsCommand")
+    void testTimeout_orderOpen_emitsReleaseFundsCommand() {
+        // Arrange — cria ordem BUY no estado OPEN (fundos já reservados)
+        Order openOrder = buildPendingOrder();
+        openOrder.markAsOpen(); // PENDING → OPEN (simula FundsReservedEvent já processado)
+        orderRepository.save(openOrder);
+        UUID orderId = openOrder.getId();
+
+        // Pré-condição: status OPEN, outbox vazio
+        assertThat(orderRepository.findById(orderId).orElseThrow().getStatus())
+                .isEqualTo(OrderStatus.OPEN);
+        assertThat(outboxRepository.findAll()).isEmpty();
+
+        // Act — job com clock fixo 1h à frente → ordem OPEN é considerada expirada
+        sagaTimeoutCleanupJob.cancelStalePendingOrders();
+
+        // Assert — ordem deve ser CANCELLED
+        Order cancelled = orderRepository.findById(orderId).orElseThrow();
+        assertThat(cancelled.getStatus())
+                .as("[AT-1.1.4] Ordem OPEN expirada deve ser CANCELLED")
+                .isEqualTo(OrderStatus.CANCELLED);
+        assertThat(cancelled.getCancellationReason()).isEqualTo("SAGA_TIMEOUT");
+
+        // Assert — outbox deve ter OrderCancelledEvent E ReleaseFundsCommand
+        List<OrderOutboxMessage> messages = outboxRepository.findAll();
+        assertThat(messages)
+                .as("[AT-1.1.4] Outbox deve ter 2 mensagens: OrderCancelledEvent + ReleaseFundsCommand")
+                .hasSize(2);
+        assertThat(messages.stream().map(OrderOutboxMessage::getEventType))
+                .containsExactlyInAnyOrder("OrderCancelledEvent", "ReleaseFundsCommand");
+
+        // Assert — ReleaseFundsCommand deve referenciar a ordem correta
+        OrderOutboxMessage releaseMsg = messages.stream()
+                .filter(m -> "ReleaseFundsCommand".equals(m.getEventType()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("ReleaseFundsCommand não encontrado no outbox"));
+        assertThat(releaseMsg.getAggregateId())
+                .as("ReleaseFundsCommand deve ter o orderId como aggregateId")
+                .isEqualTo(orderId);
+        assertThat(releaseMsg.getPublishedAt())
+                .as("Mensagem no outbox ainda não deve ter sido publicada")
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("[AT-1.1.4 RED] Timeout de ordem PENDING NÃO deve gerar ReleaseFundsCommand (fundos não reservados)")
+    void testTimeout_orderPending_doesNotEmitRelease() {
+        // Arrange — ordem PENDING: fundos ainda NÃO foram reservados (Saga em andamento)
+        Order pendingOrder = buildPendingOrder();
+        orderRepository.save(pendingOrder);
+        UUID orderId = pendingOrder.getId();
+
+        // Act
+        sagaTimeoutCleanupJob.cancelStalePendingOrders();
+
+        // Assert — apenas OrderCancelledEvent (sem ReleaseFundsCommand)
+        List<OrderOutboxMessage> messages = outboxRepository.findAll();
+        assertThat(messages)
+                .as("[AT-1.1.4] Ordem PENDING deve gerar apenas OrderCancelledEvent (sem release)")
+                .hasSize(1);
+        assertThat(messages.get(0).getEventType())
+                .as("Único evento deve ser OrderCancelledEvent")
+                .isEqualTo("OrderCancelledEvent");
+        assertThat(messages.stream().map(OrderOutboxMessage::getEventType))
+                .as("Não deve haver ReleaseFundsCommand para ordem PENDING")
+                .doesNotContain("ReleaseFundsCommand");
     }
 
     @Test

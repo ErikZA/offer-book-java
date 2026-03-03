@@ -4,6 +4,7 @@ import com.vibranium.orderservice.domain.model.OrderOutboxMessage;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -26,4 +27,22 @@ public interface OrderOutboxRepository extends JpaRepository<OrderOutboxMessage,
      * @return Lista de mensagens pendentes, ordenadas por {@code created_at} implícita.
      */
     List<OrderOutboxMessage> findByPublishedAtIsNull();
+
+    /**
+     * Retorna a mensagem mais recente do outbox com o aggregateId e eventType informados.
+     *
+     * <p>Utilizado pelo {@link com.vibranium.orderservice.adapter.messaging.FundsSettlementFailedEventConsumer}
+     * para recuperar o {@code MatchExecutedEvent} armazenado durante o processamento
+     * do {@code FundsReservedEvent}. O payload do {@code MatchExecutedEvent} contém
+     * os IDs de carteira (buyer/seller) necessários para emitir os {@code ReleaseFundsCommand}
+     * de compensação (AT-1.1.4).</p>
+     *
+     * <p>Os registros do outbox são marcados com {@code published_at} mas nunca deletados,
+     * garantindo que este lookup seja sempre possível para auditoria e compensação.</p>
+     *
+     * @param aggregateId ID do agregado (orderId da ordem que disparou o match).
+     * @param eventType   Tipo do evento (ex: {@code "MatchExecutedEvent"}).
+     * @return Optional com a mensagem, ou empty se não encontrada.
+     */
+    Optional<OrderOutboxMessage> findFirstByAggregateIdAndEventType(UUID aggregateId, String eventType);
 }

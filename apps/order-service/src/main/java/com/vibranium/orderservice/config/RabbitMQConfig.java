@@ -58,10 +58,31 @@ public class RabbitMQConfig {
     // Filas publicadas pelo order-service (declaradas para que o broker as crie)
     public static final String QUEUE_RESERVE_FUNDS   = "wallet.commands.reserve-funds";
 
+    /**
+     * Fila de {@code ReleaseFundsCommand} — compensação da Saga publicada pelo order-service
+     * quando uma ordem com fundos já reservados é cancelada (timeout OPEN/PARTIAL ou
+     * falha de liquidação). Consumida pelo wallet-service para desbloquear o saldo.
+     */
+    public static final String QUEUE_RELEASE_FUNDS   = "wallet.commands.release-funds";
+
     // Routing keys usadas pelos consumidores
     public static final String RK_FUNDS_RESERVED     = "wallet.events.funds-reserved";
     public static final String RK_FUNDS_FAILED       = "wallet.events.funds-reservation-failed";
     public static final String RK_KEYCLOAK_REGISTER  = "KK.EVENT.CLIENT.orderbook-realm.REGISTER";
+
+    /**
+     * Routing key do {@code FundsSettlementFailedEvent} publicado pelo wallet-service
+     * quando a liquidação de um trade falha após um match bem-sucedido.
+     * O order-service consome este evento para emitir {@code ReleaseFundsCommand}
+     * compensatório para ambas as carteiras (buyer + seller) — AT-1.1.4.
+     */
+    public static final String RK_FUNDS_SETTLEMENT_FAILED = "wallet.events.funds-settlement-failed";
+
+    /**
+     * Fila do order-service para consumir {@code FundsSettlementFailedEvent}.
+     * Bound à {@code EVENTS_EXCHANGE} com routing key {@code RK_FUNDS_SETTLEMENT_FAILED}.
+     */
+    public static final String QUEUE_FUNDS_SETTLEMENT_FAILED = "order.events.funds-settlement-failed";
 
     // -------------------------------------------------------------------------
     // Filas do Read Model (projeção MongoDB — Query Side US-003)
@@ -232,6 +253,56 @@ public class RabbitMQConfig {
                 .bind(reserveFundsQueue)
                 .to(commandsExchange)
                 .with(QUEUE_RESERVE_FUNDS);
+    }
+
+    // -------------------------------------------------------------------------
+    // Fila de ReleaseFundsCommand — compensação publicada pelo order-service (AT-1.1.4)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Fila durable para {@code ReleaseFundsCommand}.
+     * Sem DLX: se o wallet-service rejeitar o release, deve ser re-tentado via listener retry.
+     */
+    @Bean
+    Queue releaseFundsQueue() {
+        return QueueBuilder.durable(QUEUE_RELEASE_FUNDS).build();
+    }
+
+    @Bean
+    Binding releaseFundsBinding(
+            @Qualifier("releaseFundsQueue")  Queue releaseFundsQueue,
+            @Qualifier("commandsExchange")   DirectExchange commandsExchange) {
+        return BindingBuilder
+                .bind(releaseFundsQueue)
+                .to(commandsExchange)
+                .with(QUEUE_RELEASE_FUNDS);
+    }
+
+    // -------------------------------------------------------------------------
+    // Fila de FundsSettlementFailedEvent (wallet → order: liquidação falhou — AT-1.1.4)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Fila durable para {@code FundsSettlementFailedEvent} com DLX configurada.
+     * Falhas de processamento vão para a DLQ para intervenção manual, visto ser
+     * um evento crítico de incidente financeiro.
+     */
+    @Bean
+    Queue fundsSettlementFailedQueue() {
+        return QueueBuilder.durable(QUEUE_FUNDS_SETTLEMENT_FAILED)
+                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-routing-key", QUEUE_DEAD_LETTER)
+                .build();
+    }
+
+    @Bean
+    Binding fundsSettlementFailedBinding(
+            @Qualifier("fundsSettlementFailedQueue") Queue fundsSettlementFailedQueue,
+            @Qualifier("eventsExchange")             TopicExchange eventsExchange) {
+        return BindingBuilder
+                .bind(fundsSettlementFailedQueue)
+                .to(eventsExchange)
+                .with(RK_FUNDS_SETTLEMENT_FAILED);
     }
 
     // -------------------------------------------------------------------------

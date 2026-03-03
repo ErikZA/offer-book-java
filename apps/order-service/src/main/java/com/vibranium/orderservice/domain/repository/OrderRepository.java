@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -69,4 +70,21 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
      * @return Lista de ordens elegíveis para cancelamento por timeout; pode ser vazia, nunca {@code null}.
      */
     List<Order> findByStatusAndCreatedAtBefore(OrderStatus status, Instant cutoff);
+
+    /**
+     * Retorna ordens cujo status está entre os informados e cujo {@code createdAt} é anterior
+     * ao instante de corte.
+     *
+     * <p>Utilizado pelo {@link com.vibranium.orderservice.application.service.SagaTimeoutCleanupJob}
+     * para incluir ordens {@code OPEN} e {@code PARTIAL} no cleanup por timeout (AT-1.1.4).
+     * Ordens nesses estados já tiveram fundos reservados e precisam de compensação
+     * via {@link com.vibranium.contracts.commands.wallet.ReleaseFundsCommand}.</p>
+     *
+     * <p>Spring Data deriva: {@code WHERE status IN (?) AND created_at < ?}</p>
+     *
+     * @param statuses  Coleção de status elegíveis.
+     * @param cutoff    Instante de corte.
+     * @return Lista de ordens elegíveis; nunca {@code null}.
+     */
+    List<Order> findByStatusInAndCreatedAtBefore(Collection<OrderStatus> statuses, Instant cutoff);
 }
