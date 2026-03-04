@@ -95,7 +95,7 @@ Os seguintes arquivos foram consolidados no documento principal, mas estão disp
 | **Mocks** | Mockito, WireMock | COMPREHENSIVE_TESTING.md #padrões-de-teste |
 | **Validação** | JSR-380 | COMPREHENSIVE_TESTING.md #padrões-de-teste |
 | **Performance** | Tempo, Concorrência | COMPREHENSIVE_TESTING.md #padrões-de-teste |
-| **CDC Debezium** | 6 padrões (US-001) | COMPREHENSIVE_TESTING.md #testes-de-cdc |
+| **Outbox Relay Polling** | 6 padrões (US-001) | COMPREHENSIVE_TESTING.md #testes-de-cdc |
 | **Partial Fill / Redis** | 4 padrões (US-002) | COMPREHENSIVE_TESTING.md #partial-fill |
 | **Idempotência eventId** | 1 padrão (US-002) | COMPREHENSIVE_TESTING.md #partial-fill |
 | **Segurança Spring Security Test** | 4 cenários (AT-10.3) | COMPREHENSIVE_TESTING.md #testes-de-segurança-spring-security-test-at-103 |

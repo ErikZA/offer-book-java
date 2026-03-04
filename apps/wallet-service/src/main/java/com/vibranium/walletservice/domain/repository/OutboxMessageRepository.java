@@ -14,8 +14,8 @@ import java.util.UUID;
 /**
  * Repositório Spring Data JPA para o Transactional Outbox.
  *
- * <p>O relay do Outbox (via Debezium CDC) captura inserções na tabela via WAL e
- * usa {@link #claimAndMarkProcessed(UUID)} para garantir processamento
+ * <p>O relay do Outbox usa polling com {@code SELECT FOR UPDATE SKIP LOCKED}
+ * e {@link #claimAndMarkProcessed(UUID)} para garantir processamento
  * exatamente-uma-vez em cenários de múltiplas instâncias. O índice parcial
  * {@code WHERE processed = FALSE} garante performance O(pendentes).</p>
  */
@@ -26,6 +26,29 @@ public interface OutboxMessageRepository extends JpaRepository<OutboxMessage, UU
      * Mantido para compatibilidade com testes existentes e fallback de consulta.
      */
     List<OutboxMessage> findByProcessedFalseOrderByCreatedAtAsc();
+
+    /**
+     * Seleciona mensagens pendentes com lock pessimista e SKIP LOCKED.
+     *
+     * <p>A cláusula {@code FOR UPDATE} adquire um row-level lock exclusivo.
+     * {@code SKIP LOCKED} faz com que linhas já bloqueadas por outra transação
+     * sejam silenciosamente ignoradas — permitindo que múltiplas instâncias
+     * processem lotes diferentes em paralelo sem deadlocks.</p>
+     *
+     * <p>O índice parcial {@code WHERE processed = FALSE} garante
+     * performance O(pendentes) mesmo com milhões de registros na tabela.</p>
+     *
+     * @param batchSize Número máximo de mensagens a retornar por ciclo.
+     * @return Lista de mensagens pendentes, locked pela transação corrente.
+     */
+    @Query(value = """
+        SELECT * FROM outbox_message
+        WHERE processed = false
+        ORDER BY created_at ASC
+        LIMIT :batchSize
+        FOR UPDATE SKIP LOCKED
+        """, nativeQuery = true)
+    List<OutboxMessage> findPendingWithLock(@Param("batchSize") int batchSize);
 
     /**
      * Retorna mensagens não processadas em página, limitando o volume carregado

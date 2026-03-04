@@ -36,12 +36,12 @@ src/
 │   │   │   └── repository/                               # Interfaces JPA
 │   │   ├── infrastructure/
 │   │   │   ├── messaging/                                # Listeners RabbitMQ
-│   │   │   └── outbox/                                   # Debezium + OutboxPublisher
+│   │   │   └── outbox/                                   # OutboxPublisher (Polling SKIP LOCKED)
 │   │   ├── config/                                       # RabbitMQ, Outbox, Jackson, SecurityConfig
 │   │   └── exception/                                    # InsufficientFundsException, etc.
 │   └── resources/
 │       ├── application.yaml
-│       └── db/migration/                                 # V1…V5 (Flyway)
+│       └── db/migration/                                 # V1…V7 (Flyway)
 └── test/
     ├── java/com/vibranium/walletservice/
     │   ├── unit/
@@ -63,8 +63,8 @@ src/
 │   └── unit/
 │       ├── WalletOutboxCleanupJobTest.java            # AT-2.3.1 — TC-OCJ-1/2: Clock.fixed valida janela retenção outbox
 │       └── WalletIdempotencyCleanupJobTest.java       # AT-2.3.1 — TC-IKJ-1/2: Clock.fixed valida janela retenção idempotência
-│       ├── DebeziumJdbcOffsetMigrationTest.java      # AT-08.1 RED — tabela wallet_outbox_offset
-│       └── DebeziumRestartIdempotencyTest.java       # AT-08.1 RED→GREEN — idempotência pós-restart
+│       ├── DebeziumJdbcOffsetMigrationTest.java      # (removido — era AT-08.1 do relay CDC)
+│       └── DebeziumRestartIdempotencyTest.java       # (removido — era AT-08.1 do relay CDC)
 │   └── security/
 │       ├── SecurityUnauthorizedTest.java             # AT-10.1 — 401 sem token; AT-4.2.1 — 200 com ROLE_ADMIN
 │       ├── WalletOwnershipTest.java                  # AT-10.2 — 403 acesso cruzado, 200 owner/admin
@@ -265,77 +265,42 @@ restaurada por mapeamento após a aquisição dos locks, sem alterar contratos p
 | `ReserveFundsDlqIntegrationTest` (Teste 1) | Integração (RabbitMQ) | Consulta Management API e valida que `wallet.commands.reserve-funds` possui `x-dead-letter-exchange=vibranium.dlq` e `x-dead-letter-routing-key` configurados |
 | `ReserveFundsDlqIntegrationTest` (Teste 2) | Integração (RabbitMQ) | Simula poison pill via `@MockBean`, verifica que mensagem NACKed não fica na fila principal e aparece em `wallet.commands.reserve-funds.dlq` com header `x-death` |
 
-### Persistência de Offset Debezium — JdbcOffsetBackingStore (AT-08.1)
+### Persistência de Offset do Relay — Histórico (AT-08.1)
 
-O `FileOffsetBackingStore` armazenava o offset do WAL em `/tmp/wallet-outbox-offset.dat`, um caminho efêmero em containers Docker. Após restart, o Debezium perdia o LSN confirmado e podia reprocessar eventos já publicados no RabbitMQ (duplicatas).
+> **Nota histórica:** O relay do Outbox originalmente usava um mecanismo CDC baseado em WAL
+> (replication slot PostgreSQL), que exigia persistir a posição de leitura (LSN) em banco.
+> Esse mecanismo foi substituído por **Polling com `SELECT FOR UPDATE SKIP LOCKED`**.
+> A tabela `wallet_outbox_offset` (criada em V5, corrigida em V6) foi removida na migration V7.
+> O relay atual baseia-se apenas no campo `processed = false` para selecionar mensagens pendentes.
 
-**Solução — `JdbcOffsetBackingStore`:** o offset é persistido na tabela `wallet_outbox_offset` do próprio PostgreSQL (migration V5). O banco sobrevive ao restart do container, garantindo continuidade exata do WAL.
-
-Benefícios:
-- Offset sobrevive ao restart do container
-- Nenhuma duplicata por perda de offset
-- `FileSchemaHistory` em `/tmp` também eliminado — schema reconstruído do WAL no startup
-- Alinha o sistema com exactly-once semantics (combinado com `claimAndPublish` atômico)
-
-| Classe | Tipo | O que prova |
-|--------|------|-------------|
-| `DebeziumJdbcOffsetMigrationTest` | Integração (RED→GREEN) | Valida existência, estrutura e PK da tabela `wallet_outbox_offset` após migration V5 |
-| `DebeziumRestartIdempotencyTest` | Integração (RED→GREEN) | Confirma que offset persiste no banco e que restart controlado não republica eventos já processados |
+| Migration | Papel histórico |
+|-----------|----------------|
+| `V5__create_wallet_outbox_offset.sql` | Criou tabela de offset WAL (LSN) |
+| `V6__fix_wallet_outbox_offset_val_type.sql` | Corrigiu tipo BYTEA → VARCHAR |
+| `V7__drop_wallet_outbox_offset.sql` | Removeu a tabela (relay migrado para Polling) |
 
 ---
 
-## ⚠️ Debezium Embedded Limitation
+## ⚠️ OutboxPublisher — Escalabilidade Horizontal (Polling SKIP LOCKED)
 
-> **O `wallet-service` com Debezium Embedded suporta apenas deployment single-instance.**
-> Escalonar horizontalmente este serviço sem remover o `DebeziumOutboxEngine` causa
-> falha imediata ou WAL bloat no PostgreSQL.
+O relay do Outbox usa `SELECT FOR UPDATE SKIP LOCKED` com `@Scheduled`. Este padrão
+suporta **múltiplas instâncias concorrentes** sem coordenação distribuída:
 
-### Por que a limitação existe
-
-O Debezium Embedded cria **um replication slot por instância** no PostgreSQL e não
-possui coordenação distribuída. Com múltiplas instâncias:
-
-| Cenário                          | Resultado                                                                 |
-|----------------------------------|---------------------------------------------------------------------------|
-| Mesmo slot (`APP_OUTBOX_SLOT_NAME` igual) | PostgreSQL rejeita a 2ª conexão: `slot already active` (SQLState 55006) |
-| Slots distintos por instância    | Todas as instâncias recebem os mesmos eventos (fan-out). **WAL bloat:** o banco retém WAL até que *todos* os slots confirmem o LSN. Uma instância lenta pode esgotar o disco. |
-
-### Configuração atual
-
-```yaml
-# application.yaml
-app.outbox.debezium.slot-name: ${APP_OUTBOX_SLOT_NAME:wallet_outbox_slot}
-```
-
-O nome é **fixo por padrão**. Nenhum mecanismo gera automaticamente um sufixo único
-por pod/hostname.
+| Cenário | Resultado |
+|---------|----------|
+| N instâncias no mesmo banco | Cada instância faz SKIP nas linhas já bloqueadas — sem duplicatas |
+| Instância travada/lenta | As demais continuam processando — sem WAL bloat, sem replication slot |
 
 ### Caminhos evolutivos para alta disponibilidade
 
 | Fase | Estratégia | Trade-off |
-|------|-----------|-----------|
-| **Imediato** | Single-instance (status quo) | Sem escala horizontal do publisher |
-| **Curto prazo** | Desabilitar Debezium; usar Polling Scheduler com `SELECT FOR UPDATE SKIP LOCKED` | Latência maior (~polling interval); sem WAL bloat |
-| **Médio prazo** | Migrar para Debezium Server dedicado + Kafka | Kafka como dependência; CDC desacoplado da JVM da app |
-
-### Monitoramento de WAL bloat
-
-```sql
--- Verificar lag de cada replication slot (bytes retidos no WAL)
-SELECT slot_name, active,
-       pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) AS lag_bytes
-FROM pg_replication_slots;
-```
-
-> Slot com `active = false` e `lag_bytes` crescente indica instância travada.
-> Ação: `SELECT pg_drop_replication_slot('wallet_outbox_slot');` (IRREVERSÍVEL — Debezium
-> reiniciará do LSN corrente).
+|------|-----------|----------|
+| **Atual** | Polling SKIP LOCKED (`@Scheduled`) | Latência = polling interval (~1s); escalável horizontalmente |
+| **Médio prazo** | Migrar para CDC externo + Kafka | Latência < 100ms; complexidade operacional maior |
 
 ### Documentação arquitetural
 
-Decisão versionada em: [`docs/architecture/adr-001-debezium-single-instance.md`](../../docs/architecture/adr-001-debezium-single-instance.md)
-
-Teste de garantia: [`DebeziumSingleInstanceConstraintTest`](src/test/java/com/vibranium/walletservice/architecture/DebeziumSingleInstanceConstraintTest.java) (AT-08.2)
+Decisão arquitetural original registrada em: [`docs/architecture/adr-001-debezium-single-instance.md`](../../docs/architecture/adr-001-debezium-single-instance.md) (SUPERSEDED — contexto histórico)
 
 ---
 

@@ -15,7 +15,7 @@
 11. [Debug Remoto](#debug-remoto)
 12. [Checklist de Qualidade](#checklist-de-qualidade)
 13. [Troubleshooting](#troubleshooting)
-14. [Testes de CDC — Debezium Outbox](#testes-de-cdc--debezium-outbox)
+14. [Testes de Outbox — Polling SKIP LOCKED](#testes-de-outbox--polling-skip-locked)
 15. [Partial Fill — Requeue Atômico e Idempotência por eventId (US-002)](#partial-fill--requeue-atômico-e-idempotência-por-eventid-us-002)
 16. [Invariantes de Domínio Wallet — Encapsulamento de Agregado (US-005)](#invariantes-de-domínio-wallet--encapsulamento-de-agregado-us-005)
 17. [Criação Lazy Determinística de OrderDocument (AT-05.1)](#criação-lazy-determinística-de-orderdocument-at-051)
@@ -1535,9 +1535,12 @@ substitui a aplicação como raiz do contexto. Usa `@Configuration` + `@EnableAu
 > faz o bootstrap de **outros** testes (`@SpringBootTest`) encontrarem essa classe como
 > aplicação raiz, causando 404 em todos os endpoints REST.
 
-#### 2. Debezium `offset_val` BYTEA vs VARCHAR → `PSQLException`
+#### 2. Nota histórica: Debezium `offset_val` BYTEA vs VARCHAR (removido)
 
-**Suíte:** `DebeziumRestartIdempotencyTest` (1 failure)
+> **Contexto histórico:** O Debezium Embedded foi removido do projeto.
+> O problema abaixo não se aplica mais, mas é mantido como referência.
+
+**Suíte:** `DebeziumRestartIdempotencyTest` (removido)
 
 **Problema:** Migração V5 criou `offset_val BYTEA`, mas `JdbcOffsetBackingStore` do
 Debezium 2.7.x grava o offset como `String` (VARCHAR).
@@ -1756,9 +1759,13 @@ jobs:
 
 ---
 
-## Testes de CDC — Debezium Outbox
+## Testes de Outbox — Polling SKIP LOCKED
 
-Esta seção cobre dois padrões complementares do Outbox Pattern no `order-service`:
+Esta seção cobre os padrões de teste do Outbox Pattern nos dois serviços.
+
+> **Nota:** O Debezium Embedded foi removido do projeto e substituído por Polling com
+> `SELECT FOR UPDATE SKIP LOCKED`. O relay agora é feito via `@Scheduled` no
+> `OutboxPublisherService`, permitindo escalabilidade horizontal (N instâncias concorrentes).
 
 ### AT-01.1 — Refatoração de Transacionalidade (Eliminação de Dual Write)
 
@@ -1774,7 +1781,7 @@ O `OrderCommandServiceTest` valida, em camada unitária pura (Mockito, sem conta
 | Construtor sem `RabbitTemplate` | Instanciável com 4 parâmetros; `parameterCount == 4` por reflexão |
 | `keycloakId` não registrado | `UserNotRegisteredException`, nenhum save |
 
-Schema das duas entradas no outbox (conforme [Debezium Outbox Event Router](https://debezium.io/documentation/reference/3.5/transformations/outbox-event-router)):
+Schema das duas entradas no outbox (Transactional Outbox Pattern):
 
 ```
 aggregate_type = "Order"
@@ -1800,23 +1807,25 @@ assertThat(eventTypes).containsExactlyInAnyOrder("ReserveFundsCommand", "OrderRe
 assertThat(outboxRepository.findAll()).hasSize(4);
 ```
 
-O `OutboxPublisherIntegrationTest` valida o caminho completo do evento desde a inserção na tabela `outbox_message` até a chegada na fila RabbitMQ via Debezium CDC. Esta seção documenta os padrões e armadilhas encontrados.
+O `OutboxPollingRelayIntegrationTest` valida o caminho completo do evento desde a inserção na tabela `outbox_message` até a chegada na fila RabbitMQ via Polling SKIP LOCKED. Esta seção documenta os padrões e armadilhas encontrados.
 
-### Por que um contexto Spring separado
+### Configuração do contexto Spring
 
-O `DebeziumOutboxEngine` e o `OutboxPublisherService` são protegidos por `@ConditionalOnProperty(name = "app.outbox.debezium.enabled", havingValue = "true", matchIfMissing = false)`. Isso garante que os beans **não são carregados** em testes `@DataJpaTest` ou `@SpringBootTest` convencionais que não precisam do broker RabbitMQ.
+O `OutboxPublisherService` é sempre carregado no contexto Spring (sem `@ConditionalOnProperty`). O `@EnableScheduling` no `OutboxConfig` garante que o polling é executado automaticamente.
 
-Para os testes que precisam do relay completo, um contexto isolado é ativado via:
+Para testes de integração, o `application-test.yaml` configura polling rápido:
 
-```java
-@SpringBootTest
-@TestPropertySource(properties = "app.outbox.debezium.enabled=true")
-class OutboxPublisherIntegrationTest extends AbstractIntegrationTest { ... }
+```yaml
+app:
+  outbox:
+    batch-size: 50
+    polling:
+      interval-ms: 1000   # 1 s para testes
 ```
 
 ### Padrão: aguardar mensagem na fila (Awaitility)
 
-O Debezium é assíncrono por natureza. Nunca use `Thread.sleep()` diretamente — use Awaitility para fazer polling do RabbitMQ:
+O Polling é assíncrono por natureza. Nunca use `Thread.sleep()` diretamente — use Awaitility para fazer polling do RabbitMQ:
 
 ```java
 import static org.awaitility.Awaitility.await;
@@ -1836,7 +1845,7 @@ void shouldPublishFundsReservedEvent() {
             eventId, "FundsReservedEvent", walletId.toString(),
             "{\"amount\":\"100.00\"}", Timestamp.from(Instant.now()));
 
-    // Act + Assert — Debezium entrega em até 10 s
+    // Act + Assert — Polling entrega em até 10 s
     await().atMost(10, TimeUnit.SECONDS)
            .pollInterval(200, TimeUnit.MILLISECONDS)
            .untilAsserted(() -> {
@@ -1851,7 +1860,7 @@ void shouldPublishFundsReservedEvent() {
 }
 ```
 
-**Por que 10 s e não 5 s?** Quando o suite completo roda, outros testes antes deste criam registros em `outbox_message`. O `processExistingPendingMessages()` processa esse backlog na inicialização do contexto Debezium. O overhead de processar dezenas de eventos pendentes pode levar 3–5 s a mais — daí a margem de 10 s para evitar falsos negativos.
+**Por que 10 s e não 5 s?** Quando o suite completo roda, o intervalo de polling é 1 s (perfil test). A margem de 10 s garante que mesmo com GC pauses ou carga de CI o teste não produza falsos negativos.
 
 ### Padrão: declarar filas de teste duráveis
 
@@ -1873,40 +1882,25 @@ private void declareAndBindQueue(String queueName, String routingKey) {
 }
 ```
 
-### Padrão: slot de replicação deve estar ativo antes dos testes
+### Nota histórica: slot de replicação (removido)
 
-O `DebeziumOutboxEngine` aguarda o slot ficar ativo **antes** de devolver o controle ao Spring (`SmartLifecycle.start()`). Sem essa barreira, INSERTs feitos imediatamente após o contexto subir caem numa janela cega onde o Debezium ainda não escuta o WAL.
-
-Se você implementar outro serviço com Debezium Embedded, copie o padrão `awaitSlotActive()` para o seu `start()`:
-
-```java
-@Override
-public void start() {
-    // ... cria e submete o DebeziumEngine ...
-    executor.execute(engine);
-
-    // BARREIRA OBRIGATÓRIA — garante que o WAL está sendo monitorado
-    awaitSlotActive(properties.debezium().slotName());
-
-    // Só então processa backlog e devolve o controle
-    processExistingPendingMessages();
-    running = true;
-}
-```
+> O Debezium Embedded foi removido do projeto. O padrão `awaitSlotActive()` documentado
+> anteriormente não se aplica mais. Com Polling SKIP LOCKED, não há race condition de
+> inicialização — o `@Scheduled` só executa após o contexto Spring estar completo.
 
 ### Padrão: isolamento de testes de carga
 
-Testes de carga (500+ registros) **devem ser os últimos** da classe. Se rodarem antes dos testes de verificação unitários, o Debezium estará processando um backlog volumoso exatamente quando o teste de funcionalidade espera uma entrega rápida:
+Testes de carga (500+ registros) **devem ser os últimos** da classe. Com Polling SKIP LOCKED, o problema é menor do que era com Debezium, mas ainda assim testes de volume podem consumir tempo do scheduler:
 
 ```java
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)   // ← obrigatório na classe
-class OutboxPublisherIntegrationTest {
+class OutboxPollingRelayIntegrationTest {
 
-    @Test @Order(1) void shouldPublishFundsReservedEvent()     { ... }
-    @Test @Order(2) void shouldPublishFundsFailedEvent()       { ... }
-    @Test @Order(3) void shouldPublishFundsSettledEvent()      { ... }
-    @Test @Order(4) void shouldNotPublishSameMessageTwice()    { ... }
-    @Test @Order(5) void shouldHandle500ConcurrentMessages()   { ... }  // ← SEMPRE ÚLTIMO
+    @Test @Order(1) void shouldPublishPendingEventViaPolling()   { ... }
+    @Test @Order(2) void shouldRouteFailedEventToCorrectQueue()  { ... }
+    @Test @Order(3) void shouldRouteFundsSettledToCorrectQueue() { ... }
+    @Test @Order(4) void shouldNotRepublishAlreadyProcessedMessage() { ... }
+    @Test @Order(5) void shouldProcess500MessagesViaPolling()     { ... }  // ← SEMPRE ÚLTIMO
 }
 ```
 
@@ -1919,32 +1913,20 @@ class OutboxPublisherIntegrationTest {
 </configuration>
 ```
 
-### PostgreSQL: configuração mínima para Debezium em testes
+### PostgreSQL: configuração atual para testes (sem CDC)
 
 ```java
-// AbstractIntegrationTest.java
+// AbstractIntegrationTest.java — configuração atual (Polling SKIP LOCKED, sem wal_level=logical)
 static final PostgreSQLContainer<?> POSTGRES =
-    new PostgreSQLContainer<>("postgres:15-alpine")
-        .withCommand(
-            "postgres",
-            "-c", "wal_level=logical",          // obrigatório para CDC
-            "-c", "max_replication_slots=10",    // 1 por instância do engine
-            "-c", "max_wal_senders=10"
-        );
+    new PostgreSQLContainer<>("postgres:15-alpine");
+    // Nenhum parâmetro especial necessário: o relay usa SELECT FOR UPDATE SKIP LOCKED
+    // e não requer wal_level=logical, replication slots ou max_wal_senders.
 ```
 
-As propriedades de conexão do Debezium são injetadas no contexto de teste via `@DynamicPropertySource`:
-
-```java
-@DynamicPropertySource
-static void debeziumProperties(DynamicPropertyRegistry registry) {
-    registry.add("app.outbox.debezium.db-host",     POSTGRES::getHost);
-    registry.add("app.outbox.debezium.db-port",     () -> String.valueOf(POSTGRES.getMappedPort(5432)));
-    registry.add("app.outbox.debezium.db-name",     POSTGRES::getDatabaseName);
-    registry.add("app.outbox.debezium.db-user",     POSTGRES::getUsername);
-    registry.add("app.outbox.debezium.db-password", POSTGRES::getPassword);
-}
-```
+> **Nota histórica:** a configuração anterior (CDC via relay WAL) exigia
+> `wal_level=logical`, `max_replication_slots=10`, `max_wal_senders=10` e
+> injetava propriedades via `@DynamicPropertySource`. Esses requisitos foram
+> eliminados com a migração para Polling SKIP LOCKED.
 
 ---
 
@@ -3593,7 +3575,7 @@ assertThat(dlqMessage.getMessageProperties().getHeaders()).containsKey("x-death"
 
 As tabelas `outbox_message` e `idempotency_key` do wallet-service crescem indefinidamente sem mecanismo de purge:
 
-- `outbox_message`: registros com `processed=true` não têm utilidade operacional após a publicação no RabbitMQ, mas ocupam espaço e aumentam o custo de `VACUUM` e do índice parcial `WHERE processed = FALSE` usado pelo relay Debezium.
+- `outbox_message`: registros com `processed=true` não têm utilidade operacional após a publicação no RabbitMQ, mas ocupam espaço e aumentam o custo de `VACUUM` e do índice parcial `WHERE processed = FALSE` usado pelo relay Polling SKIP LOCKED.
 - `idempotency_key`: chaves com mais de 7 dias não protegem mais contra re-entrega (o RabbitMQ não re-entrega mensagens tão antigas), mas degradam o lookup por PK.
 
 ### Solução

@@ -2,6 +2,8 @@ package com.vibranium.orderservice.domain.repository;
 
 import com.vibranium.orderservice.domain.model.OrderOutboxMessage;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 import java.util.Optional;
@@ -45,4 +47,22 @@ public interface OrderOutboxRepository extends JpaRepository<OrderOutboxMessage,
      * @return Optional com a mensagem, ou empty se não encontrada.
      */
     Optional<OrderOutboxMessage> findFirstByAggregateIdAndEventType(UUID aggregateId, String eventType);
+
+    /**
+     * Seleciona mensagens pendentes com lock pessimista e SKIP LOCKED.
+     *
+     * <p>Permite que múltiplas instâncias do order-service processem
+     * lotes diferentes de mensagens em paralelo sem duplicatas.</p>
+     *
+     * @param batchSize Número máximo de mensagens a retornar.
+     * @return Lista de mensagens pendentes, locked pela transação corrente.
+     */
+    @Query(value = """
+        SELECT * FROM tb_order_outbox
+        WHERE published_at IS NULL
+        ORDER BY created_at ASC
+        LIMIT :batchSize
+        FOR UPDATE SKIP LOCKED
+        """, nativeQuery = true)
+    List<OrderOutboxMessage> findPendingWithLock(@Param("batchSize") int batchSize);
 }

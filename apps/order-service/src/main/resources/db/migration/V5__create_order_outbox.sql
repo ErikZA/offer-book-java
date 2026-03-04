@@ -11,9 +11,9 @@
 --   2. Publica no RabbitMQ via RabbitTemplate
 --   3. Atualiza published_at = now() na mesma transação
 --
--- Inspirado no Debezium Outbox Event Router Schema:
---   https://debezium.io/documentation/reference/3.5/transformations/outbox-event-router
+-- Schema baseado no Transactional Outbox Pattern:
 --   (aggregate_type, aggregate_id, type/event_type, payload)
+-- relay feito via Polling com SELECT FOR UPDATE SKIP LOCKED
 -- ==============================================================================
 
 CREATE TABLE IF NOT EXISTS tb_order_outbox (

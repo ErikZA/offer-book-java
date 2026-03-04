@@ -52,8 +52,8 @@ import static org.mockito.Mockito.when;
  * no construtor). Em FASE RED o build falha pois o construtor atual exige {@code RabbitTemplate}.
  * Em FASE GREEN o serviço é refatorado e os testes passam.</p>
  *
- * <p>Dois Eventos no Outbox — motivação (Debezium Outbox Event Router Schema):<br>
- * O schema canônico do Debezium ({@code aggregatetype / aggregateid / type / payload})
+ * <p>Dois Eventos no Outbox — motivação (Transactional Outbox Schema):<br>
+ * O schema canônico ({@code aggregatetype / aggregateid / type / payload})
  * permite que <em>cada evento/comando</em> gere uma entrada independente no outbox,
  * roteada pelo {@code exchange} + {@code routingKey} armazenados na própria linha.
  * Isso elimina qualquer acoplamento com o broker no momento do {@code @Transactional}.</p>

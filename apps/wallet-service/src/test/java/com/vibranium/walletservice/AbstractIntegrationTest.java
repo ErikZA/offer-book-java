@@ -60,22 +60,12 @@ public abstract class AbstractIntegrationTest {
     // .withReuse(true) evita restart de containers entre runs locais (requer
     // ~/.testcontainers.properties com testcontainers.reuse.enable=true).
 
-    /** PostgreSQL 15 com o banco de dados do wallet-service.
-     *
-     * <p>{@code withCommand} habilita {@code wal_level=logical}, necessário para
-     * o Debezium CDC via replicação lógica (requerido por {@link
-     * com.vibranium.walletservice.infrastructure.outbox.DebeziumOutboxEngine}).
-     * Configura também {@code max_replication_slots} e {@code max_wal_senders}
-     * para suportar múltiplos engines em testes paralelos.</p> */
+    /** PostgreSQL 15 com o banco de dados do wallet-service. */
     protected static final PostgreSQLContainer<?> POSTGRES =
             new PostgreSQLContainer<>("postgres:15-alpine")
                     .withDatabaseName("vibranium_wallet_test")
                     .withUsername("test")
                     .withPassword("test")
-                    .withCommand("postgres",
-                                 "-c", "wal_level=logical",
-                                 "-c", "max_replication_slots=10",
-                                 "-c", "max_wal_senders=10")
                     .withReuse(true);
 
     /** RabbitMQ 3.13 com Management UI.
@@ -100,11 +90,6 @@ public abstract class AbstractIntegrationTest {
     /**
      * Registra as URLs dos containers no {@link DynamicPropertyRegistry}
      * antes da criação do ApplicationContext.
-     *
-     * <p>Além das propriedades de datasource e RabbitMQ, registra as
-     * propriedades do Debezium para que o {@link
-     * com.vibranium.walletservice.infrastructure.outbox.DebeziumOutboxEngine}
-     * consiga se conectar ao container PostgreSQL de teste.</p>
      */
     @DynamicPropertySource
     static void overrideProperties(DynamicPropertyRegistry registry) {
@@ -116,15 +101,6 @@ public abstract class AbstractIntegrationTest {
         registry.add("spring.rabbitmq.port",     RABBIT::getAmqpPort);
         registry.add("spring.rabbitmq.username", RABBIT::getAdminUsername);
         registry.add("spring.rabbitmq.password", RABBIT::getAdminPassword);
-
-        // Propriedades Debezium — usado quando app.outbox.debezium.enabled=true
-        // (ativado individualmente em OutboxPublisherIntegrationTest via @TestPropertySource)
-        registry.add("app.outbox.debezium.db-host", POSTGRES::getHost);
-        registry.add("app.outbox.debezium.db-port",
-                () -> String.valueOf(POSTGRES.getMappedPort(5432)));
-        registry.add("app.outbox.debezium.db-name", POSTGRES::getDatabaseName);
-        registry.add("app.outbox.debezium.db-user", POSTGRES::getUsername);
-        registry.add("app.outbox.debezium.db-password", POSTGRES::getPassword);
     }
 
     // ---------------------------------------------------------------------------

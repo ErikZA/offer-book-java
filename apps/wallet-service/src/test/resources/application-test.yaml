@@ -34,33 +34,13 @@ spring:
                     jwk-set-uri: ${KEYCLOAK_JWK_SET_URI:http://localhost:9999/.well-known/jwks.json}
 
 # ---------------------------------------------------------------------------
-# Outbox Publisher — configuração de teste (Debezium desligado por padrão)
-# Ativado individualmente em OutboxPublisherIntegrationTest via @TestPropertySource
+# Outbox Publisher — configuração de teste (Polling SKIP LOCKED)
 # ---------------------------------------------------------------------------
 app:
     outbox:
-        batch-size: 100
-        debezium:
-            enabled: false
-
-            # Host/port sobrescritos pelo @DynamicPropertySource do AbstractIntegrationTest
-            db-host: localhost
-            db-port: 5432
-            db-name: vibranium_wallet_test
-            db-user: test
-            db-password: test
-
-            # Slot exclusivo para testes — dropado ao parar o engine
-            slot-name: wallet_outbox_test
-
-            # MemoryOffsetBackingStore: sem persistência de offset entre testes.
-            # Cada reinício do engine começa do WAL atual (combinado com snapshot.mode=never).
-            # AT-08.1: testes usam Memory; produção usa JdbcOffsetBackingStore (application.yaml).
-            # Propriedades offset-storage-jdbc-* são ignoradas com MemoryOffsetBackingStore.
-            offset-storage: org.apache.kafka.connect.storage.MemoryOffsetBackingStore
-
-            # Dropa o slot ao parar o engine de teste para não acumular slots inativos
-            drop-slot-on-stop: true
+        batch-size: 50
+        polling:
+            interval-ms: 1000 # Mais frequente nos testes para reduzir tempo de espera
 
 logging:
     level:

@@ -41,7 +41,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * têm precedência sobre anotações de classe.</p>
  *
  * <h2>Por que {@code @SpringBootTest} e não {@code @WebMvcTest}?</h2>
- * <p>O wallet-service tem componentes de infraestrutura (AMQP listeners, Debezium, JPA)
+ * <p>O wallet-service tem componentes de infraestrutura (AMQP listeners, JPA)
  * que requerem um contexto completo. {@code @WebMvcTest} falha ao tentar carregar
  * beans de infraestrutura sem os datasources/brokers necessários. O contexto completo
  * com Testcontainers (via {@link AbstractIntegrationTest}) é mais robusto e evita

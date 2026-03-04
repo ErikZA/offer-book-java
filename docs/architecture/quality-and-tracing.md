@@ -9,54 +9,30 @@ Tradicionalmente, desenvolvedores usam bancos de dados "falsos" (H2 ou mocks) pa
 * **O Conceito**: O *Testcontainers* permite que, durante a execução dos testes, o sistema suba instâncias reais (em contêineres Docker efêmeros) de todas as nossas bases de dados e mensageria.
 * **A Aplicação**: Garantimos que o código Java interaja corretamente com as versões exatas do Postgres, Mongo, Redis e RabbitMQ que serão usadas em produção, eliminando o "na minha máquina funciona".
 
-### 1.1 Configuração especial para CDC (Debezium)
+### 1.1 Configuração do PostgreSQL para testes
 
-O Debezium exige replicação lógica ativa no PostgreSQL. O container de testes é iniciado com flags adicionais:
+O PostgreSQL de testes não requer mais `wal_level=logical` pois o relay do Outbox agora usa Polling com `SELECT FOR UPDATE SKIP LOCKED` em vez de Debezium CDC. O container é iniciado com configuração padrão:
 
 ```java
 // AbstractIntegrationTest.java
 static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:15-alpine")
-    .withCommand(
-        "postgres",
-        "-c", "wal_level=logical",
-        "-c", "max_replication_slots=10",
-        "-c", "max_wal_senders=10"
-    );
+    .withReuse(true);
 ```
 
-Sem essas flags o conector Debezium falha ao criar o slot de replicação com:
-```
-ERROR: logical replication slot requires wal_level >= logical
-```
+Isso simplifica a infraestrutura de testes e elimina a dependência de replicação lógica.
 
-### 1.2 Race condition: slot de replicação não estava ativo
+### 1.2 Nota histórica: race condition com Debezium (removido)
 
-**Problema encontrado em produção de testes:** O `DebeziumEngine` é iniciado em um VirtualThread de forma **assíncrona**. O método `SmartLifecycle.start()` retornava imediatamente após `executor.execute(engine)`, mas o Debezium levava 1–3 segundos para conectar ao PostgreSQL e criar o slot de replicação. O primeiro INSERT de cada teste chegava nessa **janela cega** e nunca era capturado pelo WAL, resultando em `ConditionTimeoutException` flaky nas runs longas.
+> **Contexto histórico:** O Debezium Embedded foi removido do projeto e substituído por Polling SKIP LOCKED.
+> A race condition documentada abaixo não se aplica mais, mas é mantida como referência.
 
-**Solução implementada — `awaitSlotActive()`:**
+Anterior ao Polling, o `DebeziumEngine` era iniciado em VirtualThread de forma assíncrona.
+O slot de replicação levava 1–3 s para ficar ativo, criando uma janela cega onde INSERTs na
+tabela outbox não eram capturados. A solução era `awaitSlotActive()` com poll de 500 ms.
 
-```java
-// DebeziumOutboxEngine.java — método executado no start() após executor.execute(engine)
-private void awaitSlotActive(String slotName) {
-    final String sql =
-        "SELECT active FROM pg_replication_slots WHERE slot_name = ?";
-
-    for (int i = 0; i < 60; i++) {   // máx 30 s (60 × 500 ms)
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, slotName);
-            var rs = ps.executeQuery();
-            if (rs.next() && rs.getBoolean("active")) {
-                return;  // slot ativo: Debezium está capturando WAL
-            }
-        } catch (Exception ignored) { }
-        Thread.sleep(500);
-    }
-    logger.warn("Slot '{}' não ficou ativo em 30 s.", slotName);
-}
-```
-
-**Lição:** Sempre que um componente de infraestrutura for iniciado de forma assíncrona e outros testes dependerem de seu estado, implemente uma barreira explícita (poll + timeout) antes de devolver o controle ao framework de testes.
+**Com Polling SKIP LOCKED**, essa race condition não existe — o `@Scheduled` poll é
+automaticamente executado pelo Spring Scheduler após o contexto estar completamente
+inicializado.
 
 ---
 
@@ -169,57 +145,23 @@ O desafio pede para compreender o que acontece quando diferentes componentes fal
 
 ---
 
-## 5. Isolamento de Contexto Spring em Testes de Integração (wallet-service CDC)
+## 5. Isolamento de Contexto Spring em Testes de Integração (wallet-service)
 
-### O problema: `@DataJpaTest` carregando beans de produção
+### Configuração atual: `@EnableScheduling` + Polling
 
-O `OutboxPublisherService` e o `DebeziumOutboxEngine` são beans `@Service`/`@Component` que dependem de `RabbitTemplate` e `DataSource`. Quando o Spring carrega um slice de JPA (`@DataJpaTest`), esses beans seriam instanciados mesmo sem o broker RabbitMQ disponível — causando falha na inicialização do contexto.
+O `OutboxPublisherService` usa `@Scheduled(fixedDelayString = "${app.outbox.polling.interval-ms:2000}")` para executar o relay periodicamente. O bean é sempre carregado no contexto Spring (sem `@ConditionalOnProperty`).
 
-**Solução: `@ConditionalOnProperty`**
+Para testes que não precisam do relay ativo, o intervalo de polling pode ser configurado para um valor alto ou os eventos podem ser verificados diretamente no banco.
 
-```java
-@Service
-@ConditionalOnProperty(
-    name     = "app.outbox.debezium.enabled",
-    havingValue  = "true",
-    matchIfMissing = false   // ← desativado por padrão
-)
-public class OutboxPublisherService { ... }
-```
-
-Com `matchIfMissing = false`, os beans do Outbox CDC só são criados quando explicitamente habilitados via `application-test.yaml` ou `@TestPropertySource`:
+Para testes de integração que validam o relay end-to-end, o `application-test.yaml` configura:
 
 ```yaml
-# application-test.yaml (padrão para @DataJpaTest e @SpringBootTest convencionais)
-app.outbox.debezium.enabled: false
+app:
+  outbox:
+    batch-size: 50
+    polling:
+      interval-ms: 1000   # polling mais rápido para testes
 ```
-
-```java
-// OutboxPublisherIntegrationTest.java — contexto dedicado com tudo ativo
-@SpringBootTest
-@TestPropertySource(properties = "app.outbox.debezium.enabled=true")
-class OutboxPublisherIntegrationTest { ... }
-```
-
-### O problema: teste de carga interferindo nos testes unitários do relay
-
-O `shouldHandle500ConcurrentOutboxMessages` insere 500 registros na `outbox_message`. Quando rodado antes dos testes de 5-eventos, o Debezium ainda está processando o backlog de 500 mensagens e não entrega a nova mensagem dentro do timeout.
-
-**Solução: `@TestMethodOrder` + `@Order`**
-
-```java
-@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-class OutboxPublisherIntegrationTest {
-
-    @Test @Order(1) void shouldPublishFundsReservedEvent() { ... }
-    @Test @Order(2) void shouldPublishFundsReservationFailedEvent() { ... }
-    @Test @Order(3) void shouldPublishFundsSettledEvent() { ... }
-    @Test @Order(4) void shouldNotPublishSameMessageTwice() { ... }
-    @Test @Order(5) void shouldHandle500ConcurrentOutboxMessages() { ... } // ← SEMPRE POR ÚLTIMO
-}
-```
-
-**Regra geral:** testes de carga (volume ≥ 100 registros) sempre devem ter o `@Order` mais alto dentro da classe ou ser extraídos para uma classe própria com `@Tag("load")`.
 
 ---
 

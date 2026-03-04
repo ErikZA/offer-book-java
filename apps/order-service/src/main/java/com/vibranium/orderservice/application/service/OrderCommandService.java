@@ -44,7 +44,7 @@ import java.util.UUID;
  * o evento e permanentemente perdido. Gravando ambas as mensagens na tabela de outbox
  * dentro do {@code @Transactional}, garantimos atomicidade total — ou tudo persiste,
  * ou nada persiste. O scheduler faz o relay assincrono.
- * Inspirado no schema canonico do Debezium Outbox Event Router:
+ * Inspirado no schema canônico do Transactional Outbox Pattern:
  * {@code aggregatetype / aggregateid / type / payload}.</p>
  *
  * <p>O servico e stateless e testavel: nao possui estado mutavel e nao depende
@@ -157,7 +157,7 @@ public class OrderCommandService {
         //    broker estava indisponivel no momento do retorno. Agora ambas as mensagens
         //    (ReserveFundsCommand e OrderReceivedEvent) sao atomicamente persistidas
         //    junto com a Ordem. O OrderOutboxPublisherService faz o relay eventual.
-        //    Schema inspirado no Debezium Outbox Event Router:
+        //    Schema baseado no Transactional Outbox Pattern:
         //    aggregatetype="Order", type="OrderReceivedEvent", payload=JSON do evento.
         final OrderReceivedEvent receivedEvent = OrderReceivedEvent.of(
                 correlationId, orderId, UUID.fromString(keycloakId),

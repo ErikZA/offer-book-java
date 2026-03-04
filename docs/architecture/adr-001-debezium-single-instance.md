@@ -3,7 +3,7 @@
 | Campo       | Valor                                 |
 |-------------|---------------------------------------|
 | **ID**      | ADR-001                               |
-| **Status**  | Aceito                                |
+| **Status**  | **SUPERSEDED** — Substituído por Polling SKIP LOCKED (março/2026) |
 | **Data**    | 2026-03-02                            |
 | **Autores** | Equipe de Plataforma / Wallet Service |
 | **Ticket**  | AT-08.2                               |

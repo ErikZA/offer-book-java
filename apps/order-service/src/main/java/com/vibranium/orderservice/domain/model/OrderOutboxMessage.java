@@ -22,7 +22,7 @@ import java.util.UUID;
  * (scheduler) faz o relay assíncrono: lê mensagens com {@code publishedAt IS NULL},
  * publica no RabbitMQ e atualiza {@code publishedAt}.</p>
  *
- * <p>Inspirado no schema canônico do Debezium Outbox Event Router:
+ * <p>Inspirado no schema canônico do Transactional Outbox Pattern:
  * {@code aggregatetype / aggregateid / type / payload}.</p>
  */
 @Entity
@@ -36,7 +36,7 @@ public class OrderOutboxMessage {
 
     /**
      * Tipo do agregado raiz que gerou o comando.
-     * Sempre {@code "Order"} neste contexto — alinha com o schema Debezium.
+     * Sempre {@code "Order"} neste contexto — alinha com o schema do Transactional Outbox.
      */
     @Column(name = "aggregate_type", nullable = false, length = 50)
     private String aggregateType;

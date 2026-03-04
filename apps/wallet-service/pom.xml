@@ -220,41 +220,6 @@
             <artifactId>spring-boot-starter-aop</artifactId>
         </dependency>
 
-        <!-- Debezium Embedded: CDC via WAL do PostgreSQL.
-             debezium-api:                interfaces do engine (DebeziumEngine, etc.)
-             debezium-embedded:           engine principal + Connect serializers
-             debezium-connector-postgresql: PostgresConnector + decoders
-             Versao 2.7.1.Final: LTS estavel, suporte a pgoutput (PG 10+).
-             Usa Kafka Connect API internamente (transitivo via embedded). -->
-        <dependency>
-            <groupId>io.debezium</groupId>
-            <artifactId>debezium-api</artifactId>
-            <version>2.7.4.Final</version>
-        </dependency>
-        <dependency>
-            <groupId>io.debezium</groupId>
-            <artifactId>debezium-embedded</artifactId>
-            <version>2.7.4.Final</version>
-        </dependency>
-        <!-- Conector PostgreSQL: artifact correto e disponivel no Maven Central.
-             Classe: io.debezium.connector.postgresql.PostgresConnector -->
-        <dependency>
-            <groupId>io.debezium</groupId>
-            <artifactId>debezium-connector-postgres</artifactId>
-            <version>2.7.4.Final</version>
-        </dependency>
-
-        <!-- AT-08.1: JdbcOffsetBackingStore — persistência de offset no banco.
-             Substitui FileOffsetBackingStore (/tmp efêmero) por armazenamento JDBC
-             na tabela wallet_outbox_offset (criada pela migration V5).
-             Garante que o offset do WAL sobrevive ao restart do container,
-             eliminando reprocessamento de eventos (duplicatas no RabbitMQ).
-             Compatível com Debezium 2.7.4.Final — mesma versão dos demais módulos. -->
-        <dependency>
-            <groupId>io.debezium</groupId>
-            <artifactId>debezium-storage-jdbc</artifactId>
-            <version>2.7.4.Final</version>
-        </dependency>
     </dependencies>
 
     <build>

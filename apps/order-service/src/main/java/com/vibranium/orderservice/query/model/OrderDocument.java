@@ -25,11 +25,11 @@ import java.util.List;
  *
  * <p>{@code orderId} é o {@code @Id} do documento, garantindo unicidade e lookup O(1).</p>
  *
- * <p><strong>Decisão Debezium vs RabbitMQ Router:</strong> O padrão ideal seria CDC via
- * Debezium capturando o WAL do PostgreSQL (Outbox Pattern), eliminando o risco de evento
- * perdido entre a escrita no banco e a publicação na fila. Para este sprint, usamos
- * RabbitMQ consumers diretos por consistência com o stack existente; adoção do Debezium
- * é tech debt registrado para sprint futuro.</p>
+ * <p><strong>Estratégia de consistência eventual:</strong> O padrão Transactional Outbox
+ * garante que o evento seja gravado atomicamente com a Ordem no PostgreSQL. O
+ * {@code OrderOutboxPublisherService} faz o relay assíncrono para o RabbitMQ via
+ * {@code SELECT FOR UPDATE SKIP LOCKED}, e o consumer {@code OrderEventProjectionConsumer}
+ * projeta o evento neste documento MongoDB — eventual consistency intencional (CQRS).</p>
  */
 @Document(collection = "orders")
 @CompoundIndex(name = "idx_userId_createdAt", def = "{'userId': 1, 'createdAt': -1}")

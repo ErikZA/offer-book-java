@@ -45,9 +45,9 @@ erDiagram
     }
 
     WALLET_OUTBOX_OFFSET {
-        string id PK "ID interno do conector Debezium"
+        string id PK "ID interno do backing store (removida em V7)"
         string offset_key "Chave de partição do offset"
-        bytea offset_val "LSN do WAL serializado (formato Kafka Connect)"
+        bytea offset_val "LSN do WAL serializado"
         timestamp record_insert_ts "Auditoria: timestamp de inserção"
         serial record_insert_seq "Auditoria: sequência de inserção"
     }
@@ -90,13 +90,11 @@ Se o RabbitMQ tiver um soluço, ele pode entregar a mensagem de "Match Realizado
 * 
 **Como funciona:** Antes de processar qualquer liquidação (adicionar Vibranium e tirar reais), o sistema tenta gravar o `message_id` (o ID único do evento) nesta tabela. Se o banco disser "Erro, essa chave primária já existe", o sistema sabe que já processou essa mensagem e ignora a duplicata. Isso garante a Idempotência!
 
-### 5. `wallet_outbox_offset` (O Bookmark do Debezium — AT-08.1)
+### 5. `wallet_outbox_offset` (Histórico — Removida em V7)
 
-Persiste a posição exata do WAL (LSN) lida pelo Debezium Embedded Engine. Criada pela migration `V5__create_wallet_outbox_offset.sql`, substituindo o `FileOffsetBackingStore` que armazenava o offset em `/tmp` (efêmero em containers).
+Tabela criada nas migrations V5 e V6 para persistir a posição de leitura (LSN do WAL) do relay CDC. Com a migração para Polling SKIP LOCKED, o relay passou a usar `processed = false` para selecionar mensagens pendentes, tornando esta tabela desnecessária. Foi removida pela migration `V7__drop_wallet_outbox_offset.sql`.
 
-* **Por que é crítica:** Com `/tmp`, um restart do container apagava o offset. O Debezium reconectava ao replication slot sem saber o último LSN processado, podendo reler e republicar eventos já entregues ao RabbitMQ — **duplicatas financeiras inaceitáveis**.
-* **Como funciona:** O `JdbcOffsetBackingStore` lê e escreve o offset como bytes (`BYTEA`) nesta tabela. Por estar no mesmo PostgreSQL que sobrevive ao restart, o Debezium sempre retoma do ponto exato onde parou.
-* **Colunas requeridas pelo Debezium 2.7.x:** `id` (PK do conector), `offset_key` (chave de partição), `offset_val` (LSN binário).
+* **Colunas principais:** `id` (PK do backing store), `offset_key` (chave de partição), `offset_val` (LSN persistido).
 * **Colunas de auditoria:** `record_insert_ts` (timestamp) e `record_insert_seq` (sequência SERIAL) para diagnóstico operacional.
 
 

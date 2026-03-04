@@ -66,8 +66,9 @@ public class OrderOutboxPublisherService {
      * a falha de uma não reverta o commit das anteriores já bem-sucedidas.</p>
      */
     @Scheduled(fixedDelayString = "${app.outbox.delay-ms:5000}")
+    @Transactional
     public void publishPendingMessages() {
-        List<OrderOutboxMessage> pending = outboxRepository.findByPublishedAtIsNull();
+        List<OrderOutboxMessage> pending = outboxRepository.findPendingWithLock(100);
 
         if (pending.isEmpty()) {
             return;
