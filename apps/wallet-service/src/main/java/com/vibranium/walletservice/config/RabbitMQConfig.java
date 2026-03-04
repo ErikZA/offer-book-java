@@ -1,11 +1,23 @@
 package com.vibranium.walletservice.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.tracing.TraceContext;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.handler.PropagatingSenderTracingObservationHandler;
+import io.micrometer.tracing.propagation.Propagator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.amqp.core.*;
+import org.springframework.amqp.rabbit.connection.RabbitAccessor;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import java.lang.reflect.Field;
 
 /**
  * Configuração das exchanges, filas e bindings do RabbitMQ para o wallet-service.
@@ -42,6 +54,8 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration
 public class RabbitMQConfig {
+
+    private static final Logger logger = LoggerFactory.getLogger(RabbitMQConfig.class);
 
     // -------------------------------------------------------------------------
     // Constantes de topologia
@@ -134,9 +148,21 @@ public class RabbitMQConfig {
     }
 
     /**
-     * Exchange topic para comandos direcionados ao wallet-service.
-     * Produtores (order-service) publicam com routing keys:
-     * {@code wallet.command.reserve-funds} e {@code wallet.command.settle-funds}.
+     * Exchange de comandos do sistema (direct) — usada pelo order-service para publicar
+     * {@code ReserveFundsCommand} e {@code ReleaseFundsCommand}.
+     *
+     * <p>Re-declarada aqui idempotentemente (mesmos argumentos que o order-service declara)
+     * para garantir que o broker a crie mesmo se o wallet-service inicializar antes do
+     * order-service.</p>
+     */
+    @Bean
+    public DirectExchange vibraniumCommandsExchange() {
+        return new DirectExchange("vibranium.commands", true, false);
+    }
+
+    /**
+     * Exchange topic para comandos direcionados ao wallet-service via exchange dedicada.
+     * Mantida para compatibilidade, mas o roteamento principal usa {@code vibranium.commands}.
      */
     @Bean
     public TopicExchange walletCommandsExchange() {
@@ -331,34 +357,39 @@ public class RabbitMQConfig {
     }
 
     /**
-     * Liga a exchange de comandos à fila dedicada de reserva de fundos.
+     * Liga {@code vibranium.commands} (exchange usada pelo order-service) à fila de
+     * reserva de fundos com routing key {@code wallet.commands.reserve-funds}.
      *
-     * <p>Routing key exata {@code wallet.command.reserve-funds} garante que
-     * apenas comandos de reserva — que possuem DLQ configurada — fluam
-     * para esta fila específica.</p>
+     * <p>Alinhado com o publicador: {@code OrderCommandService} usa
+     * {@code RabbitMQConfig.COMMANDS_EXCHANGE} ("vibranium.commands") e
+     * routing key {@code RabbitMQConfig.QUEUE_RESERVE_FUNDS} ("wallet.commands.reserve-funds").</p>
      */
     @Bean
     public Binding reserveFundsQueueBinding(
-            @Qualifier("reserveFundsQueue")      Queue reserveFundsQueue,
-            @Qualifier("walletCommandsExchange") TopicExchange walletCommandsExchange) {
+            @Qualifier("reserveFundsQueue")         Queue reserveFundsQueue,
+            @Qualifier("vibraniumCommandsExchange") DirectExchange vibraniumCommandsExchange) {
         return BindingBuilder
                 .bind(reserveFundsQueue)
-                .to(walletCommandsExchange)
-                .with("wallet.command.reserve-funds");
+                .to(vibraniumCommandsExchange)
+                .with("wallet.commands.reserve-funds");
     }
 
     /**
-     * Liga a exchange de comandos à fila dedicada de liberação de fundos.
-     * Routing key exata {@code wallet.command.release-funds}.
+     * Liga {@code vibranium.commands} à fila de liberação de fundos com routing key
+     * {@code wallet.commands.release-funds}.
+     *
+     * <p>Alinhado com o publicador: {@code SagaTimeoutCleanupJob} e
+     * {@code FundsSettlementFailedEventConsumer} usam routing key
+     * {@code RabbitMQConfig.QUEUE_RELEASE_FUNDS} ("wallet.commands.release-funds").</p>
      */
     @Bean
     public Binding releaseFundsQueueBinding(
-            @Qualifier("releaseFundsQueue")      Queue releaseFundsQueue,
-            @Qualifier("walletCommandsExchange") TopicExchange walletCommandsExchange) {
+            @Qualifier("releaseFundsQueue")         Queue releaseFundsQueue,
+            @Qualifier("vibraniumCommandsExchange") DirectExchange vibraniumCommandsExchange) {
         return BindingBuilder
                 .bind(releaseFundsQueue)
-                .to(walletCommandsExchange)
-                .with("wallet.command.release-funds");
+                .to(vibraniumCommandsExchange)
+                .with("wallet.commands.release-funds");
     }
 
     /**
@@ -409,4 +440,84 @@ public class RabbitMQConfig {
     public Jackson2JsonMessageConverter messageConverter(ObjectMapper objectMapper) {
         return new Jackson2JsonMessageConverter(objectMapper);
     }
+
+    // -------------------------------------------------------------------------
+    // AT-14.1 — Propagação W3C traceparent em mensagens AMQP
+    // -------------------------------------------------------------------------
+
+    /**
+     * AT-14.1 — Injeta {@link ObservationRegistry} real no {@link RabbitTemplate} via reflexão
+     * e registra um {@link io.springframework.amqp.core.MessagePostProcessor} que constrói o
+     * header W3C {@code traceparent} diretamente do {@link TraceContext}.
+     *
+     * <p><strong>Problema:</strong> {@code RabbitAutoConfiguration} não injeta
+     * {@code ObservationRegistry} no {@code RabbitTemplate} automaticamente.
+     * Adicionalmente, o {@code OtelPropagator} pode estar configurado com um
+     * {@code ContextPropagators} vazio ({@code fields()=[]}), tornando
+     * {@code propagator.inject()} uma operação sem efeito.</p>
+     *
+     * <p><strong>Solução:</strong> o {@link SmartInitializingSingleton} é executado após todos
+     * os beans do contexto estarem prontos. Ele:</p>
+     * <ol>
+     *   <li>Registra {@link PropagatingSenderTracingObservationHandler} no registry.</li>
+     *   <li>Injeta o registry non-NOOP no {@code RabbitTemplate} via reflexão.</li>
+     *   <li>Registra um {@code MessagePostProcessor} que constrói {@code traceparent}
+     *       manualmente a partir do {@link TraceContext} — contornando o {@code OtelPropagator}
+     *       potencialmente mal-configurado.</li>
+     * </ol>
+     */
+    @Bean
+    SmartInitializingSingleton rabbitTemplateObservationSetup(
+            RabbitTemplate rabbitTemplate,
+            ObservationRegistry observationRegistry,
+            Tracer tracer,
+            Propagator propagator) {
+        return () -> {
+            // ── 1. Pipeline de Observation: injeta ObservationRegistry real via reflexão ──
+            try {
+                observationRegistry.observationConfig()
+                        .observationHandler(new PropagatingSenderTracingObservationHandler<>(tracer, propagator));
+
+                Field registryField = RabbitAccessor.class.getDeclaredField("observationRegistry");
+                registryField.setAccessible(true);
+                registryField.set(rabbitTemplate, observationRegistry);
+
+                Field obtainedField = RabbitTemplate.class.getDeclaredField("observationRegistryObtained");
+                obtainedField.setAccessible(true);
+                obtainedField.set(rabbitTemplate, true);
+
+                logger.info("AT-14.1: ObservationRegistry + PropagatingTracingObservationHandler configurados no RabbitTemplate");
+            } catch (NoSuchFieldException | IllegalAccessException e) {
+                logger.warn("AT-14.1: Falha ao configurar observação via reflexão no RabbitTemplate", e);
+            }
+
+            // ── 2. MessagePostProcessor: garante traceparent W3C independente do pipeline ──
+            // Constrói o header traceparent diretamente do TraceContext, contornando o
+            // OtelPropagator cujo ContextPropagators pode estar vazio.
+            // Formato W3C: "00-{traceId:32hex}-{spanId:16hex}-{01=sampled|00=not-sampled}"
+            rabbitTemplate.addBeforePublishPostProcessors(message -> {
+                // Não sobrescreve traceparent já presente: preserva contexto upstream
+                // (e.g., forwarding de mensagens entre serviços no mesmo trace distribuído)
+                if (message.getMessageProperties().getHeaders().containsKey("traceparent")) {
+                    return message;
+                }
+                io.micrometer.tracing.Span span = tracer.nextSpan()
+                        .name("rabbit.publish")
+                        .start();
+                if (!span.isNoop()) {
+                    TraceContext ctx = span.context();
+                    String flags = Boolean.TRUE.equals(ctx.sampled()) ? "01" : "00";
+                    String traceparent = "00-" + ctx.traceId() + "-" + ctx.spanId() + "-" + flags;
+                    message.getMessageProperties().setHeader("traceparent", traceparent);
+                    logger.debug("AT-14.1: traceparent={}", traceparent);
+                } else {
+                    logger.warn("AT-14.1: OtelTracer retornou span NOOP — traceparent não injetado");
+                }
+                span.end();
+                return message;
+            });
+            logger.info("AT-14.1: MessagePostProcessor W3C traceparent registrado no RabbitTemplate");
+        };
+    }
+
 }

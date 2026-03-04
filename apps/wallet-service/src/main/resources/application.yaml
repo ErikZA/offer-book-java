@@ -43,11 +43,17 @@ spring:
         port: ${SPRING_RABBITMQ_PORT:5672}
         username: ${SPRING_RABBITMQ_USERNAME:guest}
         password: ${SPRING_RABBITMQ_PASSWORD:guest}
+        # AT-14.1: habilita o pipeline de Observation no RabbitTemplate para criação de spans
+        # produtores e injeção do header W3C traceparent em cada mensagem AMQP publicada.
+        template:
+            observation-enabled: true
         listener:
             simple:
                 acknowledge-mode: manual
                 prefetch: 1
                 default-requeue-rejected: false
+                # AT-14.1: habilita observação nos listeners para extração de contexto distribuído
+                observation-enabled: true
 
     # ---------------------------------------------------------------------------
     # AT-10.1: Spring Security — OAuth2 Resource Server
@@ -85,9 +91,9 @@ app:
     # acumular registros desnecessários indefinidamente.
     cleanup:
         outbox:
-            cron: "0 0 3 * * SUN"
+            cron: '0 0 3 * * SUN'
         idempotency:
-            cron: "0 0 4 * * SUN"
+            cron: '0 0 4 * * SUN'
 
     outbox:
         # Tamanho máximo do lote para o overload com Pageable (fallback)

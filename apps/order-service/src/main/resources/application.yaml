@@ -85,8 +85,16 @@ spring:
         port: 5672
         username: guest
         password: guest
+        template:
+            # AT-14.1: habilita ObservationRegistry no RabbitTemplate (producer side).
+            # Sem esta flag, o Spring AMQP NÃO injeta o header W3C 'traceparent' nas
+            # mensagens mesmo com micrometer-tracing-bridge-otel no classpath.
+            # Padrão: false (Spring AMQP 3.x). Requer sampling.probability > 0.
+            observation-enabled: true
         listener:
             simple:
+                # AT-14.1: habilita tracing no consumer side (propaga traceparent recebido).
+                observation-enabled: true
                 acknowledge-mode: manual # ACK manual para garantir processamento exato
                 prefetch: 10 # controla throughput por consumer
                 retry:

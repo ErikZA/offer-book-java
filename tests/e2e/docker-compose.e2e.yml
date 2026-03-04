@@ -17,7 +17,6 @@ version: '3.8'
 # ================================================================================
 
 services:
-
     # ============================================================================
     # PostgreSQL — banco dedicado ao order-service
     # Banco único: vibranium_orders (sem init script multi-banco necessário)

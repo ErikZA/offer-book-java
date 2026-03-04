@@ -1,6 +1,11 @@
 package com.vibranium.orderservice.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.TraceContext;
+import io.micrometer.tracing.propagation.Propagator;
+import io.micrometer.tracing.handler.PropagatingSenderTracingObservationHandler;
 import org.springframework.amqp.core.AcknowledgeMode;
 import org.springframework.amqp.core.Binding;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -12,9 +17,15 @@ import org.springframework.amqp.core.QueueBuilder;
 import org.springframework.amqp.core.TopicExchange;
 import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
+import org.springframework.amqp.rabbit.connection.RabbitAccessor;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.SmartInitializingSingleton;
+import java.lang.reflect.Field;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -34,6 +45,8 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration
 public class RabbitMQConfig {
+
+    private static final Logger logger = LoggerFactory.getLogger(RabbitMQConfig.class);
 
     // -------------------------------------------------------------------------
     // Nomes das exchanges e filas (espelham application.yaml para consistência)
@@ -254,46 +267,12 @@ public class RabbitMQConfig {
     }
 
     // -------------------------------------------------------------------------
-    // Fila de ReserveFundsCommand (declarada para garantir criação no broker)
+    // Nota de topologia: as filas wallet.commands.reserve-funds e
+    // wallet.commands.release-funds são DECLARADAS pelo wallet-service (consumidor),
+    // que as configura com DLX. O order-service apenas publica nessas filas via
+    // COMMANDS_EXCHANGE (vibranium.commands) — não as declara aqui para evitar
+    // conflito de argumentos (PRECONDITION_FAILED) quando o wallet-service inicia.
     // -------------------------------------------------------------------------
-
-    @Bean
-    Queue reserveFundsQueue() {
-        return QueueBuilder.durable(QUEUE_RESERVE_FUNDS).build();
-    }
-
-    @Bean
-    Binding reserveFundsBinding(
-            @Qualifier("reserveFundsQueue")  Queue reserveFundsQueue,
-            @Qualifier("commandsExchange")   DirectExchange commandsExchange) {
-        return BindingBuilder
-                .bind(reserveFundsQueue)
-                .to(commandsExchange)
-                .with(QUEUE_RESERVE_FUNDS);
-    }
-
-    // -------------------------------------------------------------------------
-    // Fila de ReleaseFundsCommand — compensação publicada pelo order-service (AT-1.1.4)
-    // -------------------------------------------------------------------------
-
-    /**
-     * Fila durable para {@code ReleaseFundsCommand}.
-     * Sem DLX: se o wallet-service rejeitar o release, deve ser re-tentado via listener retry.
-     */
-    @Bean
-    Queue releaseFundsQueue() {
-        return QueueBuilder.durable(QUEUE_RELEASE_FUNDS).build();
-    }
-
-    @Bean
-    Binding releaseFundsBinding(
-            @Qualifier("releaseFundsQueue")  Queue releaseFundsQueue,
-            @Qualifier("commandsExchange")   DirectExchange commandsExchange) {
-        return BindingBuilder
-                .bind(releaseFundsQueue)
-                .to(commandsExchange)
-                .with(QUEUE_RELEASE_FUNDS);
-    }
 
     // -------------------------------------------------------------------------
     // Fila de FundsSettlementFailedEvent (wallet → order: liquidação falhou — AT-1.1.4)
@@ -514,6 +493,127 @@ public class RabbitMQConfig {
     @Bean
     MessageConverter jsonMessageConverter(ObjectMapper objectMapper) {
         return new Jackson2JsonMessageConverter(objectMapper);
+    }
+
+    /**
+     * AT-14.1 — Injeta o {@link ObservationRegistry} real no {@link RabbitTemplate} via reflexão.
+     *
+     * <p>O {@link RabbitAccessor} (superclasse do {@code RabbitTemplate}) inicializa
+     * {@code observationRegistry = ObservationRegistry.NOOP} e <strong>não expõe setter
+     * público</strong> para este campo. O mecanismo de descoberta tardia
+     * ({@code obtainObservationRegistry}) usa {@code ObjectProvider.getIfUnique()}, que
+     * retorna o fallback {@code NOOP} quando dois ou mais beans {@code ObservationRegistry}
+     * estão presentes no contexto — situação comum com test auto-configurations do Spring
+     * Boot ({@code TestObservabilityAutoConfiguration}) que adicionam instâncias auxiliares.</p>
+     *
+     * <p>Este {@link SmartInitializingSingleton} é invocado diretamente pelo
+     * {@code DefaultListableBeanFactory.preInstantiateSingletons()} <strong>após</strong>
+     * todos os singletons estarem completamente inicializados, garantindo que:</p>
+     * <ol>
+     *   <li>O {@code ObservationRegistry} da {@code ObservationAutoConfiguration} está
+     *       totalmente configurado com os {@code PropagatingTracingObservationHandler}
+     *       registrados (via {@code ObservationRegistryCustomizer}).</li>
+     *   <li>O {@code RabbitTemplate} já recebeu o callback
+     *       {@code ApplicationContextAware.setApplicationContext()}.</li>
+     *   <li>A injeção direta substitui {@code NOOP} pelo registry real antes do primeiro
+     *       {@code convertAndSend()}, habilitando a criação de spans OTel e a injeção
+     *       do header W3C {@code traceparent} em toda mensagem AMQP publicada.</li>
+     * </ol>
+     *
+     * @param rabbitTemplate      template auto-configurado pelo Spring Boot
+     * @param observationRegistry registry com {@code PropagatingTracingObservationHandler}
+     *                            registrado pelo {@code MicrometerTracingAutoConfiguration}
+     * @return singleton initializer que injeta o registry após todos os beans estarem prontos
+     */
+    /**
+     * Garante que o {@link RabbitTemplate} utiliza o {@link ObservationRegistry} correto
+     * (non-NOOP) e que o {@link PropagatingTracingObservationHandler} está registrado para
+     * propagar o header W3C {@code traceparent} nas mensagens AMQP.
+     *
+     * <p>Por que {@code SmartInitializingSingleton}: executado após todos os beans do contexto
+     * estarem criados, garantindo que {@code Tracer} e {@code Propagator} já existem.</p>
+     *
+     * <p>Por que reflexão no {@code RabbitTemplate}: o Spring Boot 3.4.x não expõe setter
+     * público para {@code observationRegistry} no {@link RabbitAccessor}; o
+     * {@code RabbitAutoConfiguration} não injeta o registry automaticamente.</p>
+     *
+     * <p><strong>Causa raiz do ContextPropagators vazio:</strong> em alguns contextos de boot
+     * o {@code OtelTracingBridgeAutoConfiguration.contextPropagators()} é instanciado com a
+     * lista de {@code TextMapPropagator} ainda vazia, resultando em um propagator sem campos
+     * ({@code fields()=[]}). O bean {@link #w3cContextPropagators()} abaixo corrige isso
+     * fornecendo um {@code ContextPropagators} explícito com {@code W3CTraceContextPropagator}.
+     * Adicionalmente, o {@code MessagePostProcessor} registrado aqui constrói o header
+     * {@code traceparent} diretamente do {@link TraceContext}, contornando o propagador
+     * potencialmente mal-configurado.</p>
+     *
+     * @param rabbitTemplate      instância gerenciada pelo Spring AMQP
+     * @param observationRegistry registry com handlers de tracing configurados pelo Actuator
+     * @param tracer              tracer OTel fornecido por {@code micrometer-tracing-bridge-otel}
+     * @param propagator          propagator W3C fornecido por {@code micrometer-tracing-bridge-otel}
+     * @return singleton initializer que injeta o registry e o header de propagação
+     */
+    @Bean
+    SmartInitializingSingleton rabbitTemplateObservationSetup(
+            RabbitTemplate rabbitTemplate,
+            ObservationRegistry observationRegistry,
+            Tracer tracer,
+            Propagator propagator) {
+        return () -> {
+            // ── 1. Pipeline de Observation: injeta ObservationRegistry real via reflexão ──
+            // Necessário porque RabbitAutoConfiguration não injeta ObservationRegistry no
+            // RabbitTemplate automaticamente no spring-rabbit 3.2.x.
+            try {
+                observationRegistry.observationConfig()
+                        .observationHandler(new PropagatingSenderTracingObservationHandler<>(tracer, propagator));
+
+                Field registryField = RabbitAccessor.class.getDeclaredField("observationRegistry");
+                registryField.setAccessible(true);
+                registryField.set(rabbitTemplate, observationRegistry);
+
+                // Bloqueia re-descoberta do registry via obtainObservationRegistry(), que
+                // poderia sobrescrever com NOOP (ObjectProvider.getIfUnique() falha quando
+                // há múltiplos beans ObservationRegistry no contexto de teste).
+                Field obtainedField = RabbitTemplate.class.getDeclaredField("observationRegistryObtained");
+                obtainedField.setAccessible(true);
+                obtainedField.set(rabbitTemplate, true);
+
+                logger.info("AT-14.1: ObservationRegistry + PropagatingTracingObservationHandler configurados no RabbitTemplate");
+            } catch (NoSuchFieldException | IllegalAccessException e) {
+                logger.warn("AT-14.1: Falha ao configurar observação via reflexão no RabbitTemplate", e);
+            }
+
+            // ── 2. MessagePostProcessor: garante traceparent W3C independente do pipeline ──
+            // Constrói o header traceparent diretamente do TraceContext, contornando o
+            // OtelPropagator cujo ContextPropagators pode estar vazio (sem W3CTraceContextPropagator)
+            // quando a auto-configuração do OTel Bridge é instanciada antes dos beans
+            // TextMapPropagator serem registrados.
+            //
+            // Formato W3C: "00-{traceId:32hex}-{spanId:16hex}-{01=sampled|00=not-sampled}"
+            // Spec: https://www.w3.org/TR/trace-context/#traceparent-header
+            rabbitTemplate.addBeforePublishPostProcessors(message -> {
+                // Não sobrescreve traceparent já presente: preserva contexto upstream
+                // (e.g., forwarding de mensagens entre serviços no mesmo trace distribuído)
+                if (message.getMessageProperties().getHeaders().containsKey("traceparent")) {
+                    return message;
+                }
+                io.micrometer.tracing.Span span = tracer.nextSpan()
+                        .name("rabbit.publish")
+                        .start();
+                if (!span.isNoop()) {
+                    TraceContext ctx = span.context();
+                    // Constrói traceparent conforme W3C TraceContext Level 1 spec
+                    String flags = Boolean.TRUE.equals(ctx.sampled()) ? "01" : "00";
+                    String traceparent = "00-" + ctx.traceId() + "-" + ctx.spanId() + "-" + flags;
+                    message.getMessageProperties().setHeader("traceparent", traceparent);
+                    logger.debug("AT-14.1: traceparent={}", traceparent);
+                } else {
+                    logger.warn("AT-14.1: OtelTracer retornou span NOOP — traceparent não injetado");
+                }
+                span.end();
+                return message;
+            });
+            logger.info("AT-14.1: MessagePostProcessor W3C traceparent registrado no RabbitTemplate");
+        };
     }
 
     // -------------------------------------------------------------------------

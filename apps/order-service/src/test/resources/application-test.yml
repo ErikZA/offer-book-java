@@ -27,8 +27,13 @@ spring:
 
     # RabbitMQ: configurações sobrescritas por @DynamicPropertySource
     rabbitmq:
+        template:
+            # AT-14.1: deve espelhar application.yaml para que TracingW3CPropagationIntegrationTest
+            # encontre o ObservationRegistry vinculado ao RabbitTemplate no contexto de teste.
+            observation-enabled: true
         listener:
             simple:
+                observation-enabled: true
                 acknowledge-mode: auto # AUTO em testes para simplificar setup
                 prefetch: 10 # mesmo valor da produção; prefetch=1 limitaria throughput
         # O channel cache padrão é 25. Com testes de concorrência de 50 threads +
