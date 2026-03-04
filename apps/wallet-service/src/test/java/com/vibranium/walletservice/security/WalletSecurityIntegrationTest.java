@@ -80,7 +80,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>O {@code @MockBean} força a criação de um {@code ApplicationContext} dedicado a esta
  * classe, isolando o mock dos demais testes de integração.</p>
  *
- * @see com.vibranium.walletservice.config.SecurityConfig
+ * @see com.vibranium.walletservice.security.SecurityConfig
  * @see SecurityUnauthorizedTest AT-10.1 — requisições sem token
  * @see WalletOwnershipTest AT-10.2 — verificação de ownership (IDOR)
  */
@@ -89,7 +89,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class WalletSecurityIntegrationTest extends AbstractIntegrationTest {
 
     /**
-     * MockMvc com o {@link com.vibranium.walletservice.config.SecurityConfig} real ativo.
+     * MockMvc com o {@link com.vibranium.walletservice.security.SecurityConfig} real ativo.
      * Todas as requisições percorrem a cadeia completa de filtros de segurança.
      */
     @Autowired

@@ -1,8 +1,8 @@
 package com.vibranium.orderservice.web.controller;
 
 import com.vibranium.orderservice.application.service.OrderCommandService;
-import com.vibranium.orderservice.web.dto.PlaceOrderRequest;
-import com.vibranium.orderservice.web.dto.PlaceOrderResponse;
+import com.vibranium.orderservice.application.dto.PlaceOrderRequest;
+import com.vibranium.orderservice.application.dto.PlaceOrderResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;

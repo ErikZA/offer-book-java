@@ -3,8 +3,8 @@ package com.vibranium.orderservice.integration;
 import com.vibranium.contracts.enums.OrderType;
 import com.vibranium.contracts.events.order.OrderReceivedEvent;
 import com.vibranium.orderservice.config.RabbitMQConfig;
-import com.vibranium.orderservice.query.model.OrderDocument;
-import com.vibranium.orderservice.query.repository.OrderHistoryRepository;
+import com.vibranium.orderservice.application.query.model.OrderDocument;
+import com.vibranium.orderservice.application.query.repository.OrderHistoryRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -28,7 +28,7 @@ import static org.awaitility.Awaitility.await;
  * confirmam (ACK) as mensagens corretamente após o processamento.
  *
  * <h3>Problema (FASE RED)</h3>
- * <p>Os 4 listeners de {@link com.vibranium.orderservice.query.consumer.OrderEventProjectionConsumer}
+ * <p>Os 4 listeners de {@link com.vibranium.orderservice.application.query.consumer.OrderEventProjectionConsumer}
  * herdam o {@code acknowledge-mode: manual} configurado globalmente em {@code application.yaml},
  * mas <strong>não</strong> chamam {@code channel.basicAck()} explicitamente. Como resultado,
  * todas as mensagens consumidas ficam em estado {@code unacknowledged} no broker
@@ -54,7 +54,7 @@ import static org.awaitility.Awaitility.await;
  * seja validada de forma realista.</p>
  *
  * <p><strong>Idempotência preservada:</strong> mesmo com AUTO ACK, as operações MongoDB em
- * {@link com.vibranium.orderservice.query.service.OrderAtomicHistoryWriter} são idempotentes
+ * {@link com.vibranium.orderservice.application.query.service.OrderAtomicHistoryWriter} são idempotentes
  * via filtro {@code $ne} no {@code eventId}. Re-entrega acidental não corrompe o estado.</p>
  */
 // Sobrescreve application-test.yml (que define auto) com manual para simular produção.

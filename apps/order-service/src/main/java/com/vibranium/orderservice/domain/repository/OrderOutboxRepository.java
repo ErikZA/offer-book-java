@@ -33,7 +33,7 @@ public interface OrderOutboxRepository extends JpaRepository<OrderOutboxMessage,
     /**
      * Retorna a mensagem mais recente do outbox com o aggregateId e eventType informados.
      *
-     * <p>Utilizado pelo {@link com.vibranium.orderservice.adapter.messaging.FundsSettlementFailedEventConsumer}
+     * <p>Utilizado pelo {@link com.vibranium.orderservice.infrastructure.messaging.FundsSettlementFailedEventConsumer}
      * para recuperar o {@code MatchExecutedEvent} armazenado durante o processamento
      * do {@code FundsReservedEvent}. O payload do {@code MatchExecutedEvent} contém
      * os IDs de carteira (buyer/seller) necessários para emitir os {@code ReleaseFundsCommand}

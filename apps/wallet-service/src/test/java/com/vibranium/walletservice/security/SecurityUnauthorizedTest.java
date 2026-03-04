@@ -26,7 +26,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <ul>
  *   <li><b>RED (antes de AT-10.1):</b> Sem {@code spring-boot-starter-security},
  *       endpoints retornam {@code 200} sem autenticação → testes falham.</li>
- *   <li><b>GREEN (após AT-10.1):</b> {@link com.vibranium.walletservice.config.SecurityConfig}
+ *   <li><b>GREEN (após AT-10.1):</b> {@link com.vibranium.walletservice.security.SecurityConfig}
  *       ativo → sem token → {@code 401 Unauthorized} → testes passam.</li>
  * </ul>
  *
@@ -52,7 +52,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class SecurityUnauthorizedTest extends AbstractIntegrationTest {
 
     /**
-     * MockMvc configurado com o {@link com.vibranium.walletservice.config.SecurityConfig}
+     * MockMvc configurado com o {@link com.vibranium.walletservice.security.SecurityConfig}
      * real. Todas as requisições passam pela cadeia de filtros de segurança.
      */
     @Autowired

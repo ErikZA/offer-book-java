@@ -5,7 +5,7 @@ import com.vibranium.orderservice.domain.model.Order;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
 import com.vibranium.orderservice.domain.repository.UserRegistryRepository;
-import com.vibranium.orderservice.web.dto.PlaceOrderRequest;
+import com.vibranium.orderservice.application.dto.PlaceOrderRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

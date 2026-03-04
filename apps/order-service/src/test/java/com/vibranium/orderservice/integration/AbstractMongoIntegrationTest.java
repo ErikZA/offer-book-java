@@ -38,7 +38,7 @@ public abstract class AbstractMongoIntegrationTest extends AbstractIntegrationTe
 
     /**
      * MongoDB 7 — Read Model do Query Side (US-003).
-     * Armazena {@link com.vibranium.orderservice.query.model.OrderDocument} com
+     * Armazena {@link com.vibranium.orderservice.application.query.model.OrderDocument} com
      * histórico de eventos para consultas de auditoria.
      *
      * <p>Separado dos containers de {@link AbstractIntegrationTest} para garantir que

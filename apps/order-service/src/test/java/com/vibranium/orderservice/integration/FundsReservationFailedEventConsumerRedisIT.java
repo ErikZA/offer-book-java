@@ -3,7 +3,7 @@ package com.vibranium.orderservice.integration;
 import com.vibranium.contracts.enums.FailureReason;
 import com.vibranium.contracts.enums.OrderType;
 import com.vibranium.contracts.events.wallet.FundsReservationFailedEvent;
-import com.vibranium.orderservice.adapter.redis.RedisMatchEngineAdapter;
+import com.vibranium.orderservice.infrastructure.redis.RedisMatchEngineAdapter;
 import com.vibranium.orderservice.domain.model.Order;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
 import org.junit.jupiter.api.AfterEach;

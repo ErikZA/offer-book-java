@@ -1,7 +1,7 @@
 package com.vibranium.orderservice.web.controller;
 
-import com.vibranium.orderservice.query.model.OrderDocument;
-import com.vibranium.orderservice.query.repository.OrderHistoryRepository;
+import com.vibranium.orderservice.application.query.model.OrderDocument;
+import com.vibranium.orderservice.application.query.repository.OrderHistoryRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;

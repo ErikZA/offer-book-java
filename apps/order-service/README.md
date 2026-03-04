@@ -31,25 +31,6 @@ Implementa CQRS com PostgreSQL no Command Side (escrita) e MongoDB no Query Side
 ```
 src/main/java/com/vibranium/orderservice/
 ├── OrderServiceApplication.java
-├── adapter/
-│   ├── messaging/
-│   │   ├── FundsReservationFailedEventConsumer.java  # CANCELLED após falha na reserva
-│   │   ├── FundsReservedEventConsumer.java           # Match Engine → OPEN/FILLED
-│   │   └── KeycloakEventConsumer.java                # Registro de usuário via REGISTER event
-│   └── redis/
-│       └── RedisMatchEngineAdapter.java              # Script Lua atômico no Sorted Set
-├── application/service/
-│   ├── IdempotencyKeyCleanupJob.java                  # Cleanup de tb_processed_events (7d retention)
-│   ├── OrderCommandService.java                      # Orquestração do fluxo de ordem
-│   ├── OrderOutboxPublisherService.java              # Relay outbox → RabbitMQ (scheduler)
-│   └── SagaTimeoutCleanupJob.java                    # ⭐ Cancela PENDING expirados (AT-09.1)
-├── config/
-│   ├── JacksonConfig.java                            # ObjectMapper com JavaTimeModule
-│   ├── MongoIndexConfig.java                         # Index pre-creation + connection pool MongoDB
-│   ├── MongoTransactionConfig.java                   # TransactionManager MongoDB
-│   ├── RabbitMQConfig.java                           # Topologia: exchanges, filas, bindings, DLQ
-│   ├── SecurityConfig.java                           # JWT Resource Server (Keycloak)
-│   └── TimeConfig.java                              # ⭐ Bean Clock.systemUTC() (AT-09.2)
 ├── domain/
 │   ├── model/
 │   │   ├── Order.java                                # Entidade com @Version (optimistic lock)
@@ -61,23 +42,50 @@ src/main/java/com/vibranium/orderservice/
 │       ├── OrderRepository.java                      # ⭐ +findByStatusAndCreatedAtBefore (AT-09.1)
 │       ├── ProcessedEventRepository.java
 │       └── UserRegistryRepository.java
-├── query/                                            # ← Query Side (Read Model — US-003)
-│   ├── consumer/
-│   │   └── OrderEventProjectionConsumer.java         # 4 listeners → projeta eventos no MongoDB
-│   ├── model/
-│   │   └── OrderDocument.java                       # @Document MongoDB com history[] desnorm.
-│   └── repository/
-│       └── OrderHistoryRepository.java               # MongoRepository com paginação por userId
-└── web/
-    ├── controller/
-    │   ├── OrderCommandController.java               # POST /api/v1/orders
-    │   └── OrderQueryController.java                 # GET /api/v1/orders, GET /{orderId}
-    ├── dto/
-    │   ├── PlaceOrderRequest.java                    # @Valid + Bean Validation
-    │   └── PlaceOrderResponse.java
-    └── exception/
-        ├── GlobalExceptionHandler.java               # ResponseEntity<Map> — JSON plano no root
-        └── UserNotRegisteredException.java
+├── application/
+│   ├── service/
+│   │   ├── IdempotencyKeyCleanupJob.java             # Cleanup de tb_processed_events (7d retention)
+│   │   ├── OrderCommandService.java                  # Orquestração do fluxo de ordem
+│   │   ├── OrderOutboxPublisherService.java          # Relay outbox → RabbitMQ (scheduler)
+│   │   └── SagaTimeoutCleanupJob.java                # ⭐ Cancela PENDING expirados (AT-09.1)
+│   ├── dto/
+│   │   ├── PlaceOrderRequest.java                    # @Valid + Bean Validation
+│   │   └── PlaceOrderResponse.java
+│   └── query/                                        # ← Query Side (Read Model — US-003)
+│       ├── consumer/
+│       │   └── OrderEventProjectionConsumer.java     # 4 listeners → projeta eventos no MongoDB
+│       ├── model/
+│       │   └── OrderDocument.java                   # @Document MongoDB com history[] desnorm.
+│       ├── repository/
+│       │   └── OrderHistoryRepository.java           # MongoRepository com paginação por userId
+│       └── service/
+│           └── OrderAtomicHistoryWriter.java         # Escritor atômico de history[] no MongoDB
+├── infrastructure/
+│   ├── messaging/
+│   │   ├── FundsReservationFailedEventConsumer.java  # CANCELLED após falha na reserva
+│   │   ├── FundsReservedEventConsumer.java           # Match Engine → OPEN/FILLED (Saga TCC)
+│   │   ├── FundsSettlementFailedEventConsumer.java   # Compensação Saga → ReleaseFundsCommand
+│   │   └── KeycloakEventConsumer.java                # Registro de usuário via REGISTER event
+│   └── redis/
+│       └── RedisMatchEngineAdapter.java              # Script Lua atômico no Sorted Set
+├── web/
+│   ├── controller/
+│   │   ├── OrderCommandController.java               # POST /api/v1/orders
+│   │   └── OrderQueryController.java                 # GET /api/v1/orders, GET /{orderId}
+│   └── exception/
+│       ├── GlobalExceptionHandler.java               # ResponseEntity<Map> — JSON plano no root
+│       └── UserNotRegisteredException.java
+├── security/
+│   ├── SecurityConfig.java                           # JWT Resource Server (Keycloak, perfil !e2e)
+│   └── E2eSecurityConfig.java                        # JWT sem assinatura (perfil e2e)
+├── config/
+│   ├── JacksonConfig.java                            # ObjectMapper com JavaTimeModule
+│   ├── MongoIndexConfig.java                         # Index pre-creation + connection pool MongoDB
+│   ├── MongoTransactionConfig.java                   # TransactionManager MongoDB
+│   ├── RabbitMQConfig.java                           # Topologia: exchanges, filas, bindings, DLQ
+│   └── TimeConfig.java                              # ⭐ Bean Clock.systemUTC() (AT-09.2)
+└── e2e/
+    └── E2eDataSeederController.java                  # Seed de dados para testes E2E (perfil e2e)
 ```
 
 ## 🏛️ Topologia RabbitMQ

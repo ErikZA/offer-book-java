@@ -154,33 +154,43 @@ libs/common-utils/src/main/java/com/vibranium/utils/
 
 ### 3. 🚀 `apps/` — Os Microsserviços
 
-Aqui dentro, cada microsserviço é uma aplicação Spring Boot independente. E é dentro deles que aplicamos o **CQRS** rigorosamente.
-
-Veja como a estrutura fica por dentro do `apps/order-service/src/main/java/.../order/`:
+Cada microsserviço é uma aplicação Spring Boot independente que aplica **Arquitetura Hexagonal + DDD + CQRS**. Ambos os serviços compartilham exatamente a mesma organização de pacotes.
 
 ```
-apps/order-service/.../order/
-├── command/                        # ➔ WRITE SIDE — Escrita e Regras (Onde o bicho pega!)
-│   ├── aggregate/                  # O Guardião das regras (Ex: OrderAggregate)
-│   └── handlers/                   # Quem executa a ação (Ex: OrderCommandHandler)
+{orderservice | walletservice}/
+├── domain/
+│   ├── model/              # Aggregates e Entities do domínio (Order, Wallet, etc.)
+│   └── repository/         # Interfaces de repositório — domain ports (sem deps de infra)
 │
-├── query/                          # ➔ READ SIDE — Leitura Rápida (Focado em velocidade)
-│   ├── projections/                # Modelos prontos para a tela (Ex: OrderDocument do MongoDB)
-│   ├── handlers/                   # Quem busca os dados (Ex: OrderQueryHandler)
-│   └── repositories/               # Acesso ao banco de leitura (Ex: MongoRepository)
+├── application/
+│   ├── service/            # Application services / use cases (lógica de negócio)
+│   ├── dto/                # Request e Response DTOs (PlaceOrderRequest, WalletResponse, etc.)
+│   └── query/              # ➔ CQRS — READ SIDE (apenas order-service; wallet se aplicável)
+│       ├── model/          # Projeções MongoDB (ex: OrderDocument)
+│       ├── repository/     # Repositórios de leitura (MongoRepository)
+│       └── consumer/       # Projeção de eventos → Read Model
+│           service/        # Escritores atômicos (ex: OrderAtomicHistoryWriter)
 │
-├── rest/                           # ➔ PORTA DE ENTRADA — APIs HTTP
-│   ├── OrderCommandController.java # Recebe os POST/PUT e despacha Commands
-│   └── OrderQueryController.java   # Recebe os GET e despacha Queries
+├── infrastructure/         # Adapters técnicos — driven side (detalhes de implementação)
+│   ├── messaging/          # RabbitMQ listeners/consumers/publishers
+│   ├── outbox/             # Transactional Outbox publisher (wallet-service)
+│   └── redis/              # Redis adapters — match engine (order-service)
 │
-└── config/                         # Configurações exclusivas deste serviço (ex: Beans do Redis)
+├── web/                    # Adapter HTTP — driving side
+│   ├── controller/         # REST controllers (OrderCommandController, WalletController, etc.)
+│   └── exception/          # GlobalExceptionHandler + exceções de domínio customizadas
+│
+├── security/               # SecurityConfig e E2eSecurityConfig (separados de config/)
+├── config/                 # Demais @Configuration (RabbitMQ, Jackson, Mongo, Time, Outbox)
+└── e2e/                    # E2eDataSeederController (ativado apenas no perfil "e2e")
 ```
 
-**Como o CQRS funciona na prática:**
+**Fluxo CQRS na prática:**
 
-1. **Escrita (Command Side):** `OrderCommandController` → importa um **Command** de `libs/common-contracts` → despacha para `command/handlers/` → regras de negócio são aplicadas → evento é publicado no RabbitMQ
-2. **Leitura (Query Side):** `OrderQueryController` → importa uma **Query** de `libs/common-contracts` → consulta `query/repositories/` → retorna dados super rápido do MongoDB ou Redis
-3. **Integração:** Quando `wallet-service` quer reagir ao pedido, ele escuta o evento via RabbitMQ (não conhece a implementação interna do order-service, apenas o contrato!)
+1. **Escrita (Command Side):** `web/controller/` recebe HTTP → delega para `application/service/` → regras aplicadas no `domain/model/` → evento publicado via `infrastructure/messaging/` + Outbox
+2. **Leitura (Query Side):** `web/controller/` recebe HTTP → busca direto em `application/query/repository/` (MongoDB/Redis) → resposta rápida sem touching no Command Side
+3. **Projeção de eventos:** `infrastructure/messaging/` consome evento → `application/query/consumer/` atualiza o Read Model via `application/query/service/`
+4. **Integração entre serviços:** exclusivamente via RabbitMQ usando contratos de `libs/common-contracts` — nenhum serviço importa código interno do outro
 
 ### 4. 🐳 `docker/` e ☁️ `infra/` — O Ambiente
 
@@ -296,5 +306,5 @@ make ... (Linux/macOS)
 
 ---
 
-**Última Atualização**: 28/02/2026 (US-007 — Docker Compose completo + common-utils)
+**Última Atualização**: 04/03/2026 (US-008 — Unificação de estrutura de pacotes: Hexagonal + DDD + CQRS para order-service e wallet-service)
 **Status**: ✅ Completo e Funcional

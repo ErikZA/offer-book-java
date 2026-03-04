@@ -1,7 +1,7 @@
 package com.vibranium.orderservice.integration;
 
 import com.vibranium.contracts.enums.OrderType;
-import com.vibranium.orderservice.adapter.redis.RedisMatchEngineAdapter;
+import com.vibranium.orderservice.infrastructure.redis.RedisMatchEngineAdapter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;

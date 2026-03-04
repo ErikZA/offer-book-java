@@ -24,21 +24,24 @@ src/
 ├── main/
 │   ├── java/com/vibranium/walletservice/
 │   │   ├── WalletServiceApplication.java
-│   │   ├── WalletController.java                         # Endpoints REST
-│   │   ├── application/
-│   │   │   ├── dto/                                      # WalletResponse, KeycloakEventDto
-│   │   │   └── service/WalletService.java                # Orquestra casos de uso
 │   │   ├── domain/
 │   │   │   ├── model/
 │   │   │   │   ├── Wallet.java                           # Aggregate Root (US-005)
 │   │   │   │   ├── OutboxMessage.java
 │   │   │   │   └── IdempotencyKey.java
 │   │   │   └── repository/                               # Interfaces JPA
+│   │   ├── application/
+│   │   │   ├── dto/                                      # WalletResponse, BalanceUpdateRequest, KeycloakEventDto
+│   │   │   └── service/WalletService.java                # Orquestra casos de uso
 │   │   ├── infrastructure/
 │   │   │   ├── messaging/                                # Listeners RabbitMQ
 │   │   │   └── outbox/                                   # OutboxPublisher (Polling SKIP LOCKED)
-│   │   ├── config/                                       # RabbitMQ, Outbox, Jackson, SecurityConfig
-│   │   └── exception/                                    # InsufficientFundsException, etc.
+│   │   ├── web/
+│   │   │   ├── controller/WalletController.java          # Endpoints REST
+│   │   │   └── exception/                                # InsufficientFundsException, WalletNotFoundException, etc.
+│   │   ├── security/                                     # SecurityConfig (!e2e) e E2eSecurityConfig (e2e)
+│   │   ├── config/                                       # RabbitMQ, Outbox, Jackson, Time configs
+│   │   └── e2e/                                          # E2eDataSeederController (perfil e2e)
 │   └── resources/
 │       ├── application.yaml
 │       └── db/migration/                                 # V1…V7 (Flyway)
@@ -46,32 +49,25 @@ src/
     ├── java/com/vibranium/walletservice/
     │   ├── unit/
     │   │   ├── WalletDomainTest.java                     # Testes de domínio puro (US-005)
-    │   │   └── EventRouteTest.java
-    │   ├── unit/
-    │   │   ├── WalletDomainTest.java                     # Testes de domínio puro (US-005)
     │   │   ├── WalletServiceLockOrderTest.java           # TDD lock ordering ABBA (AT-03.1)
+    │   │   ├── WalletOutboxCleanupJobTest.java           # AT-2.3.1 — Clock.fixed valida janela retenção outbox
+    │   │   ├── WalletIdempotencyCleanupJobTest.java      # AT-2.3.1 — Clock.fixed valida janela retenção idempotência
     │   │   └── EventRouteTest.java
-    │   └── integration/
-    │       ├── WalletReserveFundsIntegrationTest.java
-    │       ├── WalletSettleFundsIntegrationTest.java
-    │       ├── WalletConcurrentDeadlockTest.java         # AT-03.2 — Ausência de deadlock ABBA (PostgreSQL real)
-    │       ├── WalletIdempotencyIntegrationTest.java
-    │       ├── WalletBalanceUpdateIntegrationTest.java
-    │       ├── OutboxPublisherIntegrationTest.java
-│       ├── ReserveFundsDlqIntegrationTest.java       # AT-07.1 — DLQ routing para reserve-funds
-│       ├── KeycloakDlqIntegrationTest.java           # AT-2.2.2 — DLQ routing para wallet.keycloak.events
-│   └── unit/
-│       ├── WalletOutboxCleanupJobTest.java            # AT-2.3.1 — TC-OCJ-1/2: Clock.fixed valida janela retenção outbox
-│       └── WalletIdempotencyCleanupJobTest.java       # AT-2.3.1 — TC-IKJ-1/2: Clock.fixed valida janela retenção idempotência
-│       ├── DebeziumJdbcOffsetMigrationTest.java      # (removido — era AT-08.1 do relay CDC)
-│       └── DebeziumRestartIdempotencyTest.java       # (removido — era AT-08.1 do relay CDC)
-│   └── security/
-│       ├── SecurityUnauthorizedTest.java             # AT-10.1 — 401 sem token; AT-4.2.1 — 200 com ROLE_ADMIN
-│       ├── WalletOwnershipTest.java                  # AT-10.2 — 403 acesso cruzado, 200 owner/admin
-│       └── WalletSecurityIntegrationTest.java        # AT-10.3 — 4 cenários: sem token, expirado, outro usuário, owner
-│   ├── integration/
-│   │   ├── WalletControllerIntegrationTest.java       # AT-4.2.1 — TC-LA-1/2/3: @PreAuthorize ROLE_ADMIN + Page<WalletResponse>
-│   │   └── WalletTracingPropagationIntegrationTest.java  # AT-14.1 RED→GREEN — W3C traceparent em AMQP
+    │   ├── integration/
+    │   │   ├── WalletReserveFundsIntegrationTest.java
+    │   │   ├── WalletSettleFundsIntegrationTest.java
+    │   │   ├── WalletConcurrentDeadlockTest.java         # AT-03.2 — Ausência de deadlock ABBA (PostgreSQL real)
+    │   │   ├── WalletIdempotencyIntegrationTest.java
+    │   │   ├── WalletBalanceUpdateIntegrationTest.java
+    │   │   ├── OutboxPublisherIntegrationTest.java
+    │   │   ├── WalletControllerIntegrationTest.java      # AT-4.2.1 — @PreAuthorize ROLE_ADMIN
+    │   │   ├── WalletTracingPropagationIntegrationTest.java  # AT-14.1 — W3C traceparent em AMQP
+    │   │   ├── ReserveFundsDlqIntegrationTest.java       # AT-07.1 — DLQ routing para reserve-funds
+    │   │   └── KeycloakDlqIntegrationTest.java           # AT-2.2.2 — DLQ routing para wallet.keycloak.events
+    │   └── security/
+    │       ├── SecurityUnauthorizedTest.java             # AT-10.1 — 401 sem token; AT-4.2.1 — 200 com ROLE_ADMIN
+    │       ├── WalletOwnershipTest.java                  # AT-10.2 — 403 acesso cruzado, 200 owner/admin
+    │       └── WalletSecurityIntegrationTest.java        # AT-10.3 — 4 cenários: sem token, expirado, outro usuário, owner
 
 docker/
 ├── Dockerfile                # Build production

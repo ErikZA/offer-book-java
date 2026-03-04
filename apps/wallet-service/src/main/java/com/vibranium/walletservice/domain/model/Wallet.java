@@ -1,8 +1,8 @@
 package com.vibranium.walletservice.domain.model;
 
 import com.vibranium.contracts.enums.AssetType;
-import com.vibranium.walletservice.exception.InsufficientFundsException;
-import com.vibranium.walletservice.exception.InsufficientLockedFundsException;
+import com.vibranium.walletservice.web.exception.InsufficientFundsException;
+import com.vibranium.walletservice.web.exception.InsufficientLockedFundsException;
 import jakarta.persistence.*;
 
 import java.math.BigDecimal;

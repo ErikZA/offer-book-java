@@ -38,7 +38,7 @@ import org.testcontainers.utility.DockerImageName;
  *
  * <p>O auto-configure do Spring MongoDB é desabilitado via {@code @SpringBootTest(properties)}
  * para evitar que o MongoClient tente se conectar a um MongoDB inexistente. Os beans
- * {@link com.vibranium.orderservice.query.consumer.OrderEventProjectionConsumer} e
+ * {@link com.vibranium.orderservice.application.query.consumer.OrderEventProjectionConsumer} e
  * {@link com.vibranium.orderservice.web.controller.OrderQueryController} só são criados
  * quando {@code MongoTemplate} está disponível no contexto ({@code @ConditionalOnBean}).</p>
  *

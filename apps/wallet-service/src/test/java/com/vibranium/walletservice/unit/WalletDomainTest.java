@@ -2,8 +2,8 @@ package com.vibranium.walletservice.unit;
 
 import com.vibranium.contracts.enums.AssetType;
 import com.vibranium.walletservice.domain.model.Wallet;
-import com.vibranium.walletservice.exception.InsufficientFundsException;
-import com.vibranium.walletservice.exception.InsufficientLockedFundsException;
+import com.vibranium.walletservice.web.exception.InsufficientFundsException;
+import com.vibranium.walletservice.web.exception.InsufficientLockedFundsException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;

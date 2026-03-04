@@ -622,8 +622,8 @@ public class RabbitMQConfig {
 
     /**
      * Container factory com {@link AcknowledgeMode#MANUAL} para os consumers que
-     * utilizam idempotencia por tabela ({@link com.vibranium.orderservice.adapter.messaging.FundsReservedEventConsumer}
-     * e {@link com.vibranium.orderservice.adapter.messaging.FundsReservationFailedEventConsumer}).
+     * utilizam idempotencia por tabela ({@link com.vibranium.orderservice.infrastructure.messaging.FundsReservedEventConsumer}
+     * e {@link com.vibranium.orderservice.infrastructure.messaging.FundsReservationFailedEventConsumer}).
      *
      * <p>Com ACK manual, o broker somente remove a mensagem da fila apos o consumer
      * chamar {@code channel.basicAck(deliveryTag, false)} explicitamente.
@@ -653,7 +653,7 @@ public class RabbitMQConfig {
 
     /**
      * Container factory com {@link AcknowledgeMode#AUTO} para os consumers de projeção
-     * ({@link com.vibranium.orderservice.query.consumer.OrderEventProjectionConsumer}).
+     * ({@link com.vibranium.orderservice.application.query.consumer.OrderEventProjectionConsumer}).
      *
      * <h3>Por que AUTO e não MANUAL para projeção?</h3>
      * <p>Os listeners de projeção não possuem parâmetro {@code Channel} e não chamam
@@ -664,7 +664,7 @@ public class RabbitMQConfig {
      *
      * <h3>Justificativa de segurança</h3>
      * <p>Filas de projeção são idempotentes: o filtro {@code $ne} no MongoDB
-     * ({@link com.vibranium.orderservice.query.service.OrderAtomicHistoryWriter})
+     * ({@link com.vibranium.orderservice.application.query.service.OrderAtomicHistoryWriter})
      * garante que eventos duplicados não corrompem o Read Model. O re-processamento
      * acidental é inofensivo; a perda de evento degrada o Read Model mas não afeta
      * o Command Side (PostgreSQL permanece íntegro).</p>
@@ -705,7 +705,7 @@ public class RabbitMQConfig {
 
     /**
      * {@link TransactionTemplate} utilizado pelo
-     * {@link com.vibranium.orderservice.adapter.messaging.FundsReservedEventConsumer}
+     * {@link com.vibranium.orderservice.infrastructure.messaging.FundsReservedEventConsumer}
      * para separar as fases da Saga em transações JPA independentes.
      *
      * <p><strong>Motivação (AT-2.1.1):</strong> Redis não participa da transação JPA.

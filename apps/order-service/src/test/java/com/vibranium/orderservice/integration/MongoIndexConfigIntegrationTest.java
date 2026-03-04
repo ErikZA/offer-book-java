@@ -1,8 +1,8 @@
 package com.vibranium.orderservice.integration;
 
-import com.vibranium.orderservice.query.model.OrderDocument;
-import com.vibranium.orderservice.query.model.OrderDocument.OrderHistoryEntry;
-import com.vibranium.orderservice.query.repository.OrderHistoryRepository;
+import com.vibranium.orderservice.application.query.model.OrderDocument;
+import com.vibranium.orderservice.application.query.model.OrderDocument.OrderHistoryEntry;
+import com.vibranium.orderservice.application.query.repository.OrderHistoryRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
