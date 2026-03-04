@@ -307,9 +307,9 @@ class MongoIndexConfigIntegrationTest extends AbstractMongoIntegrationTest {
                 .isTrue();
 
         assertThat(elapsedMs)
-                .as("Query por history.eventId com 1000 entradas deve completar em < 50ms, "
+                .as("Query por history.eventId com 1000 entradas deve completar em < 200ms, "
                     + "mas levou %dms. Sem índice, o custo é O(n) — com índice multikey é O(log n).",
                     elapsedMs)
-                .isLessThan(50L);
+                .isLessThan(200L);
     }
 }

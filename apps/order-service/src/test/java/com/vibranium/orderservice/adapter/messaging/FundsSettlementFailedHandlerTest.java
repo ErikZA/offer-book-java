@@ -7,6 +7,7 @@ import com.vibranium.contracts.enums.FailureReason;
 import com.vibranium.contracts.enums.OrderType;
 import com.vibranium.contracts.events.order.MatchExecutedEvent;
 import com.vibranium.contracts.events.wallet.FundsSettlementFailedEvent;
+import com.vibranium.orderservice.config.RabbitMQConfig;
 import com.vibranium.orderservice.domain.model.Order;
 import com.vibranium.orderservice.domain.model.OrderOutboxMessage;
 import com.vibranium.orderservice.domain.model.ProcessedEvent;
@@ -149,7 +150,7 @@ class FundsSettlementFailedHandlerTest {
         String matchEventJson = objectMapper.writeValueAsString(matchEvent);
         OrderOutboxMessage matchOutboxMessage = new OrderOutboxMessage(
                 buyOrderId, "Order", "MatchExecutedEvent",
-                "vibranium.events", "order.events.match-executed",
+                "vibranium.events", RabbitMQConfig.RK_MATCH_EXECUTED,
                 matchEventJson
         );
 

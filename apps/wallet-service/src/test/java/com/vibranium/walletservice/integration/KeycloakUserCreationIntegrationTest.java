@@ -89,13 +89,15 @@ class KeycloakUserCreationIntegrationTest extends AbstractIntegrationTest {
         // Act
         rabbitTemplate.send(KEYCLOAK_EXCHANGE, KEYCLOAK_ROUTING_KEY, message);
 
-        // Assert — verifica que o Outbox recebeu o evento de domínio
+        // Assert — verifica que o Outbox recebeu o evento de domínio.
+        // Não filtra por processed=false: o OutboxPublisherService pode marcar o evento
+        // como processed=true antes do assert, pois roda em thread separada.
         await()
                 .atMost(10, TimeUnit.SECONDS)
                 .pollInterval(500, TimeUnit.MILLISECONDS)
                 .untilAsserted(() -> {
                     Integer count = jdbcTemplate.queryForObject(
-                            "SELECT COUNT(*) FROM outbox_message WHERE event_type = 'WalletCreatedEvent' AND processed = false",
+                            "SELECT COUNT(*) FROM outbox_message WHERE event_type = 'WalletCreatedEvent'",
                             Integer.class
                     );
                     assertThat(count).isGreaterThan(0);

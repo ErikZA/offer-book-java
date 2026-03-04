@@ -75,6 +75,9 @@ import static org.mockito.Mockito.doThrow;
  * </ol>
  * <p>Após a implementação em {@link RabbitMQConfig} (FASE GREEN), ambos passam.</p>
  */
+// Esta classe usa @MockBean, que já force um novo ApplicationContext.
+// O @DirtiesContext(AFTER_CLASS) herdado da AbstractIntegrationTest fecha o contexto
+// após esta classe, garantindo que os listeners parem antes da próxima classe iniciar.
 @DisplayName("AT-2.2.2 — DLX na fila wallet.keycloak.events: mensagens com falha roteadas para DLQ")
 class KeycloakDlqIntegrationTest extends AbstractIntegrationTest {
 

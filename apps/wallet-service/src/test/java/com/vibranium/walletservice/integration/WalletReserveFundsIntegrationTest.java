@@ -40,8 +40,10 @@ import static org.awaitility.Awaitility.await;
 @DisplayName("[RED] WalletReserveFunds - Lock de saldos com concorrência e Outbox")
 class WalletReserveFundsIntegrationTest extends AbstractIntegrationTest {
 
-    private static final String WALLET_COMMANDS_EXCHANGE = "wallet.commands";
-    private static final String RESERVE_FUNDS_ROUTING_KEY = "wallet.command.reserve-funds";
+    // Exchange e routing key corretos: vibranium.commands é a exchange usada pelo order-service
+    // para publicar comandos ao wallet-service (binding declarado em RabbitMQConfig.reserveFundsQueueBinding)
+    private static final String WALLET_COMMANDS_EXCHANGE = "vibranium.commands";
+    private static final String RESERVE_FUNDS_ROUTING_KEY = "wallet.commands.reserve-funds";
 
     /** Carteira de teste com R$ 100,00 e 50 VIB disponíveis. */
     private Wallet testWallet;

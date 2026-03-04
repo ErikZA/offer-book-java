@@ -1422,6 +1422,45 @@ Testcontainers ao ambiente:
 4. **Atenção ao `@ConditionalOnProperty`:** se os beans do conteúdo novo não estiverem
    condicionados, eles tentarão se conectar a infra inexistente e falharão no startup.
 
+### `ConditionTimeout` em suíte completa mas passa em isolamento
+
+Este padrão de falha indica **interferência de `ApplicationContext` entre classes de
+teste**, não um bug na lógica da aplicação.
+
+**Causa:** Spring TestContext Framework faz cache de `ApplicationContext` por configuração.
+Classes com `@MockBean` forçam um novo contexto; o contexto anterior continua vivo
+junto com seus `@RabbitListener`. O RabbitMQ entrega mensagens em round-robin entre os
+dois listeners — o listener do contexto "errado" consome a mensagem e a assertion do
+teste atual nunca é satisfeita.
+
+**Diagnóstico:**
+```
+1. O teste passa quando executado sozinho (mvn test -Dtest=MinhaClasseTest)
+2. O teste falha quando executado na suíte completa (mvn test)
+3. O log mostra o processamento ocorrendo em contextos diferentes (ver thread name)
+4. Geralmente afeta testes com @MockBean que dependem de NACK/DLQ
+```
+
+**Solução:** Adicionar `@DirtiesContext(classMode = AFTER_CLASS)` na classe base:
+
+```java
+@SpringBootTest(webEnvironment = RANDOM_PORT)
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
+public abstract class AbstractIntegrationTest {
+    // containers static final — NÃO são afetados pelo @DirtiesContext
+    static final RabbitMQContainer RABBIT = ...;
+    static final PostgreSQLContainer<?> POSTGRES = ...;
+}
+```
+
+> **Atenção:** `@DirtiesContext(BEFORE_CLASS)` nas classes filhas **não resolve** o
+> problema — o contexto problemático (sem `@MockBean`) já foi fechado antes, mas o novo
+> contexto criado pela classe atual ainda pode coexistir com o próximo. Use `AFTER_CLASS`
+> na **classe base** para garantir que o contexto atual seja encerrado antes da próxima
+> classe começar.
+
+---
+
 ### Mensagens não chegam na DLQ
 
 Se mensagens rejeitadas (NACK sem requeue) não aparecem na fila `order.dead-letter`,
@@ -1546,19 +1585,112 @@ wallets de testes anteriores, gerando eventos inesperados.
 - Removidos campos `@Autowired private` sombreadores e `deleteAll()` redundantes das
   5 subclasses — agora usam os campos `protected` herdados.
 
-#### Resultado final
+#### Resultado após primeira rodada de correções
 
-| Métrica | Antes | Depois |
-|---------|-------|--------|
+| Métrica | Antes | Após 1ª rodada |
+|---------|-------|----------------|
 | Failures | 4 | 1 (AT-14.1 RED intencional) |
-| Errors | 9 | 0 (determinísticos) |
-| Suítes com falha | 8 | 1 |
+| Errors | 9 | 6 (ConditionTimeout ainda presentes) |
+| Suítes com falha | 8 | 6 |
 
-> **Nota sobre ConditionTimeout flaky:** Alguns testes baseados em `Awaitility` podem
-> apresentar timeout esporádico quando executados na suíte completa, por interferência
-> do listener RabbitMQ de background entre suítes. Todos passam em isolamento.
-> Solução definitiva: configurar Surefire com `forkCount > 1` e `reuseForks=false`
-> ou aumentar os timeouts do Awaitility.
+---
+
+### Wallet-Service: Segunda Rodada de Correções (2026-03-03)
+
+Após a primeira rodada, 6 erros do tipo `ConditionTimeout` persistiam na suíte completa.
+Todos passavam em isolamento — indicando interferência entre contextos Spring, não falhas
+de lógica de negócio.
+
+#### 6. Exchange e routing key incorretos em 4 suítes de integração
+
+**Suítes:** `WalletReserveFundsIntegrationTest`, `WalletReleaseFundsIntegrationTest`,
+`WalletIdempotencyIntegrationTest`, `ReserveFundsDlqIntegrationTest`
+
+**Problema:** Os testes publicavam comandos no exchange `wallet.commands` com routing key
+`wallet.command.reserve-funds` / `wallet.command.release-funds`, mas a topologia real do
+`RabbitMQConfig` usa o exchange `vibranium.commands` (DirectExchange) com routing keys
+`wallet.commands.reserve-funds` / `wallet.commands.release-funds`. As mensagens eram
+descartadas silenciosamente (unroutable) → listener nunca recebia → `Awaitility` expira.
+
+**Correção:** Atualizado nos 4 arquivos de teste:
+- Exchange: `"wallet.commands"` → `"vibranium.commands"`
+- Routing key: `"wallet.command.reserve-funds"` → `"wallet.commands.reserve-funds"`
+- Routing key: `"wallet.command.release-funds"` → `"wallet.commands.release-funds"`
+
+#### 7. Race condition na query de outbox — `AND processed = false`
+
+**Suíte:** `KeycloakUserCreationIntegrationTest.shouldPersistWalletCreatedEventInOutbox`
+
+**Problema:** O teste assertava que o evento de outbox existia com `processed = false`.
+O `OutboxPublisherService` roda em background thread e pode marcar o evento como
+`processed = true` antes que o `Awaitility` chegue a checar a query com `AND processed = false`.
+
+**Correção:** Removido o filtro `AND processed = false` da query JPQL do teste.
+O critério correto é a existência do registro com o `type` e `aggregateId` corretos —
+o campo `processed` é um detalhe de implementação do publisher, não um invariante de negócio.
+
+#### 8. Múltiplos `ApplicationContext` ativos → listeners AMQP concorrentes
+
+**Suítes:** todas as 6 suítes acima (causa raiz sistêmica)
+
+**Problema:** O TestContext Framework do Spring reutiliza (faz cache de) `ApplicationContext`
+entre classes de teste com configuração idêntica. Classes com `@MockBean` forçam a criação
+de um **novo** contexto isolado. Sem `@DirtiesContext`, o contexto anterior **não é fechado** —
+seus `@RabbitListener` permanecem registrados e ativos.
+
+Resultado: duas instâncias de listener na mesma fila → RabbitMQ entrega em round-robin:
+
+```
+Context A (sem @MockBean)       Context B (com @MockBean — teste atual)
+   listener real ←── 50% das msgs ──┐    listener mockado ←── 50% das msgs
+                                     └── fila wallet.commands.reserve-funds
+```
+
+Para os testes de DLQ (que dependem do `@MockBean` fazer NACK), o listener real do
+Context A recebe a mensagem, processa com ACK e ela nunca vai para a DLQ → `ConditionTimeout`.
+
+**Correção:** Adicionado `@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)`
+em `AbstractIntegrationTest` do wallet-service. Garante que o contexto é fechado após
+cada classe de teste, encerrando todos os listeners AMQP antes da próxima classe iniciar.
+Os containers Testcontainers **não** são afetados — são campos `static final` que sobrevivem
+ao fechamento do contexto Spring.
+
+```java
+// AbstractIntegrationTest.java (wallet-service)
+// @DirtiesContext(AFTER_CLASS): fecha o ApplicationContext após cada classe de teste.
+// Sem isso, Spring reutiliza o contexto entre classes via TestContextManager cache,
+// mantendo @RabbitListener ativos nas filas. Quando uma classe usa @MockBean
+// (criando um contexto diferente), os listeners do contexto anterior continuam
+// consumindo mensagens em paralelo via round-robin do RabbitMQ, impedindo que o
+// @MockBean receba 100% das mensagens — causando ConditionTimeout nos testes de DLQ.
+// AFTER_CLASS garante que o contexto seja fechado (e listeners parados) depois de
+// cada classe, sem afetar a reutilização dos containers Testcontainers (que são static).
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Testcontainers
+@ActiveProfiles("test")
+@WithMockUser
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
+public abstract class AbstractIntegrationTest { ... }
+```
+
+> **Trade-off aceito:** cada classe de teste reconstrói o contexto Spring (~1-2s).
+> Custo total: ~30s extra na suíte completa (15 classes × 2s). Benefício: eliminação
+> de 100% dos `ConditionTimeout` por competição de listeners.
+
+> **Mesma solução já documentada no order-service** (seção [Hierarquia de Classes Base](#hierarquia-de-classes-base)):
+> o `AbstractIntegrationTest` do order-service já usava `@DirtiesContext(AFTER_CLASS)` para
+> evitar concorrência entre os lados Command e Query (MongoDB). O wallet-service simplesmente
+> não havia recebido a mesma proteção após as suas suítes de AMQP serem adicionadas.
+
+#### Resultado final — suíte completa
+
+| Métrica | Estado inicial | Após 1ª rodada | Após 2ª rodada |
+|---------|----------------|----------------|----------------|
+| Failures | 4 | 1 (AT-14.1 RED) | **0** |
+| Errors | 9 | 6 | **0** |
+| Suítes com falha | 8 | 6 | **0** |
+| order-service | — | 157/157 ✅ | 157/157 ✅ |
+| wallet-service | — | 125/131 | **131/131 ✅** |
 
 **Como habilitar no futuro:**
 
@@ -4326,6 +4458,7 @@ docker exec vibranium-redis-1 redis-cli cluster info | grep cluster_slots_assign
 **Última atualização**: 3 de março de 2026
 
 > **Mudanças recentes:**
+> - **Correção de regressão (2ª rodada, 2026-03-03)**: Suíte completa do `wallet-service` zerada: 131/131 testes passando. Causa raiz: (a) 4 testes publicavam comandos no exchange `wallet.commands` + routing key `wallet.command.*` — topologia real usa `vibranium.commands` + `wallet.commands.*`; (b) `KeycloakUserCreationIntegrationTest` assertava `processed = false` no outbox, mas `OutboxPublisherService` pode marcar `processed = true` antes da assertion; (c) causa raiz sistêmica: múltiplos `ApplicationContext` ativos simultaneamente — classes com `@MockBean` criam novo contexto mas o anterior (com o listener real) permanecia vivo → round-robin RabbitMQ → listener errado consome mensagem → `ConditionTimeout`. Correção definitiva: `@DirtiesContext(classMode = AFTER_CLASS)` adicionado em `AbstractIntegrationTest` do `wallet-service`, mesma estratégia já usada no `order-service`. Removidos os `@DirtiesContext(BEFORE_CLASS)` das classes filhas (obsoletos). Adicionada seção de troubleshooting "ConditionTimeout em suíte completa" neste guia.
 > - **AT-5.1.1**: Inicialização do Redis Cluster no Staging — `infra/docker-compose.staging.yml` atualizado com healthchecks (`redis-cli ping`) nos 3 nós Redis; `depends_on` de redis-2/redis-3 corrigido de sintaxe de lista para `condition: service_healthy`; novo serviço `redis-cluster-init` (container de curta duração `restart: 'no'`, imagem `redis:7-alpine`, executa `redis-cli --cluster create redis-1:6379 redis-2:6379 redis-3:6379 --cluster-replicas 0 --cluster-yes`, depende dos 3 nós com `service_healthy`); `order-service-1.depends_on` atualizado: substituição de `redis-1: service_started` por `redis-cluster-init: service_completed_successfully`. Risco documentado: hash tag `{vibranium}` concentra todos os slots do motor de match em 1 dos 3 nós — comportamento intencional para garantir atomicidade do `EVAL` Lua multi-key. FASE RED: `cluster_state:fail`, `cluster_slots_assigned:0`. FASE GREEN: `cluster_state:ok`, `cluster_slots_assigned:16384`. Adicionada seção 35 neste guia.
 > - **AT-5.2.1**: `@JsonIgnoreProperties(ignoreUnknown = true)` adicionado a todos os 18 records de `common-contracts` (13 eventos + 5 comandos). A anotação em nível de tipo sobrepõe `FAIL_ON_UNKNOWN_PROPERTIES=true` do mapper — records são auto-protegidos contra campos futuros independente da configuração do consumer. `ContractSchemaVersionTest` ampliado com Cenário 4 (`ForwardCompatAnnotation`): novo teste `testForwardCompat_withDefaultObjectMapper_unknownFieldsIgnored()` usa `new ObjectMapper().registerModule(new JavaTimeModule())` sem config global de `FAIL_ON_UNKNOWN_PROPERTIES` e asserta `doesNotThrowAnyException()`; teste `givenJsonWithUnknownField_withStrictMapper_*` atualizado para refletir que a anotação sobrepõe o mapper estrito. 18 arquivos alterados (imports + anotação), 64 testes, 0 falhas, BUILD SUCCESS. Adicionada seção 34 neste guia.
 > - **AT-3.1.1**: Multi-Match Loop Atômico no Lua EVAL — `match_engine.lua` refatorado de `LIMIT 0 1` para loop `while remainingQty > 0 and iterations < MAX_MATCHES` (MAX=100). Protocolo de retorno novo: array plano `{STATUS, N, v₁, q₁, f₁, r₁, …}` com STATUS ∈ {MULTI_MATCH, PARTIAL, NO_MATCH}; formato `MATCH` legado suportado por retrocompatibilidade. `RedisMatchEngineAdapter.tryMatch()` e `parseResult()` passaram a retornar `List<MatchResult>`; helper `parseSingleMatchEntry()` extraiu lógica compartilhada. `FundsReservedEventConsumer.handleMatches()` itera a lista, emite `MatchExecutedEvent` por contraparte e um único evento de fill ao final (`OrderFilledEvent` ou `OrderPartiallyFilledEvent` baseado no status final da ordem). 7 arquivos alterados: Lua script, adapter, consumer, 2 testes unitários e 2 testes de integração. Novos testes: `MultiMatchFormatTests` (4 casos), `PartialFormatTests` (2 casos), TC-MM-1..4 em `MatchEngineRedisIntegrationTest`. 157 testes executados, zero regressões introduzidas. Adicionada seção 33 neste guia.

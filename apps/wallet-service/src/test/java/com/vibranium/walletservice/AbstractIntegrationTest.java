@@ -9,6 +9,7 @@ import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -32,10 +33,20 @@ import org.springframework.security.test.context.support.WithMockUser;
 // Pre-popula o SecurityContext com um usuário autenticado (UsernamePasswordAuthenticationToken),
 // bypassando a validação JWT do BearerTokenAuthenticationFilter.
 // Sem isto, todas as requisições dos testes retornariam 401 (nenhum Bearer Token presente).
+//
+// @DirtiesContext(AFTER_CLASS): fecha o ApplicationContext após cada classe de teste.
+// Sem isso, Spring reutiliza o contexto entre classes via TestContextManager cache,
+// mantendo @RabbitListener ativos nas filas. Quando uma classe usa @MockBean
+// (criando um contexto diferente), os listeners do contexto anterior continuam
+// consumindo mensagens em paralelo via round-robin do RabbitMQ, impedindo que o
+// @MockBean receba 100% das mensagens — causando ConditionTimeout nos testes de DLQ.
+// AFTER_CLASS garante que o contexto seja fechado (e listeners parados) depois de
+// cada classe, sem afetar a reutilização dos containers Testcontainers (que são static).
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers
 @ActiveProfiles("test")
 @WithMockUser
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 public abstract class AbstractIntegrationTest {
 
     // ---------------------------------------------------------------------------

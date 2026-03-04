@@ -125,8 +125,8 @@ class AT04ReverseIndexIntegrationTest extends AbstractIntegrationTest {
                 .as("bookKey deve ser {vibranium}:bids")
                 .isEqualTo(bidsKey);
         assertThat(parts[1])
-                .as("score deve ser o preço × 1_000_000 como inteiro")
-                .isEqualTo("100000000");
+                .as("score deve ser o preço × 100_000_000 como inteiro")
+                .isEqualTo("10000000000");
         assertThat(parts[2])
                 .as("member (3ª parte) deve começar com orderId")
                 .startsWith(orderId.toString());

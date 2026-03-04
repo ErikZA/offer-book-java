@@ -10,8 +10,13 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.amqp.core.Binding;
+import org.springframework.amqp.core.DirectExchange;
+import org.springframework.amqp.core.Queue;
+import org.springframework.amqp.core.QueueBuilder;
 import org.springframework.amqp.rabbit.connection.CachingConnectionFactory;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
+import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -203,6 +208,10 @@ class OrderOutboxResilienceIntegrationTest {
     @Autowired
     private RabbitTemplate rabbitTemplate;
 
+    /** RabbitAdmin: declara filas do wallet-service no broker de teste antes de cada execução. */
+    @Autowired
+    private RabbitAdmin rabbitAdmin;
+
     /**
      * ConnectionFactory: injetado como {@link CachingConnectionFactory} pelo Spring Boot AMQP.
      * Usado para chamar {@link CachingConnectionFactory#resetConnection()}, que invalida
@@ -239,6 +248,19 @@ class OrderOutboxResilienceIntegrationTest {
 
         // Garante que o broker não está pausado (proteção contra falha em execução anterior)
         ensureBrokerIsRunning();
+
+        // Declara a fila wallet.commands.reserve-funds no broker de teste.
+        // Em produção esta fila é declarada pelo wallet-service (consumidor);
+        // aqui precisamos que exista para que o outbox possa entregar e o teste verificar.
+        // Parâmetros idênticos aos usados pelo wallet-service (durable + DLX) para evitar
+        // PRECONDITION_FAILED no broker compartilhado (Testcontainers withReuse=true).
+        rabbitAdmin.declareQueue(QueueBuilder.durable(RabbitMQConfig.QUEUE_RESERVE_FUNDS)
+                .withArgument("x-dead-letter-exchange", RabbitMQConfig.DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-routing-key", RabbitMQConfig.QUEUE_RESERVE_FUNDS + ".dlq")
+                .build());
+        rabbitAdmin.declareBinding(new Binding(
+                RabbitMQConfig.QUEUE_RESERVE_FUNDS, Binding.DestinationType.QUEUE,
+                RabbitMQConfig.COMMANDS_EXCHANGE, RabbitMQConfig.QUEUE_RESERVE_FUNDS, null));
 
         // Restaura o cache de conexões AMQP para estado limpo
         resetConnectionCache();

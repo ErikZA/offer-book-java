@@ -53,6 +53,9 @@ import static org.mockito.Mockito.doThrow;
  * <p><b>Isolamento:</b> {@code @MockBean} força criação de um ApplicationContext
  * dedicado a esta classe, sem interferir nos demais testes de integração.</p>
  */
+// Esta classe usa @MockBean, que já força um novo ApplicationContext.
+// O @DirtiesContext(AFTER_CLASS) herdado da AbstractIntegrationTest fecha o contexto
+// após esta classe, garantindo que os listeners parem antes da próxima classe iniciar.
 @DisplayName("[RED] AT-07.1 — DLQ routing para wallet.commands.reserve-funds")
 class ReserveFundsDlqIntegrationTest extends AbstractIntegrationTest {
 
@@ -75,12 +78,13 @@ class ReserveFundsDlqIntegrationTest extends AbstractIntegrationTest {
     /**
      * Routing key usada pelo order-service para publicar comandos de reserva.
      */
-    private static final String ROUTING_KEY_RESERVE     = "wallet.command.reserve-funds";
+    // routing key correta alinhada com RabbitMQConfig.reserveFundsQueueBinding
+    private static final String ROUTING_KEY_RESERVE     = "wallet.commands.reserve-funds";
 
     /**
-     * Exchange de comandos do wallet-service.
+     * Exchange de comandos do wallet-service (vibranium.commands = exchange do order-service).
      */
-    private static final String WALLET_COMMANDS_EXCHANGE = "wallet.commands";
+    private static final String WALLET_COMMANDS_EXCHANGE = "vibranium.commands";
 
     /**
      * Mock do WalletService para simular falha permanente no processamento.

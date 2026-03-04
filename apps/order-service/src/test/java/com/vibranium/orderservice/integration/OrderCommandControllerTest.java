@@ -2,6 +2,7 @@ package com.vibranium.orderservice.integration;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vibranium.contracts.enums.OrderType;
+import com.vibranium.orderservice.config.RabbitMQConfig;
 import com.vibranium.orderservice.domain.model.UserRegistry;
 import com.vibranium.orderservice.domain.repository.UserRegistryRepository;
 import com.vibranium.orderservice.web.dto.PlaceOrderRequest;
@@ -10,7 +11,12 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.springframework.amqp.core.Binding;
+import org.springframework.amqp.core.DirectExchange;
 import org.springframework.amqp.core.Message;
+import org.springframework.amqp.core.Queue;
+import org.springframework.amqp.core.QueueBuilder;
+import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.beans.factory.annotation.Autowired;
 
 import java.math.BigDecimal;
@@ -61,11 +67,26 @@ class OrderCommandControllerTest extends AbstractIntegrationTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private RabbitAdmin rabbitAdmin;
+
     private UUID registeredUserId;
     private UUID walletId;
 
     @BeforeEach
     void setup() {
+        // Declara a fila do wallet-service necessária nos testes (em produção é declarada pelo wallet-service).
+        // Usar os mesmos parâmetros (durable + DLX) que o wallet-service usa para evitar
+        // PRECONDITION_FAILED quando os testes do wallet-service tentam redeclarar a fila
+        // no broker compartilhado (Testcontainers withReuse=true).
+        rabbitAdmin.declareQueue(QueueBuilder.durable(RESERVE_FUNDS_QUEUE)
+                .withArgument("x-dead-letter-exchange", RabbitMQConfig.DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-routing-key", RESERVE_FUNDS_QUEUE + ".dlq")
+                .build());
+        rabbitAdmin.declareBinding(new Binding(
+                RESERVE_FUNDS_QUEUE, Binding.DestinationType.QUEUE,
+                RabbitMQConfig.COMMANDS_EXCHANGE, RESERVE_FUNDS_QUEUE, null));
+
         // Cria um usuário no registry local para simular onboarding já realizado
         registeredUserId = UUID.randomUUID();
         walletId = UUID.randomUUID();
