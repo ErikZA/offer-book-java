@@ -84,7 +84,7 @@ http_call PUT "${KONG_ADMIN_URL}/services/order-service" \
     "Service order-service"
 
 # ==============================================================================
-# STEP 3 — Route: POST /api/v1/orders
+# STEP 3 — Route: POST /api/v1/orders (Commands — escrita)
 # PUT /services/{svcName}/routes/{routeName} é idempotente no Kong 3.x
 # ==============================================================================
 echo ""
@@ -92,6 +92,25 @@ echo "--- [2/4] Configurando Route place-order-route ---"
 http_call PUT "${KONG_ADMIN_URL}/services/order-service/routes/place-order-route" \
     '{"name":"place-order-route","paths":["/api/v1/orders"],"methods":["POST","OPTIONS"],"strip_path":false,"preserve_host":false}' \
     "Route place-order-route"
+
+# ==============================================================================
+# STEP 3b — Route: GET /api/v1/orders (Query Side CQRS — lista paginada)
+# ==============================================================================
+echo ""
+echo "--- [2b/4] Configurando Route list-orders-route ---"
+http_call PUT "${KONG_ADMIN_URL}/services/order-service/routes/list-orders-route" \
+    '{"name":"list-orders-route","paths":["/api/v1/orders"],"methods":["GET","OPTIONS"],"strip_path":false,"preserve_host":false}' \
+    "Route list-orders-route"
+
+# ==============================================================================
+# STEP 3c — Route: GET /api/v1/orders/{orderId} (Query Side CQRS — detalhe)
+# Regex path: ~/api/v1/orders/[^/]+$ captura UUID após /api/v1/orders/
+# ==============================================================================
+echo ""
+echo "--- [2c/4] Configurando Route get-order-by-id-route ---"
+http_call PUT "${KONG_ADMIN_URL}/services/order-service/routes/get-order-by-id-route" \
+    '{"name":"get-order-by-id-route","paths":["~/api/v1/orders/[^/]+$"],"methods":["GET","OPTIONS"],"strip_path":false,"preserve_host":false}' \
+    "Route get-order-by-id-route"
 
 # ==============================================================================
 # STEP 4 — Plugins na Route (jwt + rate-limiting + cors)
@@ -134,6 +153,67 @@ http_call POST "${KONG_ADMIN_URL}/routes/${ROUTE_ID}/plugins" \
 http_call POST "${KONG_ADMIN_URL}/routes/${ROUTE_ID}/plugins" \
     '{"name":"cors","config":{"origins":["*"],"methods":["GET","POST","OPTIONS"],"headers":["Accept","Authorization","Content-Type","X-Requested-With","X-Correlation-ID"],"exposed_headers":["X-Correlation-ID"],"credentials":false,"max_age":3600,"preflight_continue":false}}' \
     "Plugin cors"
+
+# ==============================================================================
+# STEP 4a — Plugins na Route list-orders-route (jwt + rate-limiting 200 + cors)
+# Rate-limiting de leitura: 200 req/s (mais permissivo que escrita)
+# ==============================================================================
+echo ""
+echo "--- [3a/4] Configurando Plugins list-orders-route ---"
+
+LIST_ROUTE_ID=$(curl -s "${KONG_ADMIN_URL}/services/order-service/routes/list-orders-route" | \
+    grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')
+echo "[kong] list-orders-route ID: ${LIST_ROUTE_ID}"
+
+for PNAME in jwt rate-limiting cors; do
+    OLD_PID=$(curl -s "${KONG_ADMIN_URL}/routes/${LIST_ROUTE_ID}/plugins" | \
+        grep -B2 "\"name\":\"${PNAME}\"" | grep '"id"' | head -1 | \
+        sed 's/.*"id":"\([^"]*\)".*/\1/')
+    [ -n "$OLD_PID" ] && curl -s -o /dev/null \
+        -X DELETE "${KONG_ADMIN_URL}/plugins/${OLD_PID}"
+done
+
+http_call POST "${KONG_ADMIN_URL}/routes/${LIST_ROUTE_ID}/plugins" \
+    '{"name":"jwt","config":{"uri_param_names":[],"cookie_names":[],"header_names":["Authorization"],"claims_to_verify":["exp"],"key_claim_name":"iss","maximum_expiration":3600,"secret_is_base64":false,"run_on_preflight":false}}' \
+    "Plugin jwt (list-orders)"
+
+http_call POST "${KONG_ADMIN_URL}/routes/${LIST_ROUTE_ID}/plugins" \
+    '{"name":"rate-limiting","config":{"second":200,"minute":10000,"policy":"redis","redis_host":"redis-kong","redis_port":6379,"redis_database":1,"limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
+    "Plugin rate-limiting (list-orders)"
+
+http_call POST "${KONG_ADMIN_URL}/routes/${LIST_ROUTE_ID}/plugins" \
+    '{"name":"cors","config":{"origins":["*"],"methods":["GET","OPTIONS"],"headers":["Accept","Authorization","Content-Type","X-Requested-With","X-Correlation-ID"],"exposed_headers":["X-Correlation-ID"],"credentials":false,"max_age":3600,"preflight_continue":false}}' \
+    "Plugin cors (list-orders)"
+
+# ==============================================================================
+# STEP 4a2 — Plugins na Route get-order-by-id-route (jwt + rate-limiting 200 + cors)
+# ==============================================================================
+echo ""
+echo "--- [3a2/4] Configurando Plugins get-order-by-id-route ---"
+
+GETBYID_ROUTE_ID=$(curl -s "${KONG_ADMIN_URL}/services/order-service/routes/get-order-by-id-route" | \
+    grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')
+echo "[kong] get-order-by-id-route ID: ${GETBYID_ROUTE_ID}"
+
+for PNAME in jwt rate-limiting cors; do
+    OLD_PID=$(curl -s "${KONG_ADMIN_URL}/routes/${GETBYID_ROUTE_ID}/plugins" | \
+        grep -B2 "\"name\":\"${PNAME}\"" | grep '"id"' | head -1 | \
+        sed 's/.*"id":"\([^"]*\)".*/\1/')
+    [ -n "$OLD_PID" ] && curl -s -o /dev/null \
+        -X DELETE "${KONG_ADMIN_URL}/plugins/${OLD_PID}"
+done
+
+http_call POST "${KONG_ADMIN_URL}/routes/${GETBYID_ROUTE_ID}/plugins" \
+    '{"name":"jwt","config":{"uri_param_names":[],"cookie_names":[],"header_names":["Authorization"],"claims_to_verify":["exp"],"key_claim_name":"iss","maximum_expiration":3600,"secret_is_base64":false,"run_on_preflight":false}}' \
+    "Plugin jwt (get-order-by-id)"
+
+http_call POST "${KONG_ADMIN_URL}/routes/${GETBYID_ROUTE_ID}/plugins" \
+    '{"name":"rate-limiting","config":{"second":200,"minute":10000,"policy":"redis","redis_host":"redis-kong","redis_port":6379,"redis_database":1,"limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
+    "Plugin rate-limiting (get-order-by-id)"
+
+http_call POST "${KONG_ADMIN_URL}/routes/${GETBYID_ROUTE_ID}/plugins" \
+    '{"name":"cors","config":{"origins":["*"],"methods":["GET","OPTIONS"],"headers":["Accept","Authorization","Content-Type","X-Requested-With","X-Correlation-ID"],"exposed_headers":["X-Correlation-ID"],"credentials":false,"max_age":3600,"preflight_continue":false}}' \
+    "Plugin cors (get-order-by-id)"
 
 # ==============================================================================
 # STEP 4b — Service + Routes: wallet-service

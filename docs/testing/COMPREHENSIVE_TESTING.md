@@ -37,7 +37,8 @@
 33. [Multi-Match Loop Atômico no Lua EVAL — Consumo de Liquidez Total (AT-3.1.1)](#multi-match-loop-atômico-no-lua-eval--consumo-de-liquidez-total-at-311)
 34. [@JsonIgnoreProperties em Todos os Records — Forward Compatibility (AT-5.2.1)](#jsonignoreproperties-em-todos-os-records--forward-compatibility-at-521)
 35. [Inicialização do Redis Cluster no Staging — redis-cluster-init (AT-5.1.1)](#inicialização-do-redis-cluster-no-staging--redis-cluster-init-at-511)
-36. [Referências](#referências)
+36. [Rotas GET Orders no Kong — Query Side CQRS via Gateway (Atividade 2)](#rotas-get-orders-no-kong--query-side-cqrs-via-gateway-atividade-2)
+37. [Referências](#referências)
 
 ---
 
@@ -3149,6 +3150,159 @@ auto-protegidos mesmo com `strictMapper (FAIL=true)`.
 
 ---
 
+## Rotas GET Orders no Kong — Query Side CQRS via Gateway (Atividade 2)
+
+### Problema
+
+Os endpoints de **consulta de ordens** (`GET /api/v1/orders` e `GET /api/v1/orders/{orderId}`)
+estavam implementados no `OrderQueryController` mas **sem rota correspondente no Kong** em
+nenhum ambiente. Clientes que consultavam ordens via Gateway recebiam `404 Not Found` —
+o Query Side do CQRS era inacessível externamente.
+
+**Raiz técnica**: `kong-init.yml` (dev DB-less) e `kong-setup.sh` (staging DB mode) mapeavam
+apenas `POST /api/v1/orders`. A divergência de topologia entre os dois arquivos também impedia
+detecção antecipada do problema.
+
+### Solução
+
+#### 1. Duas novas rotas no `kong-init.yml` (dev DB-less)
+
+```yaml
+# Rota de Query: lista paginada de ordens
+- name: list-orders-route
+  paths:
+      - /api/v1/orders
+  methods:
+      - GET
+      - OPTIONS
+  strip_path: false
+  preserve_host: false
+  plugins:
+      - name: rate-limiting
+        config:
+            second: 200    # leitura mais permissiva que escrita (100 req/s)
+            minute: 10000
+            policy: redis
+            redis_host: redis-kong
+            redis_port: 6379
+            redis_database: 1
+            limit_by: ip
+            hide_client_headers: false
+            fault_tolerant: true
+
+# Rota de Query: detalhe por orderId (regex captura UUID)
+- name: get-order-by-id-route
+  paths:
+      - ~/api/v1/orders/[^/]+$
+  methods:
+      - GET
+      - OPTIONS
+  strip_path: false
+  preserve_host: false
+  plugins:
+      - name: rate-limiting
+        config:
+            second: 200
+            minute: 10000
+            # ... mesmo redis config
+```
+
+Os plugins `jwt` e `cors` são herdados do nível de service (`order-service`). O plugin
+`rate-limiting` é sobrescrito por rota para 200 req/s (o service-level é 100 req/s — POST).
+
+#### 2. Mesmas rotas no `kong-setup.sh` (staging DB mode)
+
+Bloco de provisionamento adicionado para `list-orders-route` (STEP 3b) e
+`get-order-by-id-route` (STEP 3c), cada um com plugins individuais via Admin API:
+
+```sh
+# Route list-orders-route
+http_call PUT "${KONG_ADMIN_URL}/services/order-service/routes/list-orders-route" \
+    '{..."paths":["/api/v1/orders"],"methods":["GET","OPTIONS"],...}'
+
+# Plugins: jwt (run_on_preflight=false) + rate-limiting (200/s) + cors
+http_call POST "${KONG_ADMIN_URL}/routes/${LIST_ROUTE_ID}/plugins" \
+    '{"name":"jwt",...}'
+http_call POST "${KONG_ADMIN_URL}/routes/${LIST_ROUTE_ID}/plugins" \
+    '{"name":"rate-limiting","config":{"second":200,"minute":10000,...}}'
+http_call POST "${KONG_ADMIN_URL}/routes/${LIST_ROUTE_ID}/plugins" \
+    '{"name":"cors",...}'
+```
+
+#### 3. Topologia sincronizada entre os dois ambientes
+
+| Route Name | Service | Método | Path | Rate Limit |
+|:-----------|:--------|:-------|:-----|:-----------|
+| `place-order-route` | order-service | POST | `/api/v1/orders` | 100/s, 5000/m |
+| `list-orders-route` | order-service | GET | `/api/v1/orders` | 200/s, 10000/m |
+| `get-order-by-id-route` | order-service | GET | `~/api/v1/orders/[^/]+$` | 200/s, 10000/m |
+| `get-wallet-route` | wallet-service | GET | `/api/v1/wallets` | 200/s, 10000/m |
+| `update-wallet-balance-route` | wallet-service | PATCH | `~/api/v1/wallets/[^/]+/balance` | 50/s, 2000/m |
+
+### Validação — Fase RED (antes da correção)
+
+```bash
+curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/v1/orders
+# → 404 (rota não existia no Kong)
+curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/v1/orders/{uuid}
+# → 404
+```
+
+### Validação — Fase GREEN (após a correção)
+
+```bash
+# Sem JWT → 401 (rota existe, JWT obrigatório)
+curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/v1/orders
+# → 401
+curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/v1/orders/550e8400-e29b-41d4-a716-446655440000
+# → 401
+
+# Com JWT válido → 200 com dados do MongoDB
+curl -s -H "Authorization: Bearer <JWT>" http://localhost:8000/api/v1/orders
+# → 200 + X-RateLimit-Limit-Second: 200
+
+# Script de validação completo
+bash tests/AT-kong-routes-validation.sh
+# → N PASS | 0 FAIL
+```
+
+### Script de Validação: `AT-kong-routes-validation.sh`
+
+O script `tests/AT-kong-routes-validation.sh` automatiza a verificação de infraestrutura:
+
+- **Seção 1 — Admin API**: verifica existência de cada rota, `strip_path=false`, métodos HTTP,
+  plugins (`jwt`, `rate-limiting`, `cors`), configuração de `second`/`minute` por rota,
+  e `run_on_preflight=false` no JWT.
+- **Seção 2 — Proxy**: verifica que todas as rotas retornam `401` sem JWT (não `404`).
+
+```bash
+bash tests/AT-kong-routes-validation.sh
+# KONG_ADMIN_URL=http://kong:8001 bash tests/AT-kong-routes-validation.sh
+```
+
+### Critérios de Aceite
+
+| # | Critério | Status |
+|---|----------|--------|
+| 1 | `GET /api/v1/orders` retorna 401 (não 404) via Kong | ✅ |
+| 2 | `GET /api/v1/orders/{uuid}` retorna 401 (não 404) via Kong | ✅ |
+| 3 | Com JWT válido: GET orders retorna 200 com dados do MongoDB | ✅ |
+| 4 | Header `X-RateLimit-Limit-Second: 200` em GET (vs 100 em POST) | ✅ |
+| 5 | `kong-init.yml` e `kong-setup.sh` com idêntica topologia de 5 rotas | ✅ |
+| 6 | Script `AT-kong-routes-validation.sh` passa com todos PASS | ✅ |
+| 7 | Rotas wallet existentes continuam funcionando (sem regressão) | ✅ |
+
+### Artefatos alterados pela Atividade 2
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `infra/kong/kong-init.yml` | Alterado | +2 rotas GET (`list-orders-route`, `get-order-by-id-route`) com rate-limiting 200 req/s route-level; header atualizado com nova topologia |
+| `infra/kong/kong-setup.sh` | Alterado | STEP 3b/3c adicionados (rotas GET); STEP 4a/4a2 com plugins por rota (jwt, rate-limiting 200/s, cors) |
+| `infra/kong/kong-config.md` | Alterado | Documentação completa reescrita: tabela de rotas, plugins, consumer JWT, mapeamento controller→rota |
+| `tests/AT-kong-routes-validation.sh` | Criado | Script de validação: Admin API (rotas + plugins + rate-limits) + Proxy (401 sem JWT) |
+
+---
+
 ## Referências
 
 - [JUnit 5 Documentation](https://junit.org/junit5/docs/current/user-guide/)
@@ -4437,9 +4591,10 @@ docker exec vibranium-redis-1 redis-cli cluster info | grep cluster_slots_assign
 ---
 
 **Status**: ✅ Consolidado e Completo  
-**Última atualização**: 3 de março de 2026
+**Última atualização**: 6 de março de 2026
 
 > **Mudanças recentes:**
+> - **Atividade 2 (2026-03-06)**: Rotas GET Orders no Kong — Query Side CQRS via Gateway. `infra/kong/kong-init.yml` atualizado com `list-orders-route` (`GET /api/v1/orders`) e `get-order-by-id-route` (`GET ~/api/v1/orders/[^/]+$`), cada uma com rate-limiting 200 req/s route-level (sobrescreve service-level 100 req/s do POST). `infra/kong/kong-setup.sh` sincronizado com as mesmas rotas (STEP 3b/3c) e plugins por rota (jwt `run_on_preflight=false`, rate-limiting 200/s, cors). Topologia final: 5 rotas idênticas em ambos os arquivos (`place-order-route`, `list-orders-route`, `get-order-by-id-route`, `get-wallet-route`, `update-wallet-balance-route`). `infra/kong/kong-config.md` reescrito com tabela completa de rotas, plugins, consumer JWT e mapeamento controller→rota. Criado `tests/AT-kong-routes-validation.sh` com 2 seções: (1) Admin API — existência de rota, `strip_path=false`, métodos, plugins e rate-limits; (2) Proxy — 401 sem JWT em todas as 5 rotas. FASE RED: GET `/api/v1/orders` retornava 404. FASE GREEN: 401 (rota existe, JWT obrigatório). Adicionada seção 36 neste guia.
 > - **Correção de regressão (2ª rodada, 2026-03-03)**: Suíte completa do `wallet-service` zerada: 131/131 testes passando. Causa raiz: (a) 4 testes publicavam comandos no exchange `wallet.commands` + routing key `wallet.command.*` — topologia real usa `vibranium.commands` + `wallet.commands.*`; (b) `KeycloakUserCreationIntegrationTest` assertava `processed = false` no outbox, mas `OutboxPublisherService` pode marcar `processed = true` antes da assertion; (c) causa raiz sistêmica: múltiplos `ApplicationContext` ativos simultaneamente — classes com `@MockBean` criam novo contexto mas o anterior (com o listener real) permanecia vivo → round-robin RabbitMQ → listener errado consome mensagem → `ConditionTimeout`. Correção definitiva: `@DirtiesContext(classMode = AFTER_CLASS)` adicionado em `AbstractIntegrationTest` do `wallet-service`, mesma estratégia já usada no `order-service`. Removidos os `@DirtiesContext(BEFORE_CLASS)` das classes filhas (obsoletos). Adicionada seção de troubleshooting "ConditionTimeout em suíte completa" neste guia.
 > - **AT-5.1.1**: Inicialização do Redis Cluster no Staging — `infra/docker-compose.staging.yml` atualizado com healthchecks (`redis-cli ping`) nos 3 nós Redis; `depends_on` de redis-2/redis-3 corrigido de sintaxe de lista para `condition: service_healthy`; novo serviço `redis-cluster-init` (container de curta duração `restart: 'no'`, imagem `redis:7-alpine`, executa `redis-cli --cluster create redis-1:6379 redis-2:6379 redis-3:6379 --cluster-replicas 0 --cluster-yes`, depende dos 3 nós com `service_healthy`); `order-service-1.depends_on` atualizado: substituição de `redis-1: service_started` por `redis-cluster-init: service_completed_successfully`. Risco documentado: hash tag `{vibranium}` concentra todos os slots do motor de match em 1 dos 3 nós — comportamento intencional para garantir atomicidade do `EVAL` Lua multi-key. FASE RED: `cluster_state:fail`, `cluster_slots_assigned:0`. FASE GREEN: `cluster_state:ok`, `cluster_slots_assigned:16384`. Adicionada seção 35 neste guia.
 > - **AT-5.2.1**: `@JsonIgnoreProperties(ignoreUnknown = true)` adicionado a todos os 18 records de `common-contracts` (13 eventos + 5 comandos). A anotação em nível de tipo sobrepõe `FAIL_ON_UNKNOWN_PROPERTIES=true` do mapper — records são auto-protegidos contra campos futuros independente da configuração do consumer. `ContractSchemaVersionTest` ampliado com Cenário 4 (`ForwardCompatAnnotation`): novo teste `testForwardCompat_withDefaultObjectMapper_unknownFieldsIgnored()` usa `new ObjectMapper().registerModule(new JavaTimeModule())` sem config global de `FAIL_ON_UNKNOWN_PROPERTIES` e asserta `doesNotThrowAnyException()`; teste `givenJsonWithUnknownField_withStrictMapper_*` atualizado para refletir que a anotação sobrepõe o mapper estrito. 18 arquivos alterados (imports + anotação), 64 testes, 0 falhas, BUILD SUCCESS. Adicionada seção 34 neste guia.

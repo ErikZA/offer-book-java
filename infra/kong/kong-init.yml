@@ -3,10 +3,18 @@
 # Aplicada pelo serviço `kong-init` via Admin API (http://kong:8001)
 #
 # Topologia:
-#   order-service (upstream) → route POST /api/v1/orders
+#   order-service (upstream):
+#     - Route POST /api/v1/orders           (place-order-route)   — Commands (escrita)
+#     - Route GET  /api/v1/orders           (list-orders-route)   — Query Side CQRS (leitura)
+#     - Route GET  /api/v1/orders/{orderId} (get-order-by-id-route) — Query Side CQRS (leitura)
 #     - Plugin jwt       : valida assinatura RS256 do Keycloak; key_claim_name=iss
-#     - Plugin rate-limiting: 100 req/s por IP (policy=redis — global em cluster Kong)
+#     - Plugin rate-limiting: 100 req/s POST (escrita) | 200 req/s GET (leitura)
 #     - Plugin cors       : headers permissivos para dev
+#
+#   wallet-service (upstream):
+#     - Route GET   /api/v1/wallets              (get-wallet-route)            — Consulta carteira
+#     - Route PATCH /api/v1/wallets/{id}/balance (update-wallet-balance-route) — Atualiza saldo
+#     - Plugin jwt, rate-limiting (200 req/s), cors
 #
 # RATE LIMITING DISTRIBUÍDO:
 #   policy=redis garante que todos os nós Kong compartilhem o mesmo contador.
@@ -46,6 +54,59 @@ services:
             strip_path: false # preserva o path completo ao encaminhar ao upstream
             preserve_host: false
 
+          # -----------------------------------------------------------------------
+          # Rota de Query: GET /api/v1/orders — lista paginada de ordens (CQRS Query Side)
+          # Endpoint: OrderQueryController.listOrders() — leitura do MongoDB
+          # -----------------------------------------------------------------------
+          - name: list-orders-route
+            paths:
+                - /api/v1/orders
+            methods:
+                - GET
+                - OPTIONS
+            strip_path: false
+            preserve_host: false
+            plugins:
+                # Rate-limiting de leitura: 200 req/s (sobrescreve service-level 100 req/s)
+                - name: rate-limiting
+                  config:
+                      second: 200
+                      minute: 10000
+                      policy: redis
+                      redis_host: redis-kong
+                      redis_port: 6379
+                      redis_database: 1
+                      limit_by: ip
+                      hide_client_headers: false
+                      fault_tolerant: true
+
+          # -----------------------------------------------------------------------
+          # Rota de Query: GET /api/v1/orders/{orderId} — detalhe de uma ordem
+          # Regex path: captura qualquer segmento após /api/v1/orders/ (UUID)
+          # Endpoint: OrderQueryController.getOrder() — leitura do MongoDB
+          # -----------------------------------------------------------------------
+          - name: get-order-by-id-route
+            paths:
+                - ~/api/v1/orders/[^/]+$
+            methods:
+                - GET
+                - OPTIONS
+            strip_path: false
+            preserve_host: false
+            plugins:
+                # Rate-limiting de leitura: 200 req/s (sobrescreve service-level 100 req/s)
+                - name: rate-limiting
+                  config:
+                      second: 200
+                      minute: 10000
+                      policy: redis
+                      redis_host: redis-kong
+                      redis_port: 6379
+                      redis_database: 1
+                      limit_by: ip
+                      hide_client_headers: false
+                      fault_tolerant: true
+
       plugins:
           # -----------------------------------------------------------------------
           # Plugin JWT (Kong CE): valida tokens RS256 emitidos pelo Keycloak
@@ -75,11 +136,15 @@ services:
                 run_on_preflight: false # permite OPTIONS sem token (CORS preflight)
 
           # -----------------------------------------------------------------------
-          # Plugin Rate-Limiting: 100 req/s por IP para proteger o upstream
+          # Plugin Rate-Limiting (POST — escrita): 100 req/s por IP
           #
-          # Limites:
+          # Limites de escrita (mais restritivo):
           #   second: 100 req/s — limite de burst por IP
           #   minute: 5000      — janela de 1 minuto para uso sustentado
+          #
+          # Limites de leitura (GET routes) são configurados por rota individual
+          # com 200 req/s (mais permissivo). Plugins no nível de service aplicam
+          # como fallback padrão.
           #
           # policy=redis: contadores compartilhados via Redis (redis-kong, db=1).
           # Em cluster Kong com N nós, todos compartilham o mesmo contador
