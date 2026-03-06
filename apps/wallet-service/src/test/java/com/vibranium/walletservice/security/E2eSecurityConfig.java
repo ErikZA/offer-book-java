@@ -1,4 +1,4 @@
-package com.vibranium.orderservice.security;
+package com.vibranium.walletservice.security;
 
 import com.nimbusds.jwt.JWTParser;
 import com.nimbusds.jwt.JWTClaimsSet;
@@ -22,20 +22,22 @@ import java.util.Map;
 /**
  * Configuração de segurança exclusiva para o perfil {@code e2e}.
  *
+ * <p><strong>CLASSE DE TESTE:</strong> esta configuração reside em {@code src/test/java}
+ * para garantir que NUNCA seja incluída no JAR de produção. É ativada pelo
+ * component scanning do Spring quando o perfil {@code e2e} está ativo em contexto de teste
+ * ou em containers Docker E2E (via {@code Dockerfile.e2e} + {@code LOADER_PATH}).</p>
+ *
  * <p>Substitui o {@link SecurityConfig} (que usa {@code @Profile("!e2e")}) quando
- * a suíte de testes E2E está em execução. Principais diferenças:</p>
+ * a suíte de testes E2E está em execução. Comportamento:</p>
  * <ul>
- *   <li>Permite todas as requisições sem validação de assinatura JWT.</li>
- *   <li>Usa um {@link JwtDecoder} que parseia o token sem verificar a assinatura —
- *       necessário para que {@code @AuthenticationPrincipal Jwt jwt} seja populado
- *       com o {@code sub} claim nos controllers.</li>
- *   <li>Também libera o endpoint {@code /e2e/setup} usado pelo {@code E2eDataSeederController}
- *       para pré-configurar os dados de teste.</li>
+ *   <li>Usa um {@link JwtDecoder} que parseia JWTs sem verificar assinatura.</li>
+ *   <li>Libera o endpoint {@code /e2e/**} para que o {@code E2eDataSeederController}
+ *       possa criar wallets e depositar fundos sem autenticação.</li>
+ *   <li>Demais endpoints requerem token (necessário para popular
+ *       {@code @AuthenticationPrincipal Jwt jwt} nos controllers).</li>
  * </ul>
  *
- * <p><strong>NUNCA ative o perfil {@code e2e} em ambientes não-test.</strong>
- * Este bean é um vetor de segurança intencional para testes E2E e não deve ser
- * incluído em builds de produção.</p>
+ * <p><strong>NUNCA ative o perfil {@code e2e} em produção.</strong></p>
  */
 @Configuration
 @EnableWebSecurity
@@ -45,12 +47,8 @@ public class E2eSecurityConfig {
     /**
      * JwtDecoder que parseia qualquer JWT sem validar a assinatura.
      *
-     * <p>Aceita tokens com algoritmo {@code none} (unsigned) gerados pelo
-     * {@code SagaEndToEndIT} para simular usuários B e S sem Keycloak.</p>
-     *
-     * <p>O decoder delega o parse para o {@link JWTParser} do Nimbus JWT
-     * (já presente no classpath via {@code spring-security-oauth2-jose}) e
-     * constrói um {@link Jwt} Spring a partir dos claims sem verificar MAC/RSA.</p>
+     * <p>Permite que o {@code SagaEndToEndIT} crie tokens simples (alg=none)
+     * com qualquer {@code sub} claim sem precisar de Keycloak.</p>
      */
     @Bean
     public JwtDecoder e2eJwtDecoder() {
@@ -59,12 +57,10 @@ public class E2eSecurityConfig {
                 com.nimbusds.jwt.JWT parsed = JWTParser.parse(rawToken);
                 JWTClaimsSet claimsSet = parsed.getJWTClaimsSet();
 
-                // Headers mínimos exigidos pelo construtor de Jwt do Spring
                 Map<String, Object> headers = new HashMap<>();
                 headers.put("alg", parsed.getHeader().getAlgorithm().getName());
                 headers.put("typ", "JWT");
 
-                // Converte todos os claims para o mapa do Spring Jwt
                 Map<String, Object> claims = new HashMap<>(claimsSet.getClaims());
 
                 Instant issuedAt = claimsSet.getIssueTime() != null
@@ -78,14 +74,13 @@ public class E2eSecurityConfig {
 
             } catch (Exception e) {
                 throw new BadJwtException(
-                        "E2E JwtDecoder: falha ao parsear token (sem verificação): " + e.getMessage(), e);
+                        "E2E JwtDecoder: falha ao parsear token: " + e.getMessage(), e);
             }
         };
     }
 
     /**
-     * SecurityFilterChain do perfil e2e: permite tudo, mas mantém o Resource Server
-     * JWT ativo para que o {@code @AuthenticationPrincipal Jwt} seja injetado.
+     * SecurityFilterChain do perfil e2e.
      */
     @Bean
     public SecurityFilterChain e2eSecurityFilterChain(HttpSecurity http, JwtDecoder e2eJwtDecoder)
@@ -94,13 +89,12 @@ public class E2eSecurityConfig {
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .csrf(AbstractHttpConfigurer::disable)
                 .authorizeHttpRequests(auth -> auth
-                        // Endpoints de setup E2E — usados pelo SagaEndToEndIT em @BeforeAll
+                        // Endpoints de setup E2E — sem autenticação
                         .requestMatchers(HttpMethod.POST, "/e2e/**").permitAll()
-                        // Actuator acessível sem auth (health checks do compose)
+                        // Actuator para health checks do docker-compose
                         .requestMatchers("/actuator/**").permitAll()
-                        // Todos os demais endpoints requerem token (parseado sem validação)
+                        // Demais endpoints requerem token (parseado sem validação)
                         .anyRequest().authenticated())
-                // OAuth2 Resource Server com decoder E2e (sem verificação de assinatura)
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt.decoder(e2eJwtDecoder)))
                 .build();
     }

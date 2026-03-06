@@ -170,13 +170,15 @@ services:
     #
     # Perfil e2e:
     #   - E2eSecurityConfig: JwtDecoder que parseia sem validar assinatura
+    #     (classe em src/test, injetada no classpath via Dockerfile.e2e)
     #   - E2eDataSeederController: endpoint /e2e/setup para pré-configurar dados de teste
+    #     (classe em src/test, injetada no classpath via Dockerfile.e2e)
     #   - Saga timeout reduzido para 1 min (test de timeout rápido)
     # ============================================================================
     order-service-e2e:
         build:
             context: ../..
-            dockerfile: apps/order-service/docker/Dockerfile
+            dockerfile: apps/order-service/docker/Dockerfile.e2e
         image: vibranium-order-service:e2e
         container_name: vibranium-order-service-e2e
         environment:
@@ -232,11 +234,12 @@ services:
 
     # ============================================================================
     # wallet-service — build a partir do contexto do projeto (../)
+    # Dockerfile.e2e: inclui E2eSecurityConfig e E2eDataSeederController de src/test
     # ============================================================================
     wallet-service-e2e:
         build:
             context: ../..
-            dockerfile: apps/wallet-service/docker/Dockerfile
+            dockerfile: apps/wallet-service/docker/Dockerfile.e2e
         image: vibranium-wallet-service:e2e
         container_name: vibranium-wallet-service-e2e
         environment:

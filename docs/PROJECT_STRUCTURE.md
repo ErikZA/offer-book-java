@@ -180,9 +180,9 @@ Cada microsserviço é uma aplicação Spring Boot independente que aplica **Arq
 │   ├── controller/         # REST controllers (OrderCommandController, WalletController, etc.)
 │   └── exception/          # GlobalExceptionHandler + exceções de domínio customizadas
 │
-├── security/               # SecurityConfig e E2eSecurityConfig (separados de config/)
+├── security/               # SecurityConfig (produção; E2eSecurityConfig movido para src/test)
 ├── config/                 # Demais @Configuration (RabbitMQ, Jackson, Mongo, Time, Outbox)
-└── e2e/                    # E2eDataSeederController (ativado apenas no perfil "e2e")
+└── e2e/                    # (vazio em src/main; E2eDataSeederController está em src/test)
 ```
 
 **Fluxo CQRS na prática:**
@@ -306,5 +306,5 @@ make ... (Linux/macOS)
 
 ---
 
-**Última Atualização**: 04/03/2026 (US-008 — Unificação de estrutura de pacotes: Hexagonal + DDD + CQRS para order-service e wallet-service)
+**Última Atualização**: 06/03/2026 (Atividade 3 — E2eSecurityConfig e E2eDataSeederController movidos para src/test/java em ambos os serviços; JAR de produção não contém classes E2E)
 **Status**: ✅ Completo e Funcional

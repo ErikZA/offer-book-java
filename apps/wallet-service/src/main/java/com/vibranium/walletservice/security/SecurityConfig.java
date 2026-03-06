@@ -49,7 +49,7 @@ import org.springframework.security.web.SecurityFilterChain;
 // AT-4.2.1: habilita anotações @PreAuthorize / @PostAuthorize nos controllers e services.
 // Sem esta anotação, @PreAuthorize é ignorada silenciosamente pelo Spring Security.
 @EnableMethodSecurity
-// Ativo em todos os perfis exceto 'e2e', onde o E2eSecurityConfig assume o controle
+// Ativo em todos os perfis exceto 'e2e' (usado apenas em testes — E2eSecurityConfig está em src/test)
 @Profile("!e2e")
 public class SecurityConfig {
 

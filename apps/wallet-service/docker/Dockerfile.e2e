@@ -1,0 +1,61 @@
+# ==============================================================================
+# Dockerfile.e2e — Wallet Service (inclui classes E2E de src/test)
+# ==============================================================================
+# Variante do Dockerfile de produção que injeta E2eSecurityConfig e
+# E2eDataSeederController no classpath da aplicação. Necessário porque estas
+# classes residem em src/test/java (segurança: excluídas do JAR de produção)
+# mas precisam estar disponíveis nos containers Docker da suíte E2E.
+#
+# Estratégia: explode o Spring Boot fat JAR, copia as classes de teste E2E
+# para BOOT-INF/classes/, e executa via JarLauncher no modo explodido.
+# ==============================================================================
+
+# Stage 1: Build (compila main + test classes)
+FROM maven:3.9-eclipse-temurin-21-alpine AS builder
+
+WORKDIR /app
+
+# Copy pom files e módulos
+COPY pom.xml .
+COPY libs/ libs/
+COPY apps/wallet-service apps/wallet-service
+COPY apps/order-service apps/order-service
+
+# -DskipTests: pula execução dos testes, mas COMPILA test classes (target/test-classes/)
+RUN mvn clean package -DskipTests -am -pl apps/wallet-service
+
+# Explode o JAR e injeta classes E2E de src/test no classpath
+RUN mkdir -p /app/exploded && \
+    cd /app/exploded && \
+    jar -xf /app/apps/wallet-service/target/wallet-service-1.0.0-SNAPSHOT.jar && \
+    # E2eSecurityConfig → mesmo pacote que SecurityConfig (component scanning o encontra)
+    cp /app/apps/wallet-service/target/test-classes/com/vibranium/walletservice/security/E2eSecurityConfig*.class \
+       /app/exploded/BOOT-INF/classes/com/vibranium/walletservice/security/ && \
+    # E2eDataSeederController + inner classes → pacote e2e (endpoint /e2e/setup/wallets)
+    mkdir -p /app/exploded/BOOT-INF/classes/com/vibranium/walletservice/e2e/ && \
+    cp /app/apps/wallet-service/target/test-classes/com/vibranium/walletservice/e2e/E2eDataSeederController*.class \
+       /app/exploded/BOOT-INF/classes/com/vibranium/walletservice/e2e/
+
+# Stage 2: Runtime
+FROM eclipse-temurin:21-jre-alpine
+
+WORKDIR /app
+
+# Usuário não-root (mesma política de segurança do Dockerfile de produção)
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+# Copia o JAR explodido com classes E2E injetadas
+COPY --from=builder /app/exploded/ /app/
+
+# JVM tuning para container (mesmos parâmetros da produção)
+ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -XX:MaxGCPauseMillis=200 -XX:+UseStringDeduplication"
+
+EXPOSE 8081
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD wget --quiet --tries=1 --spider http://localhost:8081/actuator/health || exit 1
+
+USER appuser
+
+# Executa via JarLauncher no modo explodido (sem -jar, classpath já está no diretório)
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS org.springframework.boot.loader.launch.JarLauncher"]

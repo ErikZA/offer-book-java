@@ -282,6 +282,22 @@
                     </execution>
                 </executions>
             </plugin>
+
+            <!-- =============================================================
+                 Failsafe — executa ProductionJarSecurityIT na fase verify.
+                 Verifica que o JAR de produção NÃO contém classes E2E
+                 (E2eSecurityConfig, E2eDataSeederController).
+                 Configuração base herdada do pluginManagement do POM raiz.
+            ============================================================= -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <includes>
+                        <include>**/ProductionJarSecurityIT.java</include>
+                    </includes>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 

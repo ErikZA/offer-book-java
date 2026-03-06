@@ -37,9 +37,12 @@ O `SagaEndToEndIT.java` usa `DockerComposeContainer` (Testcontainers) para subir
 
 O perfil `e2e` ativa:
 - **`E2eSecurityConfig`** — `JwtDecoder` que parseia JWTs sem validar assinatura
-  (sem necessidade de Keycloak nos testes)
+  (sem necessidade de Keycloak nos testes).
+  **Reside em `src/test/java`** de cada serviço — excluída do JAR de produção.
+  Injetada no classpath Docker via `Dockerfile.e2e` (JAR explodido + classes de teste).
 - **`E2eDataSeederController`** — endpoints `/e2e/setup/users` e `/e2e/setup/wallets`
-  para pré-configurar dados de teste via `@BeforeAll`
+  para pré-configurar dados de teste via `@BeforeAll`.
+  **Reside em `src/test/java`** de cada serviço — mesma estratégia de injeção Docker.
 
 ### Pré-requisitos
 

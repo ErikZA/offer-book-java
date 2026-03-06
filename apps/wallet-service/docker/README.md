@@ -18,6 +18,14 @@ Este diretório contém os Dockerfiles para o Wallet Service em diferentes ambie
   - Debug remoto via JDWP (porta 5006)
   - Automatic restart ao editar código
 
+- **Dockerfile.e2e** - Imagem para testes E2E (AT-5.3.1)
+  - Baseada no Dockerfile de produção com classes E2E injetadas
+  - Explode o Spring Boot fat JAR e copia `E2eSecurityConfig` e `E2eDataSeederController`
+    de `target/test-classes/` para `BOOT-INF/classes/`
+  - Executa via `JarLauncher` no modo explodido
+  - Usado pelo `docker-compose.e2e.yml` com `SPRING_PROFILES_ACTIVE=e2e`
+  - Garante que classes E2E não existam no JAR de produção
+
 > **Nota:** O script de inicialização do banco `vibranium_wallet` foi consolidado em
 > `infra/postgres/init-app-databases.sh`, que é executado centralmente pelo
 > PostgreSQL de aplicação no primeiro boot. Este serviço usa Flyway para migrations.
