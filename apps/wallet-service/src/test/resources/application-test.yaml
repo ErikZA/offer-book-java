@@ -13,7 +13,10 @@ spring:
         listener:
             simple:
                 acknowledge-mode: manual
-                prefetch: 1
+                # AT-09: prefetch=10 espelha produção para testes de throughput
+                prefetch: 10
+                concurrency: 1
+                max-concurrency: 5
                 default-requeue-rejected: false
 
     # ---------------------------------------------------------------------------

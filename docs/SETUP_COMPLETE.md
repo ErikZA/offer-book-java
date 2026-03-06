@@ -6,10 +6,10 @@
 
 ---
 
-## 📊 Status Atual (03/03/2026)
+## 📊 Status Atual (06/03/2026)
 
 ```
-✅ wallet-service  —  57/57 testes GREEN  (BUILD SUCCESS)
+✅ wallet-service  — 137/137 testes GREEN  (BUILD SUCCESS)
 ✅ order-service   —  59/59 testes GREEN  (BUILD SUCCESS)
 ✅ common-utils    —  21/21 testes GREEN  (BUILD SUCCESS)
 ✅ US-001 — Outbox Publisher (Polling SKIP LOCKED) implementado e testado
@@ -21,6 +21,7 @@
 ✅ AT-5.1.4 — Kong Init adicionado ao staging (services, routes, plugins, consumer JWT)
 ✅ AT-04 — Redis requirepass em todos os ambientes (dev, staging, e2e, infra) + TDD
 ✅ Ativ.5 — FundsReleaseFailedEventConsumer: compensação terminal Saga + TDD (6 unit + 4 IT)
+✅ AT-09 — Consumer Group e Prefetch Tuning: prefetch=10, concurrency 1-5, 5 testes de integração
 ```
 
 ### Implementações recentes
@@ -79,6 +80,13 @@
 | **`FundsReleaseFailedEventConsumerTest`** (Ativ.5) | ✅ 6/6 GREEN | 6 testes unitários TDD RED→GREEN (cancel, duplicata, CANCELLED/FILLED/not-found) |
 | **`FundsReleaseFailedEventConsumerIT`** (Ativ.5) | ✅ 2/2 GREEN | End-to-end cancel + outbox; idempotência 2x → 1 cancel |
 | **`FundsReleaseFailedDlqTest`** (Ativ.5) | ✅ 2/2 GREEN | Payload tóxico → DLQ; smoke test fila DLQ declarada |
+| **wallet `prefetch: 10`** (AT-09) | ✅ | `application.yaml` atualizado de `prefetch: 1` → `10`; `concurrency: 1`, `max-concurrency: 5` |
+| **order `manualAckContainerFactory`** (AT-09) | ✅ | `prefetch=10`, `concurrency=1-5` explícito no factory |
+| **order `autoAckContainerFactory`** (AT-09) | ✅ | `prefetch=50` para projeção idempotente; `concurrency=1-5` |
+| **`WalletPrefetchConcurrencyTest`** (AT-09) | ✅ 2/2 GREEN | 100 msgs/100 wallets em <20s; idempotency keys |
+| **`MultiConsumerIdempotencyTest`** (AT-09) | ✅ 2/2 GREEN | 50 msgs únicas = 50 outbox; duplicatas descartadas |
+| **`PrefetchBackpressureTest`** (AT-09) | ✅ 2/2 GREEN | 1000 msgs sem OOM; fila esvaziada após processamento |
+| **`consumer-prefetch-tuning.md`** (AT-09) | ✅ | Documentação de tuning: fórmula paralelismo, trade-offs |
 ---
 
 ## 🎯 O Que Foi Realizado
@@ -107,11 +115,12 @@
      └─ Unit (FundsReleaseFailedConsumer):     ✅ 6 testes (Ativ.5 — TDD RED→GREEN)
      └─ Integration (Match Engine, Saga):      ✅ 18 testes (incl. 4 cenários US-002)
      └─ Integration (Redis Auth, AT-04):       ✅ 5 testes (requirepass + Lua c/ auth)
-   - Wallet Service Test (57 testes):        ✅ 57/57 GREEN
+   - Wallet Service Test (137 testes):       ✅ 137/137 GREEN
      └─ Unit (EventRoute, WalletService):      ✅ 9 testes
      └─ Integration (Keycloak, Wallet):        ✅ 43 testes
      └─ Integration (OutboxPublisher Polling):   ✅ 5 testes
-   - Total: 116 testes, 0 falhas
+     └─ Integration (Prefetch/Concurrency):     ✅ 6 testes (AT-09)
+   - Total: 196 testes, 0 falhas
    - Cobertura de código:                 ✅ Gerada automaticamente
 ```
 

@@ -41,6 +41,8 @@ spring:
                 observation-enabled: true
                 acknowledge-mode: auto # AUTO em testes para simplificar setup
                 prefetch: 10 # mesmo valor da produção; prefetch=1 limitaria throughput
+                concurrency: 1
+                max-concurrency: 5
         # O channel cache padrão é 25. Com testes de concorrência de 50 threads +
         # 50 virtual threads (projeção OrderReceivedEvent), o cache de 25 causa bloqueio.
         # Aumentamos para 100 para garantir que todos os requests SLA ≤ 200ms sejam atendidos.

@@ -16,6 +16,7 @@ Microsserviço responsável pela gestão de carteiras de usuários e transaçõe
 - ✅ Cobrir regressões silenciosas do `SecurityFilterChain` com testes dedicados (AT-10.3)
 - ✅ Propagação W3C TraceContext em mensagens AMQP e enriquecimento de spans com `saga.correlation_id` e `order.id` (AT-14.1)
 - ✅ Exportação de spans via OTLP HTTP para Jaeger (`management.otlp.tracing.endpoint`) (AT-14.1)
+- ✅ Prefetch tuning: `prefetch=10`, `concurrency=1-5` para throughput de alta vazão (AT-09)
 
 ## 🏗️ Estrutura
 
@@ -62,6 +63,9 @@ src/
     │   │   ├── OutboxPublisherIntegrationTest.java
     │   │   ├── WalletControllerIntegrationTest.java      # AT-4.2.1 — @PreAuthorize ROLE_ADMIN
     │   │   ├── WalletTracingPropagationIntegrationTest.java  # AT-14.1 — W3C traceparent em AMQP
+    │   │   ├── WalletPrefetchConcurrencyTest.java        # AT-09 — 100 msgs c/ prefetch=10 em <20s
+    │   │   ├── MultiConsumerIdempotencyTest.java         # AT-09 — 50 msgs únicas sem duplicatas
+    │   │   ├── PrefetchBackpressureTest.java             # AT-09 — 1000 msgs sem OOM
     │   │   ├── ReserveFundsDlqIntegrationTest.java       # AT-07.1 — DLQ routing para reserve-funds
     │   │   └── KeycloakDlqIntegrationTest.java           # AT-2.2.2 — DLQ routing para wallet.keycloak.events
     │   └── security/
@@ -197,6 +201,14 @@ Exchange: vibranium.dlq (direct) — Dead Letter Exchange
 > NACKed com `requeue=false` (falha permanente: erro de deserialização, estado inválido, NPE)
 > são automaticamente roteadas para as respectivas DLQs via `vibranium.dlq`.
 > Nenhum comando financeiro é perdido silenciosamente.
+
+> **AT-09 — Prefetch Tuning & Consumer Groups:**
+> `prefetch: 10` (antes `1`) permite que o broker entregue até 10 mensagens por consumer thread
+> antes de aguardar ACKs. `concurrency: 1` / `max-concurrency: 5` auto-escala threads por instância.
+> Paralelismo total por instância = `5 × 10 = 50 msgs em voo`.
+> Com N instâncias (round-robin RabbitMQ): `N × 50`.
+> Operações são idempotentes por `messageId` (tabela `tb_idempotency_key`).
+> Detalhes: [`docs/architecture/consumer-prefetch-tuning.md`](../../docs/architecture/consumer-prefetch-tuning.md)
 
 ### Eventos Publicados
 - `WalletCreatedEvent` — carteira criada via onboarding Keycloak

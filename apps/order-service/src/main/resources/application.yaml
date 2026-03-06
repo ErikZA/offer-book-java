@@ -98,6 +98,11 @@ spring:
                 observation-enabled: true
                 acknowledge-mode: manual # ACK manual para garantir processamento exato
                 prefetch: 10 # controla throughput por consumer
+                # AT-09: concurrency auto-escalável de 1 a 5 threads por instância.
+                # Listeners com @RabbitListener(concurrency="5") sobrescrevem este default.
+                # Filas de projeção (leitura idempotente) podem usar prefetch maior via factory.
+                concurrency: 1
+                max-concurrency: 5
                 retry:
                     enabled: true
                     max-attempts: 3

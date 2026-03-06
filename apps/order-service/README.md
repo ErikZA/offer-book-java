@@ -22,6 +22,8 @@ Implementa CQRS com PostgreSQL no Command Side (escrita) e MongoDB no Query Side
 - ✅ Consumir eventos `REGISTER` do Keycloak (plugin aznamier) via `amq.topic` e popular `tb_user_registry`
 - ✅ Rotear mensagens falhas para Dead Letter Queue (`order.dead-letter`) após retry esgotado
 - ✅ Propagação W3C TraceContext em mensagens AMQP (`traceparent` header) e enriquecimento de spans com `saga.correlation_id` e `order.id` (AT-14.1)
+- ✅ Prefetch tuning: `manualAckContainerFactory` com `prefetch=10`, `concurrency=1-5`;
+  `autoAckContainerFactory` com `prefetch=50` para projeção idempotente (AT-09)
 
 ### Query Side — Read Model (US-003)
 - ✅ Projetar eventos da Saga em `OrderDocument` no MongoDB (consistência eventual)

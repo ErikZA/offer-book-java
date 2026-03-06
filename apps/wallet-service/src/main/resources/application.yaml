@@ -50,7 +50,19 @@ spring:
         listener:
             simple:
                 acknowledge-mode: manual
-                prefetch: 1
+                # AT-09: prefetch=10 permite que o broker entregue até 10 mensagens por
+                # consumer thread antes de aguardar ACKs. Operações de reserve/release/settle
+                # são idempotentes, portanto seguras para processar em lote.
+                # Trade-off: prefetch=1 garante ordering estrito mas limita throughput a ~1msg/RTT.
+                # Com prefetch=10, throughput sobe ~10x sem comprometer a idempotência.
+                prefetch: 10
+                # AT-09: concurrency define [min]-[max] threads do SimpleMessageListenerContainer.
+                # O Spring AMQP escala automaticamente de 1 até 5 threads por instância conforme
+                # a carga (msgs unacked). Cada thread tem seu próprio channel + prefetch window.
+                # Paralelismo total por instância = concurrency × prefetch = 5 × 10 = 50 msgs.
+                # Com N instâncias: paralelismo total = N × 5 × 10.
+                concurrency: 1
+                max-concurrency: 5
                 default-requeue-rejected: false
                 # AT-14.1: habilita observação nos listeners para extração de contexto distribuído
                 observation-enabled: true

@@ -703,6 +703,14 @@ public class RabbitMQConfig {
         factory.setMessageConverter(jsonMessageConverter);
         // ACK manual: o consumer e responsavel por chamar basicAck/basicNack explicitamente
         factory.setAcknowledgeMode(AcknowledgeMode.MANUAL);
+        // AT-09: prefetch=10 para filas de comando/evento financeiro.
+        // Opera\u00e7\u00f5es s\u00e3o idempotentes — seguro para processar em lote.
+        // N\u00e3o ultrapassar 10 para settlement (ordering financeiro).
+        factory.setPrefetchCount(10);
+        // AT-09: auto-escala de 1 a 5 threads conforme carga.
+        // Listeners individuais podem sobrescrever via @RabbitListener(concurrency="N").
+        factory.setConcurrentConsumers(1);
+        factory.setMaxConcurrentConsumers(5);
         return factory;
     }
 
@@ -750,6 +758,12 @@ public class RabbitMQConfig {
         // Adequado para projeções idempotentes onde mensagem perdida é preferível
         // a mensagem acumulada indefinidamente no broker sem confirmação.
         factory.setAcknowledgeMode(AcknowledgeMode.AUTO);
+        // AT-09: prefetch=50 para filas de projeção — leitura idempotente permite
+        // maior throughput sem risco de inconsistência.
+        factory.setPrefetchCount(50);
+        // AT-09: auto-escala de 1 a 5 threads para projeção.
+        factory.setConcurrentConsumers(1);
+        factory.setMaxConcurrentConsumers(5);
         // AT-2.2.1: requeue=false em caso de exceção qualquer (não somente MessageConversionException).
         // Sem este flag, NPEs e outros erros de runtime causariam loop infinito ao recolocar a
         // mensagem na fila indefinidamente. Com false, a mensagem é rejeitada e roteada para
