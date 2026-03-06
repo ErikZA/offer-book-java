@@ -17,6 +17,8 @@ import com.vibranium.walletservice.domain.repository.WalletRepository;
 import com.vibranium.walletservice.web.exception.InsufficientFundsException;
 import com.vibranium.walletservice.web.exception.InsufficientLockedFundsException;
 import com.vibranium.walletservice.web.exception.WalletNotFoundException;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
@@ -66,15 +68,18 @@ public class WalletService {
     private final OutboxMessageRepository outboxMessageRepository;
     private final IdempotencyKeyRepository idempotencyKeyRepository;
     private final ObjectMapper objectMapper;
+    private final MeterRegistry meterRegistry;
 
     public WalletService(WalletRepository walletRepository,
                          OutboxMessageRepository outboxMessageRepository,
                          IdempotencyKeyRepository idempotencyKeyRepository,
-                         ObjectMapper objectMapper) {
+                         ObjectMapper objectMapper,
+                         MeterRegistry meterRegistry) {
         this.walletRepository = walletRepository;
         this.outboxMessageRepository = outboxMessageRepository;
         this.idempotencyKeyRepository = idempotencyKeyRepository;
         this.objectMapper = objectMapper;
+        this.meterRegistry = meterRegistry;
     }
 
     // -------------------------------------------------------------------------
@@ -158,6 +163,12 @@ public class WalletService {
             logger.info("Funds reserved: walletId={}, asset={}, amount={}",
                     cmd.walletId(), cmd.asset(), cmd.amount());
 
+            // AT-15.2: incrementa contador de reservas com tag asset (BRL|VIBRANIUM)
+            Counter.builder("vibranium.funds.reserved")
+                    .tag("asset", cmd.asset().name())
+                    .register(meterRegistry)
+                    .increment();
+
         } catch (InsufficientFundsException e) {
             // Falha de negócio: saldo insuficiente. Não lançar exceção — registra evento de falha.
             logger.warn("Insufficient funds for walletId={}: {}", cmd.walletId(), e.getMessage());
@@ -228,6 +239,12 @@ public class WalletService {
             ));
             logger.info("Funds released: walletId={}, asset={}, amount={}",
                     cmd.walletId(), cmd.asset(), cmd.amount());
+
+            // AT-15.2: incrementa contador de liberações com tag reason (SAGA_COMPENSATION)
+            Counter.builder("vibranium.funds.released")
+                    .tag("reason", "SAGA_COMPENSATION")
+                    .register(meterRegistry)
+                    .increment();
 
         } catch (WalletNotFoundException | InsufficientLockedFundsException e) {
             /*
@@ -345,6 +362,11 @@ public class WalletService {
             ));
             logger.info("Funds settled: matchId={}, totalBrl={}, vibAmount={}",
                     cmd.matchId(), totalBrl, cmd.matchAmount());
+
+            // AT-15.2: incrementa contador de settlements
+            Counter.builder("vibranium.funds.settled")
+                    .register(meterRegistry)
+                    .increment();
 
         } catch (WalletNotFoundException | InsufficientFundsException e) {
             // Falha de negócio: grava evento compensatório sem alterar saldos

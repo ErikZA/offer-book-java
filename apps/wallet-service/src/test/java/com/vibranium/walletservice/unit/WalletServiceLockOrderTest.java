@@ -9,6 +9,8 @@ import com.vibranium.walletservice.domain.model.Wallet;
 import com.vibranium.walletservice.domain.repository.IdempotencyKeyRepository;
 import com.vibranium.walletservice.domain.repository.OutboxMessageRepository;
 import com.vibranium.walletservice.domain.repository.WalletRepository;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -67,6 +69,7 @@ class WalletServiceLockOrderTest {
     @Mock
     private ObjectMapper objectMapper;
 
+    private final MeterRegistry meterRegistry = new SimpleMeterRegistry();
     private WalletService service;
 
     // -------------------------------------------------------------------------
@@ -108,7 +111,7 @@ class WalletServiceLockOrderTest {
         lenient().when(objectMapper.writeValueAsString(any())).thenReturn("{}");
 
         service = new WalletService(
-                walletRepository, outboxMessageRepository, idempotencyKeyRepository, objectMapper
+                walletRepository, outboxMessageRepository, idempotencyKeyRepository, objectMapper, meterRegistry
         );
     }
 

@@ -15,6 +15,8 @@ import com.vibranium.orderservice.domain.repository.UserRegistryRepository;
 import com.vibranium.orderservice.application.dto.PlaceOrderRequest;
 import com.vibranium.orderservice.application.dto.PlaceOrderResponse;
 import com.vibranium.orderservice.web.exception.UserNotRegisteredException;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -59,6 +61,7 @@ public class OrderCommandService {
     private final OrderRepository        orderRepository;
     private final OrderOutboxRepository  outboxRepository;
     private final ObjectMapper           objectMapper;
+    private final MeterRegistry          meterRegistry;
 
     /**
      * Construtor com injecao de todas as dependencias necessarias.
@@ -76,11 +79,13 @@ public class OrderCommandService {
     public OrderCommandService(UserRegistryRepository userRegistryRepository,
                                OrderRepository orderRepository,
                                OrderOutboxRepository outboxRepository,
-                               ObjectMapper objectMapper) {
+                               ObjectMapper objectMapper,
+                               MeterRegistry meterRegistry) {
         this.userRegistryRepository = userRegistryRepository;
         this.orderRepository        = orderRepository;
         this.outboxRepository       = outboxRepository;
         this.objectMapper           = objectMapper;
+        this.meterRegistry          = meterRegistry;
     }
 
     /**
@@ -184,6 +189,12 @@ public class OrderCommandService {
         logger.info("Ordem aceita (outbox): orderId={} correlationId={} userId={} type={} price={} amount={}",
                 orderId, correlationId, keycloakId,
                 request.orderType(), request.price(), request.amount());
+
+        // AT-15.2: incrementa o Counter de ordens criadas com tag do tipo (BUY|SELL)
+        Counter.builder("vibranium.orders.created")
+                .tag("orderType", request.orderType().name())
+                .register(meterRegistry)
+                .increment();
 
         return new PlaceOrderResponse(orderId, correlationId, "PENDING");
     }

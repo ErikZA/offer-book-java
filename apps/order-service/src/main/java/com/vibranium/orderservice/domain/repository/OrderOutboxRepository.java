@@ -65,4 +65,15 @@ public interface OrderOutboxRepository extends JpaRepository<OrderOutboxMessage,
         FOR UPDATE SKIP LOCKED
         """, nativeQuery = true)
     List<OrderOutboxMessage> findPendingWithLock(@Param("batchSize") int batchSize);
+
+    /**
+     * Conta mensagens pendentes (não publicadas) no outbox.
+     *
+     * <p>AT-15.2: utilizado pelo {@code Gauge vibranium.outbox.queue.depth}
+     * para expor a profundidade do backlog ao Prometheus.</p>
+     *
+     * @return Número de mensagens com {@code published_at IS NULL}.
+     */
+    @Query("SELECT COUNT(m) FROM OrderOutboxMessage m WHERE m.publishedAt IS NULL")
+    long countPending();
 }

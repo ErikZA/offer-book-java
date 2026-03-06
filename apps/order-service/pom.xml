@@ -97,6 +97,14 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- AT-15.2: Micrometer Registry Prometheus — exporta métricas de negócio
+             (vibranium.orders.created, vibranium.funds.reserved, etc.) no formato
+             Prometheus via /actuator/prometheus. Versão gerenciada pelo Spring Boot BOM. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
         <!-- Spring Retry: @Retryable/@Recover para backoff exponencial no OutboxPublisher.
              Versão gerenciada pelo Spring Boot BOM. Requer @EnableRetry (OutboxConfig). -->
         <dependency>

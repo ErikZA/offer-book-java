@@ -1,6 +1,8 @@
 package com.vibranium.orderservice.infrastructure.redis;
 
 import com.vibranium.contracts.enums.OrderType;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -83,6 +85,9 @@ public class RedisMatchEngineAdapter {
 
     private final StringRedisTemplate redisTemplate;
 
+    /** AT-15.2: Timer para latência do EVALSHA no Redis (vibranium.redis.match.latency). */
+    private final Timer redisMatchLatencyTimer;
+
     /** Script Lua carregado do classpath — reutilizado para evitar reparsa a cada execução. */
     @SuppressWarnings("rawtypes")
     private DefaultRedisScript<List> matchScript;
@@ -93,8 +98,11 @@ public class RedisMatchEngineAdapter {
      */
     private DefaultRedisScript<Long> removeScript;
 
-    public RedisMatchEngineAdapter(StringRedisTemplate redisTemplate) {
+    public RedisMatchEngineAdapter(StringRedisTemplate redisTemplate, MeterRegistry meterRegistry) {
         this.redisTemplate = redisTemplate;
+        this.redisMatchLatencyTimer = Timer.builder("vibranium.redis.match.latency")
+                .description("Latency of Redis EVALSHA match engine execution")
+                .register(meterRegistry);
     }
 
     @PostConstruct
@@ -179,14 +187,16 @@ public class RedisMatchEngineAdapter {
         long priceScore = price.multiply(BigDecimal.valueOf(PRICE_PRECISION)).longValue();
 
         // Executa o script Lua atomicamente; KEYS[3] = order_index para AT-04.2
-        List<Object> result = redisTemplate.execute(
-                matchScript,
-                Arrays.asList(asksKey, bidsKey, orderIndexKey),
-                orderType.name(),
-                String.valueOf(priceScore),
-                orderValue,
-                quantity.toPlainString()
-        );
+        // AT-15.2: mede a latência do EVALSHA via Timer
+        List<Object> result = redisMatchLatencyTimer.record(() ->
+                redisTemplate.execute(
+                        matchScript,
+                        Arrays.asList(asksKey, bidsKey, orderIndexKey),
+                        orderType.name(),
+                        String.valueOf(priceScore),
+                        orderValue,
+                        quantity.toPlainString()
+                ));
 
         return parseResult(result);
     }

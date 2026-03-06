@@ -4,6 +4,8 @@ import com.vibranium.utils.outbox.AbstractOutboxPublisher;
 import com.vibranium.walletservice.config.OutboxProperties;
 import com.vibranium.walletservice.domain.model.OutboxMessage;
 import com.vibranium.walletservice.domain.repository.OutboxMessageRepository;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageBuilder;
 import org.springframework.amqp.core.MessagePropertiesBuilder;
@@ -57,17 +59,25 @@ public class OutboxPublisherService extends AbstractOutboxPublisher<OutboxMessag
 
     private final OutboxMessageRepository outboxRepository;
 
+    /** AT-15.2: Timer para latência de publicação de mensagens do outbox. */
+    private final Timer outboxPublishTimer;
+
     /**
      * @param rabbitTemplate   Template para publicação no RabbitMQ.
      * @param outboxRepository Repositório do Outbox com suporte a SKIP LOCKED.
      * @param outboxProperties Configurações do módulo outbox (batch-size, polling interval).
+     * @param meterRegistry    Registry Micrometer para métricas de negócio.
      */
     public OutboxPublisherService(
             RabbitTemplate          rabbitTemplate,
             OutboxMessageRepository outboxRepository,
-            OutboxProperties        outboxProperties) {
+            OutboxProperties        outboxProperties,
+            MeterRegistry           meterRegistry) {
         super(rabbitTemplate, outboxProperties.batchSize());
         this.outboxRepository = outboxRepository;
+        this.outboxPublishTimer = Timer.builder("vibranium.outbox.publish.latency")
+                .description("Latency of outbox message publish to RabbitMQ")
+                .register(meterRegistry);
     }
 
     // -------------------------------------------------------------------------
@@ -95,6 +105,14 @@ public class OutboxPublisherService extends AbstractOutboxPublisher<OutboxMessag
     @Override
     protected List<OutboxMessage> findPendingMessages(int batchSize) {
         return outboxRepository.findPendingWithLock(batchSize);
+    }
+
+    /**
+     * AT-15.2: sobrescreve dispatchMessage para medir latência de publicação via Timer.
+     */
+    @Override
+    protected void dispatchMessage(OutboxMessage message) {
+        outboxPublishTimer.record(() -> doPublish(message));
     }
 
     /**

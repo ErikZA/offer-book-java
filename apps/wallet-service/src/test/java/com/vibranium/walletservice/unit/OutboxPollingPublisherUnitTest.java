@@ -4,6 +4,8 @@ import com.vibranium.walletservice.config.OutboxProperties;
 import com.vibranium.walletservice.domain.model.OutboxMessage;
 import com.vibranium.walletservice.domain.repository.OutboxMessageRepository;
 import com.vibranium.walletservice.infrastructure.outbox.OutboxPublisherService;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -37,6 +39,7 @@ class OutboxPollingPublisherUnitTest {
     @Mock private OutboxMessageRepository outboxRepository;
     @Mock private RabbitTemplate rabbitTemplate;
 
+    private final MeterRegistry meterRegistry = new SimpleMeterRegistry();
     private OutboxPublisherService publisher;
 
     @BeforeEach
@@ -46,7 +49,7 @@ class OutboxPollingPublisherUnitTest {
                 50, // batchSize
                 new OutboxProperties.PollingProperties(1000L) // intervalMs
         );
-        publisher = new OutboxPublisherService(rabbitTemplate, outboxRepository, properties);
+        publisher = new OutboxPublisherService(rabbitTemplate, outboxRepository, properties, meterRegistry);
     }
 
     @Test

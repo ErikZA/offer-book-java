@@ -71,6 +71,14 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- AT-15.2: Micrometer Registry Prometheus — exporta métricas de negócio
+             (vibranium.funds.reserved, vibranium.outbox.queue.depth, etc.) no formato
+             Prometheus via /actuator/prometheus. Versão gerenciada pelo Spring Boot BOM. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
         <!-- =====================================================================
              AT-14.1 — Observabilidade Distribuída: Micrometer Tracing + OpenTelemetry
         ====================================================================== -->

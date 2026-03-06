@@ -20,6 +20,9 @@ import com.vibranium.orderservice.domain.model.ProcessedEvent;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
 import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import io.micrometer.tracing.Tracer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,6 +37,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.time.Duration;
+import java.time.Instant;
 
 /**
  * Consumidor do evento que confirma o bloqueio de fundos na carteira.
@@ -116,6 +121,8 @@ public class FundsReservedEventConsumer {
     // receber a mensagem. Tracer.currentSpan() retorna null se não houver span ativo
     // (ex.: execução fora de contexto AMQP observado), por isso a checagem isNotNull.
     private final Tracer                   tracer;
+    // AT-15.2: MeterRegistry para métricas de negócio (orders.matched, orders.cancelled)
+    private final MeterRegistry            meterRegistry;
     // AT-2.1.1: TransactionTemplate para separação explícita de fases Saga.
     // O consumer extrai tryMatch() para fora de qualquer TX JPA,
     // eliminando a ilusão de atomicidade cross-store Redis+JPA.
@@ -127,6 +134,7 @@ public class FundsReservedEventConsumer {
                                       OrderOutboxRepository outboxRepository,
                                       ObjectMapper objectMapper,
                                       Tracer tracer,
+                                      MeterRegistry meterRegistry,
                                       TransactionTemplate txTemplate) {
         this.orderRepository          = orderRepository;
         this.processedEventRepository = processedEventRepository;
@@ -134,6 +142,7 @@ public class FundsReservedEventConsumer {
         this.outboxRepository         = outboxRepository;
         this.objectMapper             = objectMapper;
         this.tracer                   = tracer;
+        this.meterRegistry            = meterRegistry;
         this.txTemplate               = txTemplate;
     }
 
@@ -382,6 +391,12 @@ public class FundsReservedEventConsumer {
 
             logger.info("Match executado (outbox): correlationId={} orderId={} qty={} fillType={}",
                     order.getCorrelationId(), order.getId(), result.matchedQty(), result.fillType());
+
+            // AT-15.2: incrementa contador de matches com tag fillType (FULL|PARTIAL_ASK|PARTIAL_BID)
+            Counter.builder("vibranium.orders.matched")
+                    .tag("fillType", result.fillType())
+                    .register(meterRegistry)
+                    .increment();
         }
 
         // 2. Persiste a ordem com o estado final acumulado (único save para todos os matches).
@@ -419,6 +434,14 @@ public class FundsReservedEventConsumer {
                             order.getRemainingAmount()     // remainingAmount = saldo total restante
                     )
             );
+        }
+
+        // AT-15.2: registra duração da Saga (criação → match) com outcome=MATCHED
+        if (order.getCreatedAt() != null) {
+            Timer.builder("vibranium.saga.duration")
+                    .tag("outcome", "MATCHED")
+                    .register(meterRegistry)
+                    .record(Duration.between(order.getCreatedAt(), Instant.now()));
         }
     }
 
@@ -484,6 +507,20 @@ public class FundsReservedEventConsumer {
 
         logger.warn("Ordem cancelada (outbox): orderId={} reason={} detail={}",
                 order.getId(), reason, detail);
+
+        // AT-15.2: incrementa contador de cancelamentos com tag reason
+        Counter.builder("vibranium.orders.cancelled")
+                .tag("reason", reason.name())
+                .register(meterRegistry)
+                .increment();
+
+        // AT-15.2: registra duração da Saga (criação → cancelamento) com outcome=CANCELLED
+        if (order.getCreatedAt() != null) {
+            Timer.builder("vibranium.saga.duration")
+                    .tag("outcome", "CANCELLED")
+                    .register(meterRegistry)
+                    .record(Duration.between(order.getCreatedAt(), Instant.now()));
+        }
     }
 
     // =========================================================================

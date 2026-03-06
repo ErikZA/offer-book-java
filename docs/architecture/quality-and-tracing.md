@@ -213,3 +213,71 @@ As duas guardas são **complementares**, não redundantes:
 Manter ambas garante cobertura contra mensagens duplicadas **e** corridas de atualização de estado.
 
 ---
+
+## 7. Métricas de Negócio via Micrometer/Prometheus (AT-15.2)
+
+O tracing distribuído (AT-14.1) mostra **onde** uma requisição passou. As métricas de negócio complementam mostrando **quanto** e **quão rápido** o sistema está operando.
+
+### 7.1 Dependência
+
+```xml
+<!-- Auto-configura PrometheusMeterRegistry + endpoint /actuator/prometheus -->
+<dependency>
+    <groupId>io.micrometer</groupId>
+    <artifactId>micrometer-registry-prometheus</artifactId>
+</dependency>
+```
+
+Adicionado a ambos os serviços (`order-service` e `wallet-service`). A versão é gerenciada pelo Spring Boot BOM.
+
+### 7.2 Endpoint Prometheus
+
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+```
+
+Acesso: `GET /actuator/prometheus` — retorna todas as métricas em formato text/plain para scrape do Prometheus.
+
+### 7.3 Métricas instrumentadas
+
+| Métrica | Tipo | Serviço | Tags | Descrição |
+|---------|------|---------|------|-----------|
+| `vibranium.orders.created` | Counter | order-service | `orderType=BUY\|SELL` | Incrementado em `OrderCommandService.placeOrder()` |
+| `vibranium.orders.matched` | Counter | order-service | `fillType=TOTAL\|PARTIAL` | Incrementado em `FundsReservedEventConsumer.handleMatches()` |
+| `vibranium.orders.cancelled` | Counter | order-service | `reason=<FailureReason>` | Incrementado em `FundsReservedEventConsumer.cancelOrder()` |
+| `vibranium.funds.reserved` | Counter | wallet-service | `asset=BRL\|VIBRANIUM` | Incrementado em `WalletService.reserveFunds()` |
+| `vibranium.funds.settled` | Counter | wallet-service | — | Incrementado em `WalletService.settleFunds()` |
+| `vibranium.funds.released` | Counter | wallet-service | `reason=SAGA_COMPENSATION` | Incrementado em `WalletService.releaseFunds()` |
+| `vibranium.saga.duration` | Timer | order-service | `outcome=MATCHED\|CANCELLED` | Tempo `createdAt → match/cancel` da Saga TCC |
+| `vibranium.redis.match.latency` | Timer | order-service | — | Latência da execução Lua no Redis (match engine) |
+| `vibranium.outbox.publish.latency` | Timer | ambos | — | Latência de publicação de cada mensagem outbox |
+| `vibranium.outbox.queue.depth` | Gauge | ambos | — | Número de mensagens pendentes no outbox |
+
+### 7.4 Implementação — Padrões utilizados
+
+**Injeção:** `MeterRegistry` é injetado via construtor (constructor injection) em todos os serviços instrumentados.
+
+**Contadores:** `Counter.builder("vibranium.xxx").tag(k, v).register(meterRegistry).increment()` — criados inline na primeira chamada, reutilizados pelo registro interno do Micrometer.
+
+**Timers:** `Timer.builder("vibranium.xxx").register(meterRegistry).record(duration)` — registra distribuição estatística (p50, p95, p99, max).
+
+**Gauges:** Registrados via `MetricsConfig` com `Gauge.builder().register()` usando um `Supplier<Number>` que consulta o repositório JPA.
+
+### 7.5 Testes
+
+| Teste | Serviço | Escopo |
+|-------|---------|--------|
+| `OrderMetricsTest` | order-service | Valida `orders.created` (BUY + SELL) e `outbox.queue.depth` |
+| `PrometheusEndpointTest` | order-service | Valida `PrometheusMeterRegistry` bean + scrape contém métricas |
+| `WalletMetricsTest` | wallet-service | Valida `funds.reserved` (BRL + VIB), `funds.settled`, `outbox.queue.depth` |
+| `PrometheusEndpointTest` | wallet-service | Valida `PrometheusMeterRegistry` bean + scrape contém métricas |
+
+> **Nota:** Testes de métricas usam `@AutoConfigureObservability` porque o Spring Boot 3 desabilita
+> auto-configurações de exportação de métricas em testes por padrão
+> (`ObservabilityContextCustomizerFactory$DisableObservabilityContextCustomizer`).
+
+---

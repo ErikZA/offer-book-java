@@ -23,6 +23,7 @@
 ✅ Ativ.5 — FundsReleaseFailedEventConsumer: compensação terminal Saga + TDD (6 unit + 4 IT)
 ✅ AT-09 — Consumer Group e Prefetch Tuning: prefetch=10, concurrency 1-5, 5 testes de integração
 ✅ AT-10 — Unificar Outbox Pattern: AbstractOutboxPublisher extraído para common-utils (Template Method)
+✅ AT-15.2 — Métricas de Negócio via Micrometer/Prometheus: 10 métricas instrumentadas + endpoint /actuator/prometheus
 ```
 
 ### Implementações recentes
@@ -93,6 +94,16 @@
 | **`OutboxPublisherService` refactor** (AT-10) | ✅ | wallet-service estende `AbstractOutboxPublisher<OutboxMessage>` |
 | **`OrderOutboxPublisherService` refactor** (AT-10) | ✅ | order-service estende `AbstractOutboxPublisher<OrderOutboxMessage>` |
 | **`AbstractOutboxPublisherTest`** (AT-10) | ✅ 12/12 GREEN | TDD: polling, claim, publish, recover, config validation |
+| **`micrometer-registry-prometheus`** (AT-15.2) | ✅ | Dependência adicionada a ambos os serviços; endpoint `/actuator/prometheus` exposto |
+| **`MetricsConfig`** (AT-15.2) | ✅ | Gauge `vibranium.outbox.queue.depth` em ambos os serviços |
+| **`OrderCommandService`** (AT-15.2) | ✅ | Counter `vibranium.orders.created` com tag `orderType` |
+| **`FundsReservedEventConsumer`** (AT-15.2) | ✅ | Counters `orders.matched`/`cancelled` + Timer `saga.duration` |
+| **`RedisMatchEngineAdapter`** (AT-15.2) | ✅ | Timer `vibranium.redis.match.latency` |
+| **`WalletService`** (AT-15.2) | ✅ | Counters `funds.reserved`/`settled`/`released` |
+| **`OutboxPublisherService`** (AT-15.2) | ✅ | Timer `vibranium.outbox.publish.latency` em ambos os serviços |
+| **`OrderMetricsTest`** (AT-15.2) | ✅ 3/3 GREEN | Testes: `orders.created` BUY/SELL + `outbox.queue.depth` |
+| **`PrometheusEndpointTest`** (AT-15.2) | ✅ 3+3 GREEN | Testes: bean, scrape, endpoint (ambos os serviços) |
+| **`WalletMetricsTest`** (AT-15.2) | ✅ 4/4 GREEN | Testes: `funds.reserved` BRL/VIB + `funds.settled` + `outbox.queue.depth` |
 ---
 
 ## 🎯 O Que Foi Realizado

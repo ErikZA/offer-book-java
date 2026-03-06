@@ -4,6 +4,8 @@ import com.vibranium.orderservice.config.OutboxProperties;
 import com.vibranium.orderservice.domain.model.OrderOutboxMessage;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import com.vibranium.utils.outbox.AbstractOutboxPublisher;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageBuilder;
@@ -68,22 +70,30 @@ public class OrderOutboxPublisherService extends AbstractOutboxPublisher<OrderOu
     // @Lazy evita referência circular durante a construção do bean.
     private final OrderOutboxPublisherService  self;
 
+    /** AT-15.2: Timer para latência de publicação de mensagens do outbox. */
+    private final Timer outboxPublishTimer;
+
     /**
      * @param outboxRepository    Repositório do Outbox com suporte a SKIP LOCKED.
      * @param rabbitTemplate      Template para publicação no RabbitMQ.
      * @param transactionTemplate Template transacional (evita @Transactional no @Scheduled).
      * @param outboxProperties    Configurações do módulo outbox (batch-size, delay-ms).
      * @param self                Auto-referência via proxy para @Retryable funcionar em chamada interna.
+     * @param meterRegistry       Registry Micrometer para métricas de negócio.
      */
     public OrderOutboxPublisherService(OrderOutboxRepository outboxRepository,
                                        RabbitTemplate rabbitTemplate,
                                        TransactionTemplate transactionTemplate,
                                        OutboxProperties outboxProperties,
-                                       @Lazy OrderOutboxPublisherService self) {
+                                       @Lazy OrderOutboxPublisherService self,
+                                       MeterRegistry meterRegistry) {
         super(rabbitTemplate, outboxProperties.batchSize());
         this.outboxRepository    = outboxRepository;
         this.transactionTemplate = transactionTemplate;
         this.self                = self;
+        this.outboxPublishTimer  = Timer.builder("vibranium.outbox.publish.latency")
+                .description("Latency of outbox message publish to RabbitMQ")
+                .register(meterRegistry);
     }
 
     // -------------------------------------------------------------------------
@@ -118,10 +128,11 @@ public class OrderOutboxPublisherService extends AbstractOutboxPublisher<OrderOu
     /**
      * Usa self-proxy para que {@code @Retryable} em {@link #publishSingle}
      * seja interceptado pelo proxy AOP.
+     * AT-15.2: mede latência de publicação via Timer.
      */
     @Override
     protected void dispatchMessage(OrderOutboxMessage message) {
-        self.publishSingle(message);
+        outboxPublishTimer.record(() -> self.publishSingle(message));
     }
 
     @Override

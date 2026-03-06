@@ -117,5 +117,15 @@ public interface OutboxMessageRepository extends JpaRepository<OutboxMessage, UU
     @Modifying
     @Query("DELETE FROM OutboxMessage m WHERE m.processed = true AND m.createdAt < :cutoff")
     long deleteByProcessedTrueAndCreatedAtBefore(@Param("cutoff") java.time.Instant cutoff);
+
+    /**
+     * Conta mensagens pendentes (não processadas) no outbox.
+     *
+     * <p>AT-15.2: utilizado pelo {@code Gauge vibranium.outbox.queue.depth}
+     * para expor a profundidade do backlog ao Prometheus.</p>
+     *
+     * @return Número de mensagens com {@code processed = false}.
+     */
+    long countByProcessedFalse();
 }
 
