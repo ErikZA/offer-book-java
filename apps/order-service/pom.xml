@@ -97,6 +97,13 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- Spring Retry: @Retryable/@Recover para backoff exponencial no OutboxPublisher.
+             Versão gerenciada pelo Spring Boot BOM. Requer @EnableRetry (OutboxConfig). -->
+        <dependency>
+            <groupId>org.springframework.retry</groupId>
+            <artifactId>spring-retry</artifactId>
+        </dependency>
+
         <!-- =====================================================================
              AT-14.1 — Observabilidade Distribuída: Micrometer Tracing + OpenTelemetry
         ====================================================================== -->

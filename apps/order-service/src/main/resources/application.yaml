@@ -119,6 +119,15 @@ spring:
 # -----------------------------------------------------------------------
 app:
     # -----------------------------------------------------------------------
+    # Outbox Publisher — Polling SKIP LOCKED (AT-01.1)
+    # delay-ms: fixedDelay do @Scheduled (500ms = latência ~1s end-to-end por hop)
+    # batch-size: LIMIT da query SELECT FOR UPDATE SKIP LOCKED
+    # -----------------------------------------------------------------------
+    outbox:
+        delay-ms: 500
+        batch-size: 100
+
+    # -----------------------------------------------------------------------
     # Saga — Controle de timeout da Saga de reserva de fundos (AT-09.1)
     # pending-timeout-minutes: tempo máximo que uma ordem pode ficar em PENDING
     #                          antes de ser cancelada automaticamente

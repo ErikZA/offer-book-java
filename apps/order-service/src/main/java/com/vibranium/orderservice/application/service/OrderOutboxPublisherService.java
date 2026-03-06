@@ -1,5 +1,6 @@
 package com.vibranium.orderservice.application.service;
 
+import com.vibranium.orderservice.config.OutboxProperties;
 import com.vibranium.orderservice.domain.model.OrderOutboxMessage;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import org.slf4j.Logger;
@@ -9,9 +10,13 @@ import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageBuilder;
 import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Recover;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -24,69 +29,108 @@ import java.util.List;
  * Após publicação bem-sucedida, marca {@code published_at} para que o comando
  * não seja reenviado na próxima execução.</p>
  *
- * <p>O ciclo de vida de cada mensagem:</p>
+ * <h2>Fluxo de publicação</h2>
  * <ol>
  *   <li>{@code OrderCommandService} grava a mensagem com {@code published_at = NULL}.</li>
- *   <li>Este serviço lê os registros {@code WHERE published_at IS NULL}.</li>
- *   <li>Serializa o payload como bytes raw e publica via {@link RabbitTemplate#send}
- *       (evita double-serialization do {@link org.springframework.amqp.rabbit.core.RabbitTemplate#convertAndSend}).</li>
+ *   <li>{@code @Scheduled} dispara periodicamente (configurável via
+ *       {@code app.outbox.delay-ms}, default 500ms).</li>
+ *   <li>Executa {@code SELECT ... FOR UPDATE SKIP LOCKED LIMIT :batchSize}
+ *       para obter mensagens pendentes com lock exclusivo — instâncias
+ *       concorrentes processam lotes diferentes.</li>
+ *   <li>Para cada mensagem, publica no RabbitMQ via {@link RabbitTemplate#send}
+ *       (bytes raw para evitar double-serialization).</li>
  *   <li>Atualiza {@code published_at = now()} via {@link OrderOutboxMessage#markAsPublished()}.</li>
  * </ol>
  *
- * <p>Em caso de falha do broker, a mensagem permanece com {@code published_at = NULL}
- * e será reprocessada na próxima janela do scheduler — garantindo entrega eventual.</p>
+ * <h2>Tratamento de falhas</h2>
+ * <ul>
+ *   <li>{@code TransactionTemplate}: o {@code @Scheduled} não usa {@code @Transactional}
+ *       diretamente — delega para {@link TransactionTemplate} que gerencia a transação.</li>
+ *   <li>{@code @Retryable}: backoff exponencial de 500ms → até 5s, máx. 3 tentativas.</li>
+ *   <li>{@code @Recover}: após esgotar tentativas, loga sem propagar exceção —
+ *       mensagem permanece com {@code published_at = NULL} para reprocessamento.</li>
+ * </ul>
  *
- * <p>O {@code fixedDelay} garante que a próxima execução só começa após o término
- * da anterior. Isso evita execuções paralelas que publicariam a mesma mensagem
- * duas vezes (necessariamente serializado pela constraint de unicidade é suficiente
- * aqui pois o receptor usa idempotência própria).</p>
+ * <h2>Escalabilidade horizontal</h2>
+ * <p>{@code SKIP LOCKED} garante que N instâncias do order-service possam executar
+ * este polling simultaneamente sem duplicatas nem deadlocks. Cada instância
+ * processa apenas as linhas que conseguiu bloquear.</p>
+ *
+ * @see com.vibranium.orderservice.config.OutboxConfig
+ * @see com.vibranium.orderservice.config.OutboxProperties
  */
 @Service
 public class OrderOutboxPublisherService {
 
     private static final Logger logger = LoggerFactory.getLogger(OrderOutboxPublisherService.class);
 
-    private final OrderOutboxRepository outboxRepository;
-    private final RabbitTemplate        rabbitTemplate;
-
-    public OrderOutboxPublisherService(OrderOutboxRepository outboxRepository,
-                                       RabbitTemplate rabbitTemplate) {
-        this.outboxRepository = outboxRepository;
-        this.rabbitTemplate   = rabbitTemplate;
-    }
+    private final OrderOutboxRepository        outboxRepository;
+    private final RabbitTemplate               rabbitTemplate;
+    private final TransactionTemplate          transactionTemplate;
+    private final int                          batchSize;
+    // Self-proxy para que chamadas internas passem pelo proxy AOP (@Retryable).
+    // @Lazy evita referência circular durante a construção do bean.
+    private final OrderOutboxPublisherService  self;
 
     /**
-     * Itera sobre mensagens pendentes e publica cada uma no RabbitMQ.
-     *
-     * <p>Configurável via {@code app.outbox.delay-ms} (padrão: 5000 ms).
-     * Em produção, recomenda-se ajustar conforme o SLA do placeOrder:
-     * valores entre 1000–5000 ms balanceiam latência e carga sobre o broker.</p>
-     *
-     * <p>Cada mensagem é publicada e salva em uma sub-transação própria para que
-     * a falha de uma não reverta o commit das anteriores já bem-sucedidas.</p>
+     * @param outboxRepository    Repositório do Outbox com suporte a SKIP LOCKED.
+     * @param rabbitTemplate      Template para publicação no RabbitMQ.
+     * @param transactionTemplate Template transacional (evita @Transactional no @Scheduled).
+     * @param outboxProperties    Configurações do módulo outbox (batch-size, delay-ms).
+     * @param self                Auto-referência via proxy para @Retryable funcionar em chamada interna.
      */
-    @Scheduled(fixedDelayString = "${app.outbox.delay-ms:5000}")
-    @Transactional
-    public void publishPendingMessages() {
-        List<OrderOutboxMessage> pending = outboxRepository.findPendingWithLock(100);
-
-        if (pending.isEmpty()) {
-            return;
-        }
-
-        logger.debug("Outbox relay: {} mensagem(ns) pendente(s) para publicação", pending.size());
-
-        for (OrderOutboxMessage msg : pending) {
-            publishSingle(msg);
-        }
+    public OrderOutboxPublisherService(OrderOutboxRepository outboxRepository,
+                                       RabbitTemplate rabbitTemplate,
+                                       TransactionTemplate transactionTemplate,
+                                       OutboxProperties outboxProperties,
+                                       @Lazy OrderOutboxPublisherService self) {
+        this.outboxRepository    = outboxRepository;
+        this.rabbitTemplate      = rabbitTemplate;
+        this.transactionTemplate = transactionTemplate;
+        this.batchSize           = outboxProperties.batchSize();
+        this.self                = self;
     }
 
+    // -------------------------------------------------------------------------
+    // Polling scheduler
+    // -------------------------------------------------------------------------
+
     /**
-     * Publica uma única mensagem do outbox e atualiza seu estado em transação própria.
+     * Executa periodicamente para publicar mensagens pendentes do Outbox.
      *
-     * <p>A anotação {@code @Transactional} aqui garante que a atualização do
-     * {@code published_at} só seja commitada se a publicação no RabbitMQ
-     * não lançar exceção — se o broker falhar, o status permanece {@code null}.</p>
+     * <p>Configurável via {@code app.outbox.delay-ms} (padrão: 500ms).
+     * O {@code fixedDelay} garante que a próxima execução só começa após
+     * o término da anterior — prevenindo overlap.</p>
+     *
+     * <p>Usa {@link TransactionTemplate} em vez de {@code @Transactional}
+     * para manter o {@code SELECT FOR UPDATE SKIP LOCKED} dentro de uma
+     * transação explícita sem anotar o método {@code @Scheduled}.</p>
+     */
+    @Scheduled(fixedDelayString = "${app.outbox.delay-ms:500}")
+    public void publishPendingMessages() {
+        transactionTemplate.executeWithoutResult(status -> {
+            List<OrderOutboxMessage> pending = outboxRepository.findPendingWithLock(batchSize);
+
+            if (pending.isEmpty()) {
+                return;
+            }
+
+            logger.debug("Outbox relay: {} mensagem(ns) pendente(s) para publicação", pending.size());
+
+            for (OrderOutboxMessage msg : pending) {
+                // Chamada via self-proxy: garante que @Retryable/@Recover sejam interceptados
+                // pelo proxy AOP. Chamada direta (this.publishSingle) ignoraria as annotations.
+                self.publishSingle(msg);
+            }
+        });
+    }
+
+    // -------------------------------------------------------------------------
+    // Publicação com retry
+    // -------------------------------------------------------------------------
+
+    /**
+     * Publica uma única mensagem do outbox no RabbitMQ com retry automático.
      *
      * <p>Usa {@link RabbitTemplate#send} com bytes raw em vez de
      * {@link RabbitTemplate#convertAndSend}: o payload já é JSON serializado
@@ -94,35 +138,50 @@ public class OrderOutboxPublisherService {
      * causaria double-serialization — a mensagem chegaria aos consumers como
      * {@code "\"{ ... }\""} em vez de {@code { ... }}.</p>
      *
+     * <p>Em caso de {@link AmqpException}, {@code @Retryable} executa backoff
+     * exponencial (500ms → 1s → 2s, máx. 3 tentativas). Se todas falharem,
+     * {@link #recoverPublishFailure} é invocado.</p>
+     *
      * @param msg Mensagem do outbox a ser publicada.
      */
-    @Transactional
+    @Retryable(
+            retryFor    = AmqpException.class,
+            maxAttempts = 3,
+            backoff     = @Backoff(delay = 500, multiplier = 2, maxDelay = 5000))
     public void publishSingle(OrderOutboxMessage msg) {
-        try {
-            // Publica no RabbitMQ usando exchange e routing key gravados na mensagem.
-            // O payload já é JSON serializado — usa rabbitTemplate.send() com bytes raw
-            // para evitar double-serialization que ocorreria com convertAndSend(String payload):
-            // Jackson2JsonMessageConverter re-serializaria a String como JSON quoted → consumidores
-            // receberiam "\"{ ... }\"" em vez de { ... } → MismatchedInputException.
-            Message amqpMessage = MessageBuilder
-                    .withBody(msg.getPayload().getBytes(StandardCharsets.UTF_8))
-                    .andProperties(new MessageProperties())
-                    .build();
-            amqpMessage.getMessageProperties().setContentType(MessageProperties.CONTENT_TYPE_JSON);
-            rabbitTemplate.send(msg.getExchange(), msg.getRoutingKey(), amqpMessage);
+        Message amqpMessage = MessageBuilder
+                .withBody(msg.getPayload().getBytes(StandardCharsets.UTF_8))
+                .andProperties(new MessageProperties())
+                .build();
+        amqpMessage.getMessageProperties().setContentType(MessageProperties.CONTENT_TYPE_JSON);
+        rabbitTemplate.send(msg.getExchange(), msg.getRoutingKey(), amqpMessage);
 
-            // Marca como publicada na mesma transação do commit
-            msg.markAsPublished();
-            outboxRepository.save(msg);
+        msg.markAsPublished();
+        outboxRepository.save(msg);
 
-            logger.info("Outbox relay: publicado eventType={} aggregateId={} outboxId={}",
-                    msg.getEventType(), msg.getAggregateId(), msg.getId());
+        logger.info("Outbox relay: publicado eventType={} aggregateId={} outboxId={}",
+                msg.getEventType(), msg.getAggregateId(), msg.getId());
+    }
 
-        } catch (AmqpException ex) {
-            // Broker indisponível: loga e não atualiza published_at.
-            // A mensagem será retentada na próxima janela do scheduler.
-            logger.warn("Outbox relay: falha ao publicar outboxId={} eventType={} — retentará: {}",
-                    msg.getId(), msg.getEventType(), ex.getMessage());
-        }
+    // -------------------------------------------------------------------------
+    // Recover
+    // -------------------------------------------------------------------------
+
+    /**
+     * Chamado pelo Spring Retry após esgotar as {@code maxAttempts} tentativas.
+     *
+     * <p>A mensagem permanece com {@code published_at = NULL} e será
+     * reprocessada no próximo ciclo de polling. Não propaga exceção
+     * para não interromper o processamento do lote restante.</p>
+     *
+     * @param ex  Última exceção lançada pelo {@code publishSingle}.
+     * @param msg Mensagem que falhou permanentemente neste ciclo.
+     */
+    @Recover
+    public void recoverPublishFailure(Exception ex, OrderOutboxMessage msg) {
+        logger.error("Outbox relay: falha permanente ao publicar outboxId={} eventType={} "
+                        + "após múltiplas tentativas. error={}",
+                msg.getId(), msg.getEventType(), ex.getMessage(), ex);
+        // Não propaga exceção — mensagem permanece com published_at=null para próximo ciclo.
     }
 }
