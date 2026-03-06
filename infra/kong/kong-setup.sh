@@ -27,6 +27,8 @@ KONG_CONSUMER_NAME="${KONG_CONSUMER_NAME:-keycloak-realm-consumer}"
 # O iss do JWT deve bater com a URL que o cliente usa para obter o token.
 # Em dev o cliente acessa Keycloak via localhost:8080 (mapeado 8080:8080 no compose).
 KEYCLOAK_ISSUER="${KEYCLOAK_ISSUER:-http://localhost:8080/realms/${KEYCLOAK_REALM}}"
+# Senha do Redis dedicado ao Kong (rate-limiting). Injetada via env var no compose.
+REDIS_KONG_PWD="${REDIS_KONG_PASSWORD:-}"
 
 JWKS_URL="${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/certs"
 
@@ -146,7 +148,7 @@ http_call POST "${KONG_ADMIN_URL}/routes/${ROUTE_ID}/plugins" \
 # policy=redis: contador global compartilhado via Redis (redis-kong, db=1).
 # Em cluster Kong, garante que o limite seja efetivo independente do nó que recebe a req.
 http_call POST "${KONG_ADMIN_URL}/routes/${ROUTE_ID}/plugins" \
-    '{"name":"rate-limiting","config":{"second":100,"minute":5000,"policy":"redis","redis_host":"redis-kong","redis_port":6379,"redis_database":1,"limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
+    '{"name":"rate-limiting","config":{"second":100,"minute":5000,"policy":"redis","redis_host":"redis-kong","redis_port":6379,"redis_database":1,"redis_password":"'"${REDIS_KONG_PWD}"'","limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
     "Plugin rate-limiting"
 
 # Plugin CORS — permissivo em dev; restringir origins em produção
@@ -178,7 +180,7 @@ http_call POST "${KONG_ADMIN_URL}/routes/${LIST_ROUTE_ID}/plugins" \
     "Plugin jwt (list-orders)"
 
 http_call POST "${KONG_ADMIN_URL}/routes/${LIST_ROUTE_ID}/plugins" \
-    '{"name":"rate-limiting","config":{"second":200,"minute":10000,"policy":"redis","redis_host":"redis-kong","redis_port":6379,"redis_database":1,"limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
+    '{"name":"rate-limiting","config":{"second":200,"minute":10000,"policy":"redis","redis_host":"redis-kong","redis_port":6379,"redis_database":1,"redis_password":"'"${REDIS_KONG_PWD}"'","limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
     "Plugin rate-limiting (list-orders)"
 
 http_call POST "${KONG_ADMIN_URL}/routes/${LIST_ROUTE_ID}/plugins" \
@@ -208,7 +210,7 @@ http_call POST "${KONG_ADMIN_URL}/routes/${GETBYID_ROUTE_ID}/plugins" \
     "Plugin jwt (get-order-by-id)"
 
 http_call POST "${KONG_ADMIN_URL}/routes/${GETBYID_ROUTE_ID}/plugins" \
-    '{"name":"rate-limiting","config":{"second":200,"minute":10000,"policy":"redis","redis_host":"redis-kong","redis_port":6379,"redis_database":1,"limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
+    '{"name":"rate-limiting","config":{"second":200,"minute":10000,"policy":"redis","redis_host":"redis-kong","redis_port":6379,"redis_database":1,"redis_password":"'"${REDIS_KONG_PWD}"'","limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
     "Plugin rate-limiting (get-order-by-id)"
 
 http_call POST "${KONG_ADMIN_URL}/routes/${GETBYID_ROUTE_ID}/plugins" \
@@ -258,7 +260,7 @@ http_call POST "${KONG_ADMIN_URL}/routes/${GET_ROUTE_ID}/plugins" \
     "Plugin jwt (get-wallet)"
 
 http_call POST "${KONG_ADMIN_URL}/routes/${GET_ROUTE_ID}/plugins" \
-    '{"name":"rate-limiting","config":{"second":200,"minute":10000,"policy":"redis","redis_host":"redis-kong","redis_port":6379,"redis_database":1,"limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
+    '{"name":"rate-limiting","config":{"second":200,"minute":10000,"policy":"redis","redis_host":"redis-kong","redis_port":6379,"redis_database":1,"redis_password":"'"${REDIS_KONG_PWD}"'","limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
     "Plugin rate-limiting (get-wallet)"
 
 http_call POST "${KONG_ADMIN_URL}/routes/${GET_ROUTE_ID}/plugins" \
@@ -283,7 +285,7 @@ http_call POST "${KONG_ADMIN_URL}/routes/${PATCH_ROUTE_ID}/plugins" \
     "Plugin jwt (update-balance)"
 
 http_call POST "${KONG_ADMIN_URL}/routes/${PATCH_ROUTE_ID}/plugins" \
-    '{"name":"rate-limiting","config":{"second":50,"minute":2000,"policy":"redis","redis_host":"redis-kong","redis_port":6379,"redis_database":1,"limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
+    '{"name":"rate-limiting","config":{"second":50,"minute":2000,"policy":"redis","redis_host":"redis-kong","redis_port":6379,"redis_database":1,"redis_password":"'"${REDIS_KONG_PWD}"'","limit_by":"ip","hide_client_headers":false,"fault_tolerant":true}}' \
     "Plugin rate-limiting (update-balance)"
 
 http_call POST "${KONG_ADMIN_URL}/routes/${PATCH_ROUTE_ID}/plugins" \

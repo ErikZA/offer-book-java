@@ -25,6 +25,11 @@ spring:
         virtual:
             enabled: true
 
+    # Redis: senha configurada para testes (sobrescrita por @DynamicPropertySource)
+    data:
+        redis:
+            password: testpass
+
     # RabbitMQ: configurações sobrescritas por @DynamicPropertySource
     rabbitmq:
         template:

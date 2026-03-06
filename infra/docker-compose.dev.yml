@@ -121,13 +121,31 @@ services:
         container_name: vibranium-redis
         ports:
             - '6379:6379'
-        command: redis-server --appendonly yes
+        # requirepass via env var — NUNCA hardcoded. appendonly yes para persistência AOF.
+        command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required — copie .env.example para .env}
         volumes:
             - redis_data:/data
         networks:
             - vibranium-network-dev
         healthcheck:
-            test: ['CMD', 'redis-cli', 'ping']
+            test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', 'ping']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    # ================================================================================
+    # Redis-Kong — Redis dedicado para rate-limiting distribuído do Kong (dev)
+    # Isolado do Redis de aplicação. appendonly=no: contadores voláteis por design.
+    # ================================================================================
+    redis-kong:
+        image: redis:7-alpine
+        container_name: vibranium-redis-kong-dev
+        # requirepass via env var — senha diferente do Redis de aplicação
+        command: ['redis-server', '--appendonly', 'no', '--save', '', '--requirepass', '${REDIS_KONG_PASSWORD:?REDIS_KONG_PASSWORD is required — copie .env.example para .env}']
+        networks:
+            - vibranium-network-dev
+        healthcheck:
+            test: ['CMD', 'redis-cli', '-a', '${REDIS_KONG_PASSWORD}', 'ping']
             interval: 10s
             timeout: 5s
             retries: 5
@@ -288,11 +306,16 @@ services:
             KONG_ADMIN_LISTEN: 0.0.0.0:8001
             KONG_PROXY_LISTEN: 0.0.0.0:8000
             KONG_LOG_LEVEL: warn
+            # Senha do Redis Kong injetada para interpolação no kong-init.yml declarativo
+            REDIS_KONG_PASSWORD: ${REDIS_KONG_PASSWORD}
         ports:
             - '8000:8000'
             - '8001:8001'
         volumes:
             - ./kong/kong-init.yml:/etc/kong/kong.yml:ro
+        depends_on:
+            redis-kong:
+                condition: service_healthy
         networks:
             - vibranium-network-dev
         healthcheck:
@@ -315,6 +338,7 @@ services:
             KEYCLOAK_REALM: orderbook-realm
             KONG_CONSUMER_NAME: keycloak-realm-consumer
             KEYCLOAK_ISSUER: http://localhost:8180/realms/orderbook-realm
+            REDIS_KONG_PASSWORD: ${REDIS_KONG_PASSWORD}
         volumes:
             - ./kong/kong-setup.sh:/kong-setup.sh:ro
         command: ['sh', '/kong-setup.sh']
@@ -350,6 +374,7 @@ services:
             SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
             # Redis e MongoDB: sobrescrevem os defaults 'localhost' do application.yaml
             SPRING_DATA_REDIS_HOST: redis
+            SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD}
             # replicaSet=rs0: obrigatório para MongoTransactionManager criar sessões de transação
             SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD}@mongodb:27017/vibranium_orders?replicaSet=rs0&authSource=admin
             SPRING_RABBITMQ_HOST: rabbitmq

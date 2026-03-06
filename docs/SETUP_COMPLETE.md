@@ -10,7 +10,7 @@
 
 ```
 ✅ wallet-service  —  57/57 testes GREEN  (BUILD SUCCESS)
-✅ order-service   —  48/48 testes GREEN  (BUILD SUCCESS)
+✅ order-service   —  53/53 testes GREEN  (BUILD SUCCESS)
 ✅ common-utils    —  21/21 testes GREEN  (BUILD SUCCESS)
 ✅ US-001 — Outbox Publisher (Polling SKIP LOCKED) implementado e testado
 ✅ US-002 — Partial Fill: Requeue atômico + Idempotência por eventId
@@ -19,6 +19,7 @@
 ✅ AT-13.1 — Rotação automática de JWKS no Kong via sidecar (zero downtime)
 ✅ AT-5.1.3 — PostgreSQL Streaming Replication (1 primary + 2 hot standbys)
 ✅ AT-5.1.4 — Kong Init adicionado ao staging (services, routes, plugins, consumer JWT)
+✅ AT-04 — Redis requirepass em todos os ambientes (dev, staging, e2e, infra) + TDD
 ```
 
 ### Implementações recentes
@@ -61,6 +62,15 @@
 | **`wallet-service-1` depends_on** (AT-5.1.3) | ✅ | Corrigido: `service_started` → `service_healthy` para garantir schema criado no boot |
 | **`AT-5.1.3-pg-streaming-replication-validation.sh`** | ✅ | 5 TCs: `wal_level`, `pg_stat_replication` (2 replicas), `hot_standby`, rejeição de writes, URLs |
 | **`kong-init`** service (AT-5.1.4) | ✅ | Adicionado ao `docker-compose.staging.yml`; provisiona 2 services + 3 routes + 9 plugins + consumer JWT RS256 |
+| **Redis `requirepass`** (AT-04) | ✅ | Autenticação habilitada em todos os Redis (app + kong) em todos os ambientes |
+| **`REDIS_PASSWORD` / `REDIS_KONG_PASSWORD`** (AT-04) | ✅ | Senhas via env vars (nunca hardcoded); `${REDIS_PASSWORD:?}` exige definição |
+| **`redis-kong`** separado (AT-04) | ✅ | Redis dedicado ao Kong rate-limiting em dev com `requirepass` próprio |
+| **`kong-init.yml` + `kong-setup.sh`** (AT-04) | ✅ | `redis_password` propagado para todos os plugins `rate-limiting` |
+| **`application.yaml`** (AT-04) | ✅ | `spring.data.redis.password: ${REDIS_PASSWORD:}` com fallback vazio para dev local |
+| **Testcontainers Redis auth** (AT-04) | ✅ | `--requirepass testpass` em AbstractIntegrationTest + testes isolados |
+| **`RedisAuthenticationIntegrationTest`** (AT-04) | ✅ 3/3 GREEN | Conexão com senha correta, sem senha (NOAUTH), senha errada (ERR) |
+| **`RedisMatchEngineWithAuthTest`** (AT-04) | ✅ 2/2 GREEN | Lua EVALSHA (addToBook + match) com Redis autenticado |
+| **`AT-04-redis-auth-validation.sh`** (AT-04) | ✅ | Script infra: valida requirepass em redis e redis-kong via docker exec |
 | **`KEYCLOAK_REALM: orderbook-realm`** (AT-5.1.4) | ✅ | Alinhado com `realm-export.json`; `KEYCLOAK_ISSUER` usa `localhost:8080` (porta mapeada no staging) |
 | **`restart: 'no'`** (AT-5.1.4) | ✅ | Init-container pattern — executa uma vez e sai; `depends_on` kong/keycloak/redis-kong com `service_healthy` |
 ---
@@ -85,15 +95,16 @@
 ```
 ✅ Testes no Docker - SUCESSO
    - Common Contracts:                       ✅ Built
-   - Order Service Test (48 testes):         ✅ 48/48 GREEN
+   - Order Service Test (53 testes):         ✅ 53/53 GREEN
      └─ Unit — OrderDomainTest (US-008):       ✅ 20 testes (< 0.5 s, sem Spring)
      └─ Unit (EventRoute, Order domain):       ✅ 10 testes
      └─ Integration (Match Engine, Saga):      ✅ 18 testes (incl. 4 cenários US-002)
+     └─ Integration (Redis Auth, AT-04):       ✅ 5 testes (requirepass + Lua c/ auth)
    - Wallet Service Test (57 testes):        ✅ 57/57 GREEN
      └─ Unit (EventRoute, WalletService):      ✅ 9 testes
      └─ Integration (Keycloak, Wallet):        ✅ 43 testes
      └─ Integration (OutboxPublisher Polling):   ✅ 5 testes
-   - Total: 105 testes, 0 falhas
+   - Total: 110 testes, 0 falhas
    - Cobertura de código:                 ✅ Gerada automaticamente
 ```
 

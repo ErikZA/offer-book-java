@@ -26,7 +26,7 @@
 ## 4. Infraestrutura, Dados & Serviços
 
 * **Bancos de Dados:** PostgreSQL (garantia transacional ACID para saldos financeiros e *Outbox*) e MongoDB (armazenamento de alta performance para o histórico e estado documental das ordens).
-* **Cache & Motor (Match):** Redis atuando como o "cérebro" in-memory do *Order Book*, utilizando *Sorted Sets* para ordenação ultrarrápida de preços e tempo.
+* **Cache & Motor (Match):** Redis atuando como o "cérebro" in-memory do *Order Book*, utilizando *Sorted Sets* para ordenação ultrarrápida de preços e tempo. Todos os containers Redis estão protegidos com `requirepass` (AT-04) — senhas via env vars `REDIS_PASSWORD` (app) e `REDIS_KONG_PASSWORD` (Kong rate-limiting).
 * **Mensageria:** RabbitMQ para roteamento e enfileiramento de eventos assíncronos (ex: fila de liquidação de trades).
 * **Gateway & Auth:** Kong atuando como API Gateway (ponto de entrada único e controle de tráfego) e Keycloak como *Identity Provider* (IAM) para gestão centralizada de usuários e autenticação.
 * **JWKS Rotator Sidecar (AT-13.1):** Container Alpine (`jwks-rotator`) que verifica a cada 6 horas se o `kid` da chave RSA do Keycloak mudou e atualiza a credencial JWT do consumer no Kong via Admin API — sem reinicialização do Kong, sem downtime. Script `jwks-rotation.sh` idempotente (no-op se `kid` não mudou); log auditável em NDJSON. Equivalente a um CronJob `0 */6 * * *` em Kubernetes.

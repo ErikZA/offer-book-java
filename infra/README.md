@@ -135,6 +135,7 @@ multiplicando o limite efetivo pelo número de nós.
 | `redis_host` | `redis-kong` | Redis dedicado (não o Redis de aplicação) |
 | `redis_port` | `6379` | porta padrão Redis |
 | `redis_database` | `1` | namespace isolado (app usa db=0) |
+| `redis_password` | `${REDIS_KONG_PASSWORD}` | autenticação `requirepass` (AT-04) |
 | `fault_tolerant` | `true` | Kong não bloqueia se Redis cair |
 
 Script de validação: `tests/AT-12.1-rate-limiting-redis-validation.sh`
@@ -168,6 +169,24 @@ KONG_ADMIN_URL=http://localhost:8001 ./tests/AT-12.1-rate-limiting-redis-validat
 - Volumes nomeados para persistência
 - Health checks em todos os serviços
 - Redes isoladas por ambiente
+- **Redis autenticado** (`requirepass`) — todos os containers Redis exigem senha via env var
+
+### Redis Authentication (AT-04)
+
+Todos os containers Redis da plataforma estão protegidos com `requirepass`:
+
+| Variável | Uso | Escopo |
+|----------|-----|--------|
+| `REDIS_PASSWORD` | Redis de aplicação (order-service match engine) | dev, staging, infra |
+| `REDIS_KONG_PASSWORD` | Redis dedicado ao Kong rate-limiting | dev, staging, infra |
+
+As senhas são **obrigatórias** nos compose files (`${REDIS_PASSWORD:?REDIS_PASSWORD is required}`).
+Defina-as no arquivo `.env` antes de subir os ambientes.
+
+Healthchecks incluem `-a $PASSWORD` para garantir que a autenticação funcione.
+O `application.yaml` do order-service lê `${REDIS_PASSWORD:}` (fallback vazio para testes locais sem Docker).
+
+Script de validação: `tests/AT-04-redis-auth-validation.sh`
 
 ---
 

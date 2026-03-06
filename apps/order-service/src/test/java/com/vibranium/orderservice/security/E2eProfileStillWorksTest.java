@@ -71,7 +71,7 @@ class E2eProfileStillWorksTest {
     static final GenericContainer<?> REDIS =
             new GenericContainer<>(DockerImageName.parse("redis:7-alpine"))
                     .withExposedPorts(6379)
-                    .withCommand("redis-server", "--appendonly", "no");
+                    .withCommand("redis-server", "--appendonly", "no", "--requirepass", "testpass");
 
     static {
         POSTGRES.start();
@@ -90,6 +90,7 @@ class E2eProfileStillWorksTest {
         registry.add("spring.rabbitmq.password", RABBITMQ::getAdminPassword);
         registry.add("spring.data.redis.host", REDIS::getHost);
         registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
+        registry.add("spring.data.redis.password", () -> "testpass");
     }
 
     // =========================================================================

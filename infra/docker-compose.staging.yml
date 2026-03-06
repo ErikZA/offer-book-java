@@ -248,7 +248,8 @@ services:
         # --cluster-enabled yes: liga o modo cluster; o slot map é criado por redis-cluster-init.
         # --cluster-node-timeout 5000: um nó é considerado falho após 5 s sem heartbeat.
         # --cluster-config-file: cada nó persiste seu view do cluster em /data/nodes.conf.
-        command: redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379
+        # --requirepass: autenticação obrigatória via env var.
+        command: redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379 --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required — copie .env.example para .env}
         volumes:
             - redis_1_data:/data
         networks:
@@ -263,7 +264,7 @@ services:
             # redis-cli PING retorna "PONG" → exit 0; qualquer outro resultado → exit 1.
             # interval/retries conservadores para evitar que redis-cluster-init dispare
             # antes dos nós estarem prontos para receber conexões.
-            test: ['CMD', 'redis-cli', '-p', '6379', 'ping']
+            test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', '-p', '6379', 'ping']
             interval: 5s
             timeout: 3s
             retries: 10
@@ -273,7 +274,7 @@ services:
         container_name: vibranium-redis-2
         ports:
             - '6380:6379'
-        command: redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379
+        command: redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379 --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required — copie .env.example para .env}
         volumes:
             - redis_2_data:/data
         networks:
@@ -285,7 +286,7 @@ services:
                 reservations:
                     cpus: '0.5'
         healthcheck:
-            test: ['CMD', 'redis-cli', '-p', '6379', 'ping']
+            test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', '-p', '6379', 'ping']
             interval: 5s
             timeout: 3s
             retries: 10
@@ -298,7 +299,7 @@ services:
         container_name: vibranium-redis-3
         ports:
             - '6381:6379'
-        command: redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379
+        command: redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379 --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required — copie .env.example para .env}
         volumes:
             - redis_3_data:/data
         networks:
@@ -310,7 +311,7 @@ services:
                 reservations:
                     cpus: '0.5'
         healthcheck:
-            test: ['CMD', 'redis-cli', '-p', '6379', 'ping']
+            test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', '-p', '6379', 'ping']
             interval: 5s
             timeout: 3s
             retries: 10
@@ -333,6 +334,8 @@ services:
     redis-cluster-init:
         image: redis:7-alpine
         container_name: vibranium-redis-cluster-init
+        environment:
+            REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required — copie .env.example para .env}
         # Cada nó deve ser referenciado pelo nome DNS interno que outros containers usam
         # para se conectar — NÃO pelas portas do host (6380/6381 são apenas para acesso externo).
         # Todos os 3 containers escutam na porta 6379 dentro da rede Docker.
@@ -345,8 +348,9 @@ services:
                 redis-3:6379
                 --cluster-replicas 0
                 --cluster-yes
+                -a ${REDIS_PASSWORD}
               echo "Cluster criado! Verificando estado:"
-              redis-cli -h redis-1 -p 6379 cluster info | grep cluster_state
+              redis-cli -h redis-1 -p 6379 -a ${REDIS_PASSWORD} cluster info | grep cluster_state
             '
         networks:
             - vibranium-staging-network
@@ -542,6 +546,7 @@ services:
             SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required}@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
             SPRING_REDIS_HOST: redis-1
             SPRING_REDIS_PORT: 6379
+            SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
             SPRING_RABBITMQ_HOST: rabbitmq-1
             SPRING_RABBITMQ_PORT: 5672
             SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
@@ -586,6 +591,7 @@ services:
             SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required}@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
             SPRING_REDIS_HOST: redis-2
             SPRING_REDIS_PORT: 6379
+            SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
             SPRING_RABBITMQ_HOST: rabbitmq-2
             SPRING_RABBITMQ_PORT: 5672
             SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
@@ -617,6 +623,7 @@ services:
             SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required}@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
             SPRING_REDIS_HOST: redis-3
             SPRING_REDIS_PORT: 6379
+            SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
             SPRING_RABBITMQ_HOST: rabbitmq-3
             SPRING_RABBITMQ_PORT: 5672
             SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
@@ -861,8 +868,9 @@ services:
         image: redis:7-alpine
         container_name: vibranium-redis-kong-staging
         restart: unless-stopped
+        # requirepass via env var — senha dedicada ao Redis do Kong (diferente do app).
         # appendonly=no: contadores de rate-limiting são voláteis por design.
-        command: ['redis-server', '--appendonly', 'no', '--save', '']
+        command: ['redis-server', '--appendonly', 'no', '--save', '', '--requirepass', '${REDIS_KONG_PASSWORD:?REDIS_KONG_PASSWORD is required — copie .env.example para .env}']
         networks:
             - vibranium-staging-network
         deploy:
@@ -872,7 +880,7 @@ services:
                 reservations:
                     cpus: '0.10'
         healthcheck:
-            test: ['CMD', 'redis-cli', 'ping']
+            test: ['CMD', 'redis-cli', '-a', '${REDIS_KONG_PASSWORD}', 'ping']
             interval: 10s
             timeout: 3s
             retries: 5
@@ -975,6 +983,7 @@ services:
             # O `iss` dos JWTs emitidos usa o hostname acessível ao cliente — em staging
             # é localhost:8080. Em ambiente com DNS público, substituir pela URL externa.
             KEYCLOAK_ISSUER: http://localhost:8080/realms/orderbook-realm
+            REDIS_KONG_PASSWORD: ${REDIS_KONG_PASSWORD}
         depends_on:
             kong:
                 condition: service_healthy

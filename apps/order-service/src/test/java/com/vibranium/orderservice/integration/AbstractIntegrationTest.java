@@ -108,12 +108,16 @@ public abstract class AbstractIntegrationTest {
      * Testcontainers não tem módulo dedicado para Redis — GenericContainer é suficiente.
      * O Motor de Match usa {@code StringRedisTemplate.execute(RedisScript, ...)} para
      * execução atômica do Script Lua no Sorted Set.
+     *
+     * <p>requirepass habilitado para simular ambiente de produção com autenticação.
+     * A senha "testpass" é injetada via {@code @DynamicPropertySource} e espelha
+     * o valor configurado em application-test.yml.</p>
      */
     @SuppressWarnings("resource")   // fechamento gerenciado pelo Testcontainers runtime
     static final GenericContainer<?> REDIS =
             new GenericContainer<>(DockerImageName.parse("redis:7-alpine"))
                     .withExposedPorts(6379)
-                    .withCommand("redis-server", "--appendonly", "no")  // AOF desabilitado em teste
+                    .withCommand("redis-server", "--appendonly", "no", "--requirepass", "testpass")
                     .withReuse(true);
 
     // Inicia os containers antes de qualquer subclasse ser carregada
@@ -147,6 +151,7 @@ public abstract class AbstractIntegrationTest {
         // Redis (GenericContainer usa getMappedPort para a porta randomizada)
         registry.add("spring.data.redis.host", REDIS::getHost);
         registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
+        registry.add("spring.data.redis.password", () -> "testpass");
     }
 
     // =========================================================================

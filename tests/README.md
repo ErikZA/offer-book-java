@@ -14,6 +14,7 @@ tests/
 ├── AT-12.1-rate-limiting-redis-validation.sh         # AT-12.1: Rate Limiting via Redis no Kong
 ├── AT-13.1-jwks-rotation-validation.sh              # AT-13.1: Rotação JWKS do Keycloak → Kong
 ├── AT-5.1.3-pg-streaming-replication-validation.sh  # AT-5.1.3: PostgreSQL Streaming Replication
+├── AT-04-redis-auth-validation.sh                   # AT-04: Redis requirepass em todos os containers (app + kong)
 ├── AT-kong-routes-validation.sh                     # Atividade 2: Validação de todas as rotas Kong (Admin API + Proxy)
 └── README.md
 ```

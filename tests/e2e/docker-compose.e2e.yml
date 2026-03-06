@@ -129,10 +129,12 @@ services:
     redis-e2e:
         image: redis:7-alpine
         container_name: vibranium-redis-e2e
+        # requirepass habilitado para simular produção com autenticação
+        command: ['redis-server', '--appendonly', 'yes', '--requirepass', 'e2e_redis_pass']
         networks:
             - vibranium-e2e
         healthcheck:
-            test: ['CMD', 'redis-cli', 'ping']
+            test: ['CMD', 'redis-cli', '-a', 'e2e_redis_pass', 'ping']
             interval: 5s
             timeout: 3s
             retries: 5
@@ -191,6 +193,7 @@ services:
             # replicaSet=rs0: obrigatório para MongoTransactionManager (sem autenticação em E2E)
             SPRING_DATA_MONGODB_URI: 'mongodb://mongodb-e2e:27017/vibranium_orders?replicaSet=rs0'
             SPRING_DATA_REDIS_HOST: redis-e2e
+            SPRING_DATA_REDIS_PASSWORD: e2e_redis_pass
             SPRING_RABBITMQ_HOST: rabbitmq-e2e
             SPRING_RABBITMQ_PORT: '5672'
             SPRING_RABBITMQ_USERNAME: guest

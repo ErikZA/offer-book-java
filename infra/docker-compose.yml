@@ -315,9 +315,9 @@ services:
                     cpus: '0.10'
                     memory: 32M
 
+        # requirepass via env var — senha dedicada ao Redis do Kong (diferente do app).
         # appendonly=no: contadores de rate-limiting não precisam de persistência.
-        # Reinicialização zera contadores — aceitável para window-based rate limiting.
-        command: ['redis-server', '--appendonly', 'no', '--save', '']
+        command: ['redis-server', '--appendonly', 'no', '--save', '', '--requirepass', '${REDIS_KONG_PASSWORD:?REDIS_KONG_PASSWORD is required — copie .env.example para .env}']
 
         # Porta NÃO exposta ao host intencionalmente.
         # Kong acessa via hostname redis-kong na rede Docker interna.
@@ -325,7 +325,7 @@ services:
             - vibranium-infra
 
         healthcheck:
-            test: ['CMD', 'redis-cli', 'ping']
+            test: ['CMD', 'redis-cli', '-a', '${REDIS_KONG_PASSWORD}', 'ping']
             interval: 10s
             timeout: 3s
             retries: 5
@@ -359,6 +359,7 @@ services:
             KEYCLOAK_REALM: orderbook-realm
             KONG_CONSUMER_NAME: keycloak-realm-consumer
             KEYCLOAK_ISSUER: http://localhost:8080/realms/orderbook-realm
+            REDIS_KONG_PASSWORD: ${REDIS_KONG_PASSWORD}
 
         depends_on:
             kong:

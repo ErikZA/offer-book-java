@@ -168,8 +168,8 @@ class OrderOutboxResilienceIntegrationTest {
     static final GenericContainer<?> REDIS =
             new GenericContainer<>(DockerImageName.parse("redis:7-alpine"))
                     .withExposedPorts(6379)
-                    // AOF desabilitado em testes: elimina fsync e melhora performance
-                    .withCommand("redis-server", "--appendonly", "no")
+                    // requirepass habilitado para simular produção com autenticação
+                    .withCommand("redis-server", "--appendonly", "no", "--requirepass", "testpass")
                     .waitingFor(Wait.forListeningPort());
 
     // =========================================================================
@@ -194,6 +194,7 @@ class OrderOutboxResilienceIntegrationTest {
         // Redis — GenericContainer expõe porta mapeada aleatoriamente
         registry.add("spring.data.redis.host", REDIS::getHost);
         registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
+        registry.add("spring.data.redis.password", () -> "testpass");
     }
 
     // =========================================================================

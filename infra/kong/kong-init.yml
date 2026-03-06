@@ -76,6 +76,7 @@ services:
                       redis_host: redis-kong
                       redis_port: 6379
                       redis_database: 1
+                      redis_password: ${REDIS_KONG_PASSWORD}
                       limit_by: ip
                       hide_client_headers: false
                       fault_tolerant: true
@@ -103,6 +104,7 @@ services:
                       redis_host: redis-kong
                       redis_port: 6379
                       redis_database: 1
+                      redis_password: ${REDIS_KONG_PASSWORD}
                       limit_by: ip
                       hide_client_headers: false
                       fault_tolerant: true
@@ -159,6 +161,7 @@ services:
                 redis_host: redis-kong # Redis dedicado ao rate-limiting (não da aplicação)
                 redis_port: 6379
                 redis_database: 1 # db=1 para isolar de dados de aplicação (db=0)
+                redis_password: ${REDIS_KONG_PASSWORD}
                 limit_by: ip
                 hide_client_headers: false # expõe X-RateLimit-* headers ao cliente
                 fault_tolerant: true # não bloqueia requisições se o rate-limiter falhar
@@ -259,6 +262,7 @@ services:
                 redis_host: redis-kong
                 redis_port: 6379
                 redis_database: 1
+                redis_password: ${REDIS_KONG_PASSWORD}
                 limit_by: ip
                 hide_client_headers: false
                 fault_tolerant: true
