@@ -78,14 +78,16 @@ src/main/java/com/vibranium/orderservice/
 ├── security/
 │   ├── SecurityConfig.java                           # JWT Resource Server (Keycloak, perfil !e2e)
 │   └── E2eSecurityConfig.java                        # JWT sem assinatura (perfil e2e)
-├── config/
-│   ├── JacksonConfig.java                            # ObjectMapper com JavaTimeModule
-│   ├── MongoIndexConfig.java                         # Index pre-creation + connection pool MongoDB
-│   ├── MongoTransactionConfig.java                   # TransactionManager MongoDB
-│   ├── RabbitMQConfig.java                           # Topologia: exchanges, filas, bindings, DLQ
-│   └── TimeConfig.java                              # ⭐ Bean Clock.systemUTC() (AT-09.2)
+└── config/
+    ├── JacksonConfig.java                            # ObjectMapper com JavaTimeModule
+    ├── MongoIndexConfig.java                         # Index pre-creation + connection pool MongoDB
+    ├── MongoTransactionConfig.java                   # TransactionManager MongoDB
+    ├── RabbitMQConfig.java                           # Topologia: exchanges, filas, bindings, DLQ
+    └── TimeConfig.java                              # ⭐ Bean Clock.systemUTC() (AT-09.2)
+
+# src/test/java/com/vibranium/orderservice/
 └── e2e/
-    └── E2eDataSeederController.java                  # Seed de dados para testes E2E (perfil e2e)
+    └── E2eDataSeederController.java                  # Seed de dados para testes E2E (perfil e2e) — apenas no classpath de teste
 ```
 
 ## 🏛️ Topologia RabbitMQ

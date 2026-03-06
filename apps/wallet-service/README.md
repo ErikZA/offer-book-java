@@ -40,13 +40,13 @@ src/
 │   │   │   ├── controller/WalletController.java          # Endpoints REST
 │   │   │   └── exception/                                # InsufficientFundsException, WalletNotFoundException, etc.
 │   │   ├── security/                                     # SecurityConfig (!e2e) e E2eSecurityConfig (e2e)
-│   │   ├── config/                                       # RabbitMQ, Outbox, Jackson, Time configs
-│   │   └── e2e/                                          # E2eDataSeederController (perfil e2e)
+│   │   └── config/                                       # RabbitMQ, Outbox, Jackson, Time configs
 │   └── resources/
 │       ├── application.yaml
 │       └── db/migration/                                 # V1…V7 (Flyway)
 └── test/
     ├── java/com/vibranium/walletservice/
+    │   ├── e2e/                                          # E2eDataSeederController (perfil e2e) — classpath de teste apenas
     │   ├── unit/
     │   │   ├── WalletDomainTest.java                     # Testes de domínio puro (US-005)
     │   │   ├── WalletServiceLockOrderTest.java           # TDD lock ordering ABBA (AT-03.1)
