@@ -13,6 +13,8 @@ Implementa CQRS com PostgreSQL no Command Side (escrita) e MongoDB no Query Side
 - ✅ `OrderOutboxPublisherService` (scheduler) faz o relay atômico para o RabbitMQ de forma eventual
   com `SELECT FOR UPDATE SKIP LOCKED` (batch configurável, `@Retryable` + `@Recover`, delay 500 ms)
 - ✅ Consumir eventos `FundsReservedEvent` / `FundsReservationFailedEvent` do wallet-service
+- ✅ Consumir `FundsReleaseFailedEvent` — compensação terminal da Saga: cancela a ordem e grava
+  `OrderCancelledEvent` no outbox com idempotência, métricas Micrometer e DLQ dedicada (Ativ.5)
 - ✅ Executar o Motor de Match atômico via Script Lua no Redis Sorted Set com **Saga TCC**:
   `FundsReservedEventConsumer` separa a operação Redis do escopo JPA em 3 fases via
   `TransactionTemplate` (Fase 1: JPA TX; Fase 2: `tryMatch` sem TX; Fase 3: JPA TX + Outbox).
@@ -63,6 +65,7 @@ src/main/java/com/vibranium/orderservice/
 │           └── OrderAtomicHistoryWriter.java         # Escritor atômico de history[] no MongoDB
 ├── infrastructure/
 │   ├── messaging/
+│   │   ├── FundsReleaseFailedEventConsumer.java      # ⭐ Compensação terminal: cancel order (Ativ.5)
 │   │   ├── FundsReservationFailedEventConsumer.java  # CANCELLED após falha na reserva
 │   │   ├── FundsReservedEventConsumer.java           # Match Engine → OPEN/FILLED (Saga TCC)
 │   │   ├── FundsSettlementFailedEventConsumer.java   # Compensação Saga → ReleaseFundsCommand
@@ -110,6 +113,7 @@ src/main/java/com/vibranium/orderservice/
 |-----------------------------|-------------------------------------------------|----------------------------------|-------|
 | `order.events.funds-reserved`  | `wallet.events.funds-reserved`               | `FundsReservedEventConsumer`     | ✅    |
 | `order.events.funds-failed`    | `wallet.events.funds-reservation-failed`     | `FundsReservationFailedEventConsumer` | ✅ |
+| `order.events.funds-release-failed` | `wallet.events.funds-release-failed`    | `FundsReleaseFailedEventConsumer` | ✅   |
 | `order.keycloak.user-register` | `KK.EVENT.CLIENT.orderbook-realm.REGISTER`   | `KeycloakEventConsumer`          | ✅    |
 | `order.dead-letter`            | `order.dead-letter` (em `vibranium.dlq`)     | — (inspecção manual)            | ❌    |
 
@@ -118,7 +122,9 @@ src/main/java/com/vibranium/orderservice/
 | Fila / Exchange               | Exchange              | Routing Key                        | Propósito                 |
 |-------------------------------|-----------------------|------------------------------------|---------------------------|
 | `wallet.commands.reserve-funds` | `vibranium.commands`  | `wallet.commands.reserve-funds`  | Saga: reserva de fundos (via outbox)   |
+| `wallet.commands.release-funds` | `vibranium.commands`  | `wallet.commands.release-funds`  | Saga: compensação — libera fundos (via outbox) |
 | — (event)                     | `vibranium.events`    | `order.events.order-received`      | Projeção Read Model (via outbox — AT-01.1) |
+| — (event)                     | `vibranium.events`    | `order.events.order-cancelled`     | Projeção Read Model — cancelamento (via outbox) |
 
 ### Filas de projeção (Query Side — US-003)
 
@@ -178,6 +184,12 @@ Filas do Command Side usam `x-dead-letter-routing-key=order.dead-letter`, rotean
 `RabbitMQConfig.deadLetterBinding()`. Sem esse binding, mensagens mortas seriam descartadas
 silenciosamente (unroutable).
 
+A fila `order.events.funds-release-failed` possui DLQ dedicada:
+
+| Fila | DLQ | Routing Key na DLX |
+|---|---|---|
+| `order.events.funds-release-failed` | `order.events.funds-release-failed.dlq` | `order.events.funds-release-failed.dlq` |
+
 #### DLQs do Query Side / Projeção (AT-2.2.1)
 
 Cada fila de projeção possui routing key individual, permitindo identificar a origem da mensagem
@@ -231,6 +243,15 @@ POST /api/v1/orders
       │      └── Insuficiente → FundsReservationFailed
       │             → FundsReservationFailedEventConsumer → Order{CANCELLED}
       │
+      ├── (Compensação Saga — Ativ.5)
+      │   wallet-service falha ao executar ReleaseFundsCommand
+      │      → FundsReleaseFailedEvent
+      │           → FundsReleaseFailedEventConsumer
+      │                 ├── idempotência via ProcessedEvent
+      │                 ├── order.cancel("RELEASE_FAILED") → CANCELLED
+      │                 ├── OrderCancelledEvent → outbox
+      │                 └── Micrometer counter: vibranium.funds.release.failed
+      │
       └── vibranium.events / order.events.order-received (OrderReceivedEvent)
               ↓ (Query Side — MongoDB)
           OrderEventProjectionConsumer
@@ -283,6 +304,9 @@ mvn test -pl apps/order-service -Dtest=ProjectionDlqIntegrationTest
 
 # Apenas os testes do Outbox SKIP LOCKED, batch e retry (AT-01.1)
 mvn test -pl apps/order-service -Dtest="OrderOutboxSkipLockedConcurrencyTest,OrderOutboxBatchSizeTest,OrderOutboxRetryTest,OrderOutboxPollingIntervalTest"
+
+# Apenas os testes do FundsReleaseFailedEventConsumer (Ativ.5)
+mvn test -pl apps/order-service -Dtest="FundsReleaseFailedEventConsumerTest,FundsReleaseFailedEventConsumerIT,FundsReleaseFailedDlqTest"
 ```
 
 ## 🧪 Cobertura de Testes de Integração
@@ -308,6 +332,9 @@ mvn test -pl apps/order-service -Dtest="OrderOutboxSkipLockedConcurrencyTest,Ord
 | **`OrderOutboxBatchSizeTest`** | **Integração** | **250 msgs com batch-size=100: lotes de 100→100→50** | **AT-01.1** |
 | **`OrderOutboxRetryTest`** | **Integração (Retry)** | **@Retryable + backoff exp.; @Recover absorve exceção; published_at=null após falha** | **AT-01.1** |
 | **`OrderOutboxPollingIntervalTest`** | **Integração** | **Mensagem publicada em < 1s com delay-ms=500** | **AT-01.1** |
+| **`FundsReleaseFailedEventConsumerTest`** | **Unitário** | **6 cenários: cancel+outbox+metric, duplicata, CANCELLED/FILLED/not found → WARN+ACK** | **Ativ.5** |
+| **`FundsReleaseFailedEventConsumerIT`** | **Integração** | **End-to-end cancel + outbox + ProcessedEvent; idempotência 2x → 1 cancel** | **Ativ.5** |
+| **`FundsReleaseFailedDlqTest`** | **Integração (DLQ)** | **Payload tóxico roteado para DLQ; smoke test da fila DLQ dedicada** | **Ativ.5** |
 
 ### AT-11.1 — Hash Tags Redis para Redis Cluster
 

@@ -10,7 +10,7 @@
 
 ```
 ✅ wallet-service  —  57/57 testes GREEN  (BUILD SUCCESS)
-✅ order-service   —  53/53 testes GREEN  (BUILD SUCCESS)
+✅ order-service   —  59/59 testes GREEN  (BUILD SUCCESS)
 ✅ common-utils    —  21/21 testes GREEN  (BUILD SUCCESS)
 ✅ US-001 — Outbox Publisher (Polling SKIP LOCKED) implementado e testado
 ✅ US-002 — Partial Fill: Requeue atômico + Idempotência por eventId
@@ -20,6 +20,7 @@
 ✅ AT-5.1.3 — PostgreSQL Streaming Replication (1 primary + 2 hot standbys)
 ✅ AT-5.1.4 — Kong Init adicionado ao staging (services, routes, plugins, consumer JWT)
 ✅ AT-04 — Redis requirepass em todos os ambientes (dev, staging, e2e, infra) + TDD
+✅ Ativ.5 — FundsReleaseFailedEventConsumer: compensação terminal Saga + TDD (6 unit + 4 IT)
 ```
 
 ### Implementações recentes
@@ -73,6 +74,11 @@
 | **`AT-04-redis-auth-validation.sh`** (AT-04) | ✅ | Script infra: valida requirepass em redis e redis-kong via docker exec |
 | **`KEYCLOAK_REALM: orderbook-realm`** (AT-5.1.4) | ✅ | Alinhado com `realm-export.json`; `KEYCLOAK_ISSUER` usa `localhost:8080` (porta mapeada no staging) |
 | **`restart: 'no'`** (AT-5.1.4) | ✅ | Init-container pattern — executa uma vez e sai; `depends_on` kong/keycloak/redis-kong com `service_healthy` |
+| **`FundsReleaseFailedEventConsumer`** (Ativ.5) | ✅ | Compensação terminal Saga: cancela ordem + outbox `OrderCancelledEvent` + idempotência + métricas |
+| **`RabbitMQConfig` — fila + DLQ** (Ativ.5) | ✅ | `order.events.funds-release-failed` + `order.events.funds-release-failed.dlq` + bindings |
+| **`FundsReleaseFailedEventConsumerTest`** (Ativ.5) | ✅ 6/6 GREEN | 6 testes unitários TDD RED→GREEN (cancel, duplicata, CANCELLED/FILLED/not-found) |
+| **`FundsReleaseFailedEventConsumerIT`** (Ativ.5) | ✅ 2/2 GREEN | End-to-end cancel + outbox; idempotência 2x → 1 cancel |
+| **`FundsReleaseFailedDlqTest`** (Ativ.5) | ✅ 2/2 GREEN | Payload tóxico → DLQ; smoke test fila DLQ declarada |
 ---
 
 ## 🎯 O Que Foi Realizado
@@ -95,16 +101,17 @@
 ```
 ✅ Testes no Docker - SUCESSO
    - Common Contracts:                       ✅ Built
-   - Order Service Test (53 testes):         ✅ 53/53 GREEN
+   - Order Service Test (59 testes):         ✅ 59/59 GREEN
      └─ Unit — OrderDomainTest (US-008):       ✅ 20 testes (< 0.5 s, sem Spring)
      └─ Unit (EventRoute, Order domain):       ✅ 10 testes
+     └─ Unit (FundsReleaseFailedConsumer):     ✅ 6 testes (Ativ.5 — TDD RED→GREEN)
      └─ Integration (Match Engine, Saga):      ✅ 18 testes (incl. 4 cenários US-002)
      └─ Integration (Redis Auth, AT-04):       ✅ 5 testes (requirepass + Lua c/ auth)
    - Wallet Service Test (57 testes):        ✅ 57/57 GREEN
      └─ Unit (EventRoute, WalletService):      ✅ 9 testes
      └─ Integration (Keycloak, Wallet):        ✅ 43 testes
      └─ Integration (OutboxPublisher Polling):   ✅ 5 testes
-   - Total: 110 testes, 0 falhas
+   - Total: 116 testes, 0 falhas
    - Cobertura de código:                 ✅ Gerada automaticamente
 ```
 

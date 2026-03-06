@@ -99,6 +99,22 @@ public class RabbitMQConfig {
      */
     public static final String QUEUE_FUNDS_SETTLEMENT_FAILED = "order.events.funds-settlement-failed";
 
+    /**
+     * Routing key do {@code FundsReleaseFailedEvent} publicado pelo wallet-service
+     * quando a liberação de fundos bloqueados falha após um {@code ReleaseFundsCommand}.
+     * O order-service consome este evento para cancelar a ordem e alertar operações.
+     */
+    public static final String RK_FUNDS_RELEASE_FAILED = "wallet.events.funds-release-failed";
+
+    /**
+     * Fila do order-service para consumir {@code FundsReleaseFailedEvent}.
+     * Bound à {@code EVENTS_EXCHANGE} com routing key {@code RK_FUNDS_RELEASE_FAILED}.
+     */
+    public static final String QUEUE_FUNDS_RELEASE_FAILED = "order.events.funds-release-failed";
+
+    /** DLQ para mensagens tóxicas da fila {@code order.events.funds-release-failed}. */
+    public static final String QUEUE_FUNDS_RELEASE_FAILED_DLQ = "order.events.funds-release-failed.dlq";
+
     // -------------------------------------------------------------------------
     // Filas do Read Model (projeção MongoDB — Query Side US-003)
     // Fanout pattern: cada fila abaixo recebe uma cópia do evento via topic exchange.
@@ -299,6 +315,49 @@ public class RabbitMQConfig {
                 .bind(fundsSettlementFailedQueue)
                 .to(eventsExchange)
                 .with(RK_FUNDS_SETTLEMENT_FAILED);
+    }
+
+    // -------------------------------------------------------------------------
+    // Fila de FundsReleaseFailedEvent (wallet → order: liberação de fundos falhou)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Fila durable para {@code FundsReleaseFailedEvent} com DLX configurada.
+     * Evento crítico: fundos permanecem bloqueados indefinidamente — falhas de
+     * processamento vão para a DLQ para intervenção manual e alertas operacionais.
+     */
+    @Bean
+    Queue fundsReleaseFailedQueue() {
+        return QueueBuilder.durable(QUEUE_FUNDS_RELEASE_FAILED)
+                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-routing-key", QUEUE_FUNDS_RELEASE_FAILED_DLQ)
+                .build();
+    }
+
+    @Bean
+    Binding fundsReleaseFailedBinding(
+            @Qualifier("fundsReleaseFailedQueue") Queue fundsReleaseFailedQueue,
+            @Qualifier("eventsExchange")          TopicExchange eventsExchange) {
+        return BindingBuilder
+                .bind(fundsReleaseFailedQueue)
+                .to(eventsExchange)
+                .with(RK_FUNDS_RELEASE_FAILED);
+    }
+
+    /** DLQ para mensagens tóxicas de {@code order.events.funds-release-failed}. */
+    @Bean
+    Queue fundsReleaseFailedDlq() {
+        return QueueBuilder.durable(QUEUE_FUNDS_RELEASE_FAILED_DLQ).build();
+    }
+
+    @Bean
+    Binding fundsReleaseFailedDlqBinding(
+            @Qualifier("fundsReleaseFailedDlq") Queue fundsReleaseFailedDlq,
+            @Qualifier("dlqExchange")           DirectExchange dlqExchange) {
+        return BindingBuilder
+                .bind(fundsReleaseFailedDlq)
+                .to(dlqExchange)
+                .with(QUEUE_FUNDS_RELEASE_FAILED_DLQ);
     }
 
     // -------------------------------------------------------------------------
