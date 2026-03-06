@@ -131,8 +131,11 @@ libs/common-utils/src/main/java/com/vibranium/utils/
 │   └── VibraniumJacksonConfig.java     # Configuração central do ObjectMapper (ISO-8601)
 ├── correlation/
 │   └── CorrelationIdGenerator.java     # Geração de UUID v4 para rastreabilidade
-└── messaging/
-    └── AmqpHeaderExtractor.java        # Extração de correlation-ID de headers AMQP
+├── messaging/
+│   └── AmqpHeaderExtractor.java        # Extração de correlation-ID de headers AMQP
+└── outbox/
+    ├── AbstractOutboxPublisher.java    # Template Method base do Transactional Outbox (AT-10)
+    └── OutboxConfigProperties.java     # Record (batchSize, pollingIntervalMs) com validação
 ```
 
 **Utilitários disponíveis:**
@@ -142,6 +145,8 @@ libs/common-utils/src/main/java/com/vibranium/utils/
 | `VibraniumJacksonConfig` | `configure(ObjectMapper)` | Aplica ISO-8601, desabilita `FAIL_ON_UNKNOWN_PROPERTIES` |
 | `CorrelationIdGenerator` | `generate()` / `generateAsString()` | UUID v4 para correlation de requests |
 | `AmqpHeaderExtractor` | `extractCorrelationId(MessageProperties)` | Prioridade: `message-id` → `X-Correlation-ID` |
+| `AbstractOutboxPublisher<T>` | `pollAndPublish()` | Template Method: polling → dispatch → publish → recover |
+| `OutboxConfigProperties` | `batchSize()` / `pollingIntervalMs()` | Configuração base do Outbox (imutável, com validação) |
 
 > **⚠️ BREAKING CHANGE (US-007):** O `order-service` era configurado com `WRITE_DATES_AS_TIMESTAMPS=true` (epoch-millis). Após a unificação via `VibraniumJacksonConfig`, ambos os serviços serializam datas como **ISO-8601**. Campos que precisam de epoch-millis devem usar `@JsonFormat(shape = NUMBER_INT)` individualmente.
 
@@ -149,7 +154,7 @@ libs/common-utils/src/main/java/com/vibranium/utils/
 - Configurações genéricas do Spring Security (validação de JWT do Keycloak)
 - Manipuladores de erro globais (`@ControllerAdvice`)
 - Utilitários para logs (OpenTelemetry)
-- Classes base para o padrão *Transactional Outbox*
+- ~~Classes base para o padrão *Transactional Outbox*~~ ✅ Implementado (AT-10): `AbstractOutboxPublisher<T>` + `OutboxConfigProperties`
 - Exceções customizadas e respostas de erro padrão
 
 ### 3. 🚀 `apps/` — Os Microsserviços
@@ -293,6 +298,8 @@ make ... (Linux/macOS)
 | `VibraniumJacksonConfig` | Utility | **libs/common-utils/** |
 | `CorrelationIdGenerator` | Utility | **libs/common-utils/** |
 | `AmqpHeaderExtractor` | Utility | **libs/common-utils/** |
+| `AbstractOutboxPublisher` | Base Class | **libs/common-utils/** |
+| `OutboxConfigProperties` | Config Record | **libs/common-utils/** |
 
 ## ✨ Destaques da Novo Organização
 

@@ -42,6 +42,17 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- =====================================================================
+             RUNTIME — Spring Rabbit: RabbitTemplate para AbstractOutboxPublisher
+             Declarado como optional para não vazar para consumidores que
+             não precisam de mensageria.
+        ====================================================================== -->
+        <dependency>
+            <groupId>org.springframework.amqp</groupId>
+            <artifactId>spring-rabbit</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Spring Validation -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -62,14 +73,6 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <!-- spring-rabbit: necessário em test para que MessageProperties esteja
-             no classpath dos testes de AmqpHeaderExtractor -->
-        <dependency>
-            <groupId>org.springframework.amqp</groupId>
-            <artifactId>spring-rabbit</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

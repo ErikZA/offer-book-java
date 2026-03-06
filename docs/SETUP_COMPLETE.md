@@ -11,7 +11,7 @@
 ```
 ✅ wallet-service  — 137/137 testes GREEN  (BUILD SUCCESS)
 ✅ order-service   —  59/59 testes GREEN  (BUILD SUCCESS)
-✅ common-utils    —  21/21 testes GREEN  (BUILD SUCCESS)
+✅ common-utils    —  34/34 testes GREEN  (BUILD SUCCESS)
 ✅ US-001 — Outbox Publisher (Polling SKIP LOCKED) implementado e testado
 ✅ US-002 — Partial Fill: Requeue atômico + Idempotência por eventId
 ✅ US-007 — Docker Compose Completo com Microsserviços + common-utils
@@ -22,6 +22,7 @@
 ✅ AT-04 — Redis requirepass em todos os ambientes (dev, staging, e2e, infra) + TDD
 ✅ Ativ.5 — FundsReleaseFailedEventConsumer: compensação terminal Saga + TDD (6 unit + 4 IT)
 ✅ AT-09 — Consumer Group e Prefetch Tuning: prefetch=10, concurrency 1-5, 5 testes de integração
+✅ AT-10 — Unificar Outbox Pattern: AbstractOutboxPublisher extraído para common-utils (Template Method)
 ```
 
 ### Implementações recentes
@@ -48,7 +49,7 @@
 | **`VibraniumJacksonConfig`** (US-007) | ✅ | Configuração central ISO-8601 para todos os serviços (`libs/common-utils`) |
 | **`CorrelationIdGenerator`** (US-007) | ✅ | UUID v4 para rastreabilidade distribuída (`libs/common-utils`) |
 | **`AmqpHeaderExtractor`** (US-007) | ✅ | Extração de correlation-ID de headers AMQP (`libs/common-utils`) |
-| **`common-utils` test suite** (US-007) | ✅ 21/21 GREEN | 21 testes unitários (Jackson, CorrelationId, AMQP) |
+| **`common-utils` test suite** (US-007+AT-10) | ✅ 34/34 GREEN | 34 testes unitários (Jackson, CorrelationId, AMQP, Outbox) |
 | **`docker-compose.dev.yml`** (US-007) | ✅ | Credenciais externalizadas via `.env`; order-service + wallet-service com healthcheck |
 | **`.env.example`** (US-007) | ✅ | Template de variáveis de ambiente commitado (`.env` nunca commitado) || **`jwks-rotation.sh`** (AT-13.1) | ✅ | Script idempotente: busca JWKS, compara kid, atualiza credencial RS256 no Kong |
 | **`jwks-rotator-entrypoint.sh`** (AT-13.1) | ✅ | Loop sidecar a cada 6h com wait de dependências e log NDJSON estruturado |
@@ -87,6 +88,11 @@
 | **`MultiConsumerIdempotencyTest`** (AT-09) | ✅ 2/2 GREEN | 50 msgs únicas = 50 outbox; duplicatas descartadas |
 | **`PrefetchBackpressureTest`** (AT-09) | ✅ 2/2 GREEN | 1000 msgs sem OOM; fila esvaziada após processamento |
 | **`consumer-prefetch-tuning.md`** (AT-09) | ✅ | Documentação de tuning: fórmula paralelismo, trade-offs |
+| **`AbstractOutboxPublisher`** (AT-10) | ✅ | Template Method base extraído para `libs/common-utils` (polling + dispatch + publish + recover) |
+| **`OutboxConfigProperties`** (AT-10) | ✅ | Record base `(batchSize, pollingIntervalMs)` com validação |
+| **`OutboxPublisherService` refactor** (AT-10) | ✅ | wallet-service estende `AbstractOutboxPublisher<OutboxMessage>` |
+| **`OrderOutboxPublisherService` refactor** (AT-10) | ✅ | order-service estende `AbstractOutboxPublisher<OrderOutboxMessage>` |
+| **`AbstractOutboxPublisherTest`** (AT-10) | ✅ 12/12 GREEN | TDD: polling, claim, publish, recover, config validation |
 ---
 
 ## 🎯 O Que Foi Realizado

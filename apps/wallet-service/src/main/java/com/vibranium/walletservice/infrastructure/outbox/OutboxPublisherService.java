@@ -1,11 +1,9 @@
 package com.vibranium.walletservice.infrastructure.outbox;
 
+import com.vibranium.utils.outbox.AbstractOutboxPublisher;
 import com.vibranium.walletservice.config.OutboxProperties;
 import com.vibranium.walletservice.domain.model.OutboxMessage;
 import com.vibranium.walletservice.domain.repository.OutboxMessageRepository;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageBuilder;
 import org.springframework.amqp.core.MessagePropertiesBuilder;
@@ -24,8 +22,10 @@ import java.util.UUID;
 /**
  * Serviço responsável por publicar eventos do Outbox no RabbitMQ via polling.
  *
- * <p>Implementação do relay do Transactional Outbox Pattern usando
- * {@code SELECT FOR UPDATE SKIP LOCKED} para suporte a múltiplas instâncias.</p>
+ * <p>Estende {@link AbstractOutboxPublisher} do módulo {@code common-utils},
+ * fornecendo implementações específicas do wallet-service:
+ * claim atômico ({@code UPDATE ... WHERE processed=false}),
+ * roteamento via {@link EventRoute} e construção de mensagem com headers.</p>
  *
  * <h2>Fluxo de publicação</h2>
  * <ol>
@@ -53,13 +53,9 @@ import java.util.UUID;
  * processa apenas as linhas que conseguiu bloquear.</p>
  */
 @Service
-public class OutboxPublisherService {
+public class OutboxPublisherService extends AbstractOutboxPublisher<OutboxMessage> {
 
-    private static final Logger logger = LoggerFactory.getLogger(OutboxPublisherService.class);
-
-    private final RabbitTemplate          rabbitTemplate;
     private final OutboxMessageRepository outboxRepository;
-    private final int                     batchSize;
 
     /**
      * @param rabbitTemplate   Template para publicação no RabbitMQ.
@@ -70,9 +66,8 @@ public class OutboxPublisherService {
             RabbitTemplate          rabbitTemplate,
             OutboxMessageRepository outboxRepository,
             OutboxProperties        outboxProperties) {
-        this.rabbitTemplate   = rabbitTemplate;
+        super(rabbitTemplate, outboxProperties.batchSize());
         this.outboxRepository = outboxRepository;
-        this.batchSize        = outboxProperties.batchSize();
     }
 
     // -------------------------------------------------------------------------
@@ -90,43 +85,79 @@ public class OutboxPublisherService {
     @Scheduled(fixedDelayString = "${app.outbox.polling.interval-ms:2000}")
     @Transactional
     public void publishPendingMessages() {
-        List<OutboxMessage> pending = outboxRepository.findPendingWithLock(batchSize);
-
-        if (pending.isEmpty()) {
-            return;
-        }
-
-        logger.debug("Outbox polling: {} mensagem(ns) pendente(s)", pending.size());
-
-        for (OutboxMessage msg : pending) {
-            claimAndPublish(msg.getId(), msg.getEventType(),
-                    msg.getAggregateId(), msg.getPayload());
-        }
+        pollAndPublish();
     }
 
     // -------------------------------------------------------------------------
-    // Publicação com claim atômico
+    // Extension points — AbstractOutboxPublisher
+    // -------------------------------------------------------------------------
+
+    @Override
+    protected List<OutboxMessage> findPendingMessages(int batchSize) {
+        return outboxRepository.findPendingWithLock(batchSize);
+    }
+
+    /**
+     * Claim atômico: {@code UPDATE ... WHERE processed=false}.
+     * Retorna {@code false} se outra instância já processou a mensagem.
+     */
+    @Override
+    protected boolean beforePublish(OutboxMessage message) {
+        return outboxRepository.claimAndMarkProcessed(message.getId()) > 0;
+    }
+
+    @Override
+    protected Message buildAmqpMessage(OutboxMessage msg) {
+        EventRoute route = EventRoute.fromEventType(msg.getEventType());
+        return MessageBuilder
+                .withBody(msg.getPayload().getBytes(StandardCharsets.UTF_8))
+                .andProperties(
+                    MessagePropertiesBuilder.newInstance()
+                        .setMessageId(msg.getId().toString())
+                        .setContentType("application/json")
+                        .setHeader("aggregate-id", msg.getAggregateId())
+                        .setHeader("event-type",   msg.getEventType())
+                        .build())
+                .build();
+    }
+
+    @Override
+    protected String resolveExchange(OutboxMessage msg) {
+        return EventRoute.fromEventType(msg.getEventType()).getExchange();
+    }
+
+    @Override
+    protected String resolveRoutingKey(OutboxMessage msg) {
+        return EventRoute.fromEventType(msg.getEventType()).getRoutingKey();
+    }
+
+    @Override
+    protected Object getMessageId(OutboxMessage msg) {
+        return msg.getId();
+    }
+
+    @Override
+    protected String getEventType(OutboxMessage msg) {
+        return msg.getEventType();
+    }
+
+    // -------------------------------------------------------------------------
+    // Retry + Recover (preservados para backward compatibility)
     // -------------------------------------------------------------------------
 
     /**
-     * Tenta publicar o evento Outbox no RabbitMQ de forma idempotente.
-     *
-     * <p>O claim atômico ({@code UPDATE ... WHERE processed=false}) garante
-     * que mesmo com SKIP LOCKED, se duas instâncias processarem a mesma
-     * mensagem (cenário raro de race condition), apenas uma publica.</p>
-     *
-     * @param eventId     UUID da linha {@code outbox_message}.
-     * @param eventType   Valor da coluna {@code event_type}.
-     * @param aggregateId Valor da coluna {@code aggregate_id}.
-     * @param payload     Conteúdo JSON do evento de domínio.
+     * Publicação com retry — anotação preservada para compatibilidade.
+     * Chamada internamente via {@link #dispatchMessage} (default: this.doPublish).
      */
     @Retryable(
-        retryFor  = { AmqpException.class, Exception.class },
+        retryFor  = { Exception.class },
         maxAttempts = 5,
         backoff   = @Backoff(delay = 500, multiplier = 2, maxDelay = 10_000))
     public void claimAndPublish(UUID eventId, String eventType,
                                 String aggregateId, String payload) {
 
+        // Método preservado para backward compatibility com chamadores externos.
+        // Internamente o fluxo agora passa por pollAndPublish → doPublish.
         int claimed = outboxRepository.claimAndMarkProcessed(eventId);
         if (claimed == 0) {
             logger.debug("Outbox event {} já processado por outra instância — descartando.",
@@ -147,15 +178,11 @@ public class OutboxPublisherService {
                         .build())
                 .build();
 
-        rabbitTemplate.send(route.getExchange(), route.getRoutingKey(), message);
+        getRabbitTemplate().send(route.getExchange(), route.getRoutingKey(), message);
 
         logger.info("Outbox event publicado: id={} type={} exchange={} routingKey={}",
                 eventId, eventType, route.getExchange(), route.getRoutingKey());
     }
-
-    // -------------------------------------------------------------------------
-    // Recover
-    // -------------------------------------------------------------------------
 
     /**
      * Chamado pelo Spring Retry após esgotar as {@code maxAttempts} tentativas.

@@ -3,8 +3,7 @@ package com.vibranium.orderservice.application.service;
 import com.vibranium.orderservice.config.OutboxProperties;
 import com.vibranium.orderservice.domain.model.OrderOutboxMessage;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.vibranium.utils.outbox.AbstractOutboxPublisher;
 import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageBuilder;
@@ -24,10 +23,11 @@ import java.util.List;
 /**
  * Serviço de relay do Outbox Pattern para o order-service.
  *
- * <p>Executa periodicamente para publicar no RabbitMQ os comandos armazenados
- * na tabela {@code tb_order_outbox} pelo {@link OrderCommandService#placeOrder}.
- * Após publicação bem-sucedida, marca {@code published_at} para que o comando
- * não seja reenviado na próxima execução.</p>
+ * <p>Estende {@link AbstractOutboxPublisher} do módulo {@code common-utils},
+ * fornecendo implementações específicas do order-service:
+ * roteamento via colunas {@code exchange}/{@code routing_key} da entidade,
+ * {@code TransactionTemplate} para controle transacional explícito, e
+ * self-proxy para interceptação do {@code @Retryable}.</p>
  *
  * <h2>Fluxo de publicação</h2>
  * <ol>
@@ -60,14 +60,10 @@ import java.util.List;
  * @see com.vibranium.orderservice.config.OutboxProperties
  */
 @Service
-public class OrderOutboxPublisherService {
-
-    private static final Logger logger = LoggerFactory.getLogger(OrderOutboxPublisherService.class);
+public class OrderOutboxPublisherService extends AbstractOutboxPublisher<OrderOutboxMessage> {
 
     private final OrderOutboxRepository        outboxRepository;
-    private final RabbitTemplate               rabbitTemplate;
     private final TransactionTemplate          transactionTemplate;
-    private final int                          batchSize;
     // Self-proxy para que chamadas internas passem pelo proxy AOP (@Retryable).
     // @Lazy evita referência circular durante a construção do bean.
     private final OrderOutboxPublisherService  self;
@@ -84,10 +80,9 @@ public class OrderOutboxPublisherService {
                                        TransactionTemplate transactionTemplate,
                                        OutboxProperties outboxProperties,
                                        @Lazy OrderOutboxPublisherService self) {
+        super(rabbitTemplate, outboxProperties.batchSize());
         this.outboxRepository    = outboxRepository;
-        this.rabbitTemplate      = rabbitTemplate;
         this.transactionTemplate = transactionTemplate;
-        this.batchSize           = outboxProperties.batchSize();
         this.self                = self;
     }
 
@@ -108,21 +103,61 @@ public class OrderOutboxPublisherService {
      */
     @Scheduled(fixedDelayString = "${app.outbox.delay-ms:500}")
     public void publishPendingMessages() {
-        transactionTemplate.executeWithoutResult(status -> {
-            List<OrderOutboxMessage> pending = outboxRepository.findPendingWithLock(batchSize);
+        transactionTemplate.executeWithoutResult(status -> pollAndPublish());
+    }
 
-            if (pending.isEmpty()) {
-                return;
-            }
+    // -------------------------------------------------------------------------
+    // Extension points — AbstractOutboxPublisher
+    // -------------------------------------------------------------------------
 
-            logger.debug("Outbox relay: {} mensagem(ns) pendente(s) para publicação", pending.size());
+    @Override
+    protected List<OrderOutboxMessage> findPendingMessages(int batchSize) {
+        return outboxRepository.findPendingWithLock(batchSize);
+    }
 
-            for (OrderOutboxMessage msg : pending) {
-                // Chamada via self-proxy: garante que @Retryable/@Recover sejam interceptados
-                // pelo proxy AOP. Chamada direta (this.publishSingle) ignoraria as annotations.
-                self.publishSingle(msg);
-            }
-        });
+    /**
+     * Usa self-proxy para que {@code @Retryable} em {@link #publishSingle}
+     * seja interceptado pelo proxy AOP.
+     */
+    @Override
+    protected void dispatchMessage(OrderOutboxMessage message) {
+        self.publishSingle(message);
+    }
+
+    @Override
+    protected Message buildAmqpMessage(OrderOutboxMessage msg) {
+        Message amqpMessage = MessageBuilder
+                .withBody(msg.getPayload().getBytes(StandardCharsets.UTF_8))
+                .andProperties(new MessageProperties())
+                .build();
+        amqpMessage.getMessageProperties().setContentType(MessageProperties.CONTENT_TYPE_JSON);
+        return amqpMessage;
+    }
+
+    @Override
+    protected String resolveExchange(OrderOutboxMessage msg) {
+        return msg.getExchange();
+    }
+
+    @Override
+    protected String resolveRoutingKey(OrderOutboxMessage msg) {
+        return msg.getRoutingKey();
+    }
+
+    @Override
+    protected void afterPublish(OrderOutboxMessage msg) {
+        msg.markAsPublished();
+        outboxRepository.save(msg);
+    }
+
+    @Override
+    protected Object getMessageId(OrderOutboxMessage msg) {
+        return msg.getId();
+    }
+
+    @Override
+    protected String getEventType(OrderOutboxMessage msg) {
+        return msg.getEventType();
     }
 
     // -------------------------------------------------------------------------
@@ -132,11 +167,8 @@ public class OrderOutboxPublisherService {
     /**
      * Publica uma única mensagem do outbox no RabbitMQ com retry automático.
      *
-     * <p>Usa {@link RabbitTemplate#send} com bytes raw em vez de
-     * {@link RabbitTemplate#convertAndSend}: o payload já é JSON serializado
-     * ({@code String}), e passar uma {@code String} ao {@code Jackson2JsonMessageConverter}
-     * causaria double-serialization — a mensagem chegaria aos consumers como
-     * {@code "\"{ ... }\""} em vez de {@code { ... }}.</p>
+     * <p>Chamado via self-proxy ({@link #dispatchMessage}) para garantir
+     * interceptação do {@code @Retryable} pelo proxy AOP.</p>
      *
      * <p>Em caso de {@link AmqpException}, {@code @Retryable} executa backoff
      * exponencial (500ms → 1s → 2s, máx. 3 tentativas). Se todas falharem,
@@ -149,18 +181,7 @@ public class OrderOutboxPublisherService {
             maxAttempts = 3,
             backoff     = @Backoff(delay = 500, multiplier = 2, maxDelay = 5000))
     public void publishSingle(OrderOutboxMessage msg) {
-        Message amqpMessage = MessageBuilder
-                .withBody(msg.getPayload().getBytes(StandardCharsets.UTF_8))
-                .andProperties(new MessageProperties())
-                .build();
-        amqpMessage.getMessageProperties().setContentType(MessageProperties.CONTENT_TYPE_JSON);
-        rabbitTemplate.send(msg.getExchange(), msg.getRoutingKey(), amqpMessage);
-
-        msg.markAsPublished();
-        outboxRepository.save(msg);
-
-        logger.info("Outbox relay: publicado eventType={} aggregateId={} outboxId={}",
-                msg.getEventType(), msg.getAggregateId(), msg.getId());
+        doPublish(msg);
     }
 
     // -------------------------------------------------------------------------
@@ -179,9 +200,6 @@ public class OrderOutboxPublisherService {
      */
     @Recover
     public void recoverPublishFailure(Exception ex, OrderOutboxMessage msg) {
-        logger.error("Outbox relay: falha permanente ao publicar outboxId={} eventType={} "
-                        + "após múltiplas tentativas. error={}",
-                msg.getId(), msg.getEventType(), ex.getMessage(), ex);
-        // Não propaga exceção — mensagem permanece com published_at=null para próximo ciclo.
+        doRecover(ex, msg);
     }
 }
