@@ -71,6 +71,7 @@ docker compose -f infra/docker-compose.yml up
 - **[tests/README.md](tests/README.md)** - Ambientes de testes isolados
 - **[docs/architecture/order-book-mvp.md](docs/architecture/order-book-mvp.md)** - Arquitetura
 - **[docs/README.md](docs/README.md)** - Índice completo de documentação
+- **[docs/SECRETS_MANAGEMENT.md](docs/SECRETS_MANAGEMENT.md)** - Gestão de credenciais com Docker Secrets
 - **[scripts/README.md](scripts/README.md)** - Scripts disponíveis
 
 ## 📦 Stack

@@ -51,6 +51,12 @@ build/
 docker-compose.override.yml
 .dockerignore
 
+# Docker Secrets — NUNCA commitar credenciais reais
+# Apenas os .txt.example (templates) são versionados.
+infra/secrets/*.txt
+infra/secrets/**/*.txt
+.secrets/
+
 # Environment
 .env
 .env.local

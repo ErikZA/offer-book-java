@@ -43,6 +43,11 @@ Entenda a visão geral, fluxos e padrões do sistema.
 - **[tools-stack.md](./architecture/tools-stack.md)** - Stack de ferramentas (inclui Testcontainers, Spring Retry e Polling SKIP LOCKED)
 - **[quality-and-tracing.md](./architecture/quality-and-tracing.md)** - Qualidade e observabilidade (inclui tracing Jaeger, métricas Prometheus + Grafana, Circuit Breaker)
 
+### 🔐 [Segurança & Secrets](./SECRETS_MANAGEMENT.md)
+Gestão de credenciais com Docker Secrets.
+
+- **[SECRETS_MANAGEMENT.md](./SECRETS_MANAGEMENT.md)** - Guia completo de gestão de secrets (Docker Secrets, rotação, troubleshooting)
+
 ### 📋 Referência
 - **[SETUP_COMPLETE.md](./SETUP_COMPLETE.md)** - Resumo do que foi implementado
 - **[PROJECT_STRUCTURE.md](./PROJECT_STRUCTURE.md)** - Estrutura visual do projeto
@@ -53,6 +58,7 @@ Entenda a visão geral, fluxos e padrões do sistema.
 |----------|-----------|
 | **Configurar e usar Docker** | [../docker/README.md](../docker/README.md) |
 | **Entender & escrever testes** | [testing/COMPREHENSIVE_TESTING.md](./testing/COMPREHENSIVE_TESTING.md) ⭐ |
+| **Gestão de secrets** | [SECRETS_MANAGEMENT.md](./SECRETS_MANAGEMENT.md) 🔐 |
 | **Entender arquitetura** | [architecture/order-book-mvp.md](./architecture/order-book-mvp.md) |
 | **Ver fluxos** | [architecture/order-book-mvp-flow.md](./architecture/order-book-mvp-flow.md) |
 | **Padrões de design** | [architecture/ddd-cqrs-event-source.md](./architecture/ddd-cqrs-event-source.md)

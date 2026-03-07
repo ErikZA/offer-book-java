@@ -1,5 +1,39 @@
 version: '3.8'
 
+# ================================================================================
+# Docker Secrets — credenciais lidas de arquivo em vez de variáveis de ambiente.
+# Em staging/produção, secrets são montados em /run/secrets/<name> dentro do container.
+# Visibilidade: `docker inspect` NÃO mostra o conteúdo dos secrets (apenas o nome).
+#
+# Criação dos arquivos:
+#   echo "minha-senha" > infra/secrets/postgres_password.txt
+#   echo "minha-senha" > infra/secrets/rabbitmq_password.txt
+#   (ver docs/SECRETS_MANAGEMENT.md para instruções completas)
+# ================================================================================
+secrets:
+    postgres_password:
+        file: ./secrets/postgres_password.txt
+    postgres_replication_password:
+        file: ./secrets/postgres_replication_password.txt
+    rabbitmq_password:
+        file: ./secrets/rabbitmq_password.txt
+    rabbitmq_erlang_cookie:
+        file: ./secrets/rabbitmq_erlang_cookie.txt
+    mongo_root_password:
+        file: ./secrets/mongo_root_password.txt
+    mongo_replica_key:
+        file: ./secrets/mongo_replica_key.txt
+    redis_password:
+        file: ./secrets/redis_password.txt
+    redis_kong_password:
+        file: ./secrets/redis_kong_password.txt
+    keycloak_admin_password:
+        file: ./secrets/keycloak_admin_password.txt
+    keycloak_db_password:
+        file: ./secrets/keycloak_db_password.txt
+    kong_db_password:
+        file: ./secrets/kong_db_password.txt
+
 services:
     # ================== MongoDB (3 Replicas) ==================
     mongodb-1:
@@ -15,11 +49,14 @@ services:
             - '27017:27017'
         environment:
             MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
-            MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required — copie .env.example para .env}
+            MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
             MONGO_INITDB_DATABASE: vibranium_orders
             # Chave compartilhada para intra-cluster auth do replica set rs0.
             # DEVE ser idêntica nos 3 nós — replica members rejeitam auth com keyFile diferente.
-            MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?MONGO_REPLICA_KEY is required — copie .env.example para .env}
+            MONGO_REPLICA_KEY_FILE: /run/secrets/mongo_replica_key
+        secrets:
+            - mongo_root_password
+            - mongo_replica_key
         volumes:
             - mongodb_1_data:/data/db
             - ./mongo/docker-entrypoint-override-staging.sh:/scripts/docker-entrypoint-override.sh:ro
@@ -46,9 +83,12 @@ services:
             - '27018:27017'
         environment:
             MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
-            MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required — copie .env.example para .env}
+            MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
             MONGO_INITDB_DATABASE: vibranium_orders
-            MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?MONGO_REPLICA_KEY is required — copie .env.example para .env}
+            MONGO_REPLICA_KEY_FILE: /run/secrets/mongo_replica_key
+        secrets:
+            - mongo_root_password
+            - mongo_replica_key
         volumes:
             - mongodb_2_data:/data/db
             - ./mongo/docker-entrypoint-override-staging.sh:/scripts/docker-entrypoint-override.sh:ro
@@ -75,9 +115,12 @@ services:
             - '27019:27017'
         environment:
             MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
-            MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required — copie .env.example para .env}
+            MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
             MONGO_INITDB_DATABASE: vibranium_orders
-            MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?MONGO_REPLICA_KEY is required — copie .env.example para .env}
+            MONGO_REPLICA_KEY_FILE: /run/secrets/mongo_replica_key
+        secrets:
+            - mongo_root_password
+            - mongo_replica_key
         volumes:
             - mongodb_3_data:/data/db
             - ./mongo/docker-entrypoint-override-staging.sh:/scripts/docker-entrypoint-override.sh:ro
@@ -104,7 +147,9 @@ services:
         container_name: vibranium-mongo-rs-init-staging
         environment:
             MONGO_ROOT_USER: ${MONGO_ROOT_USER:-admin}
-            MONGO_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required — copie .env.example para .env}
+            MONGO_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
+        secrets:
+            - mongo_root_password
         volumes:
             - ./mongo/init-replica-set-staging.sh:/scripts/init-replica-set.sh:ro
         command: ['bash', '/scripts/init-replica-set.sh']
@@ -140,11 +185,14 @@ services:
             - '5432:5432'
         environment:
             POSTGRES_USER: postgres
-            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copie .env.example para .env}
+            POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
             POSTGRES_DB: vibranium_wallet
             # Senha do usuário `replicator` criado pelo script 01-init-replication.sh.
             # Deve ser a mesma em postgres-replica-1 e postgres-replica-2.
-            POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD:?POSTGRES_REPLICATION_PASSWORD is required — copie .env.example para .env}
+            POSTGRES_REPLICATION_PASSWORD_FILE: /run/secrets/postgres_replication_password
+        secrets:
+            - postgres_password
+            - postgres_replication_password
         volumes:
             - postgres_primary_data:/var/lib/postgresql/data
             # Script de inicialização executado pelo docker-entrypoint.sh após o initdb.
@@ -181,7 +229,9 @@ services:
             POSTGRES_PRIMARY_HOST: postgres-primary
             POSTGRES_PRIMARY_PORT: '5432'
             POSTGRES_REPLICATION_USER: replicator
-            POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD:?POSTGRES_REPLICATION_PASSWORD is required — copie .env.example para .env}
+            POSTGRES_REPLICATION_PASSWORD_FILE: /run/secrets/postgres_replication_password
+        secrets:
+            - postgres_replication_password
         volumes:
             - postgres_replica_1_data:/var/lib/postgresql/data
             - ./postgres/pg-replica-entrypoint.sh:/scripts/pg-replica-entrypoint.sh:ro
@@ -217,7 +267,9 @@ services:
             POSTGRES_PRIMARY_HOST: postgres-primary
             POSTGRES_PRIMARY_PORT: '5432'
             POSTGRES_REPLICATION_USER: replicator
-            POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD:?POSTGRES_REPLICATION_PASSWORD is required — copie .env.example para .env}
+            POSTGRES_REPLICATION_PASSWORD_FILE: /run/secrets/postgres_replication_password
+        secrets:
+            - postgres_replication_password
         volumes:
             - postgres_replica_2_data:/var/lib/postgresql/data
             - ./postgres/pg-replica-entrypoint.sh:/scripts/pg-replica-entrypoint.sh:ro
@@ -248,8 +300,11 @@ services:
         # --cluster-enabled yes: liga o modo cluster; o slot map é criado por redis-cluster-init.
         # --cluster-node-timeout 5000: um nó é considerado falho após 5 s sem heartbeat.
         # --cluster-config-file: cada nó persiste seu view do cluster em /data/nodes.conf.
-        # --requirepass: autenticação obrigatória via env var.
-        command: redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379 --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required — copie .env.example para .env}
+        # --requirepass: autenticação obrigatória via Docker Secret.
+        # A senha é lida do arquivo montado em /run/secrets/redis_password pelo entrypoint.
+        entrypoint: ['sh', '-c', 'redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379 --requirepass "$$(cat /run/secrets/redis_password)"']
+        secrets:
+            - redis_password
         volumes:
             - redis_1_data:/data
         networks:
@@ -274,7 +329,9 @@ services:
         container_name: vibranium-redis-2
         ports:
             - '6380:6379'
-        command: redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379 --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required — copie .env.example para .env}
+        entrypoint: ['sh', '-c', 'redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379 --requirepass "$$(cat /run/secrets/redis_password)"']
+        secrets:
+            - redis_password
         volumes:
             - redis_2_data:/data
         networks:
@@ -299,7 +356,9 @@ services:
         container_name: vibranium-redis-3
         ports:
             - '6381:6379'
-        command: redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379 --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required — copie .env.example para .env}
+        entrypoint: ['sh', '-c', 'redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379 --requirepass "$$(cat /run/secrets/redis_password)"']
+        secrets:
+            - redis_password
         volumes:
             - redis_3_data:/data
         networks:
@@ -334,13 +393,15 @@ services:
     redis-cluster-init:
         image: redis:7-alpine
         container_name: vibranium-redis-cluster-init
-        environment:
-            REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required — copie .env.example para .env}
+        secrets:
+            - redis_password
         # Cada nó deve ser referenciado pelo nome DNS interno que outros containers usam
         # para se conectar — NÃO pelas portas do host (6380/6381 são apenas para acesso externo).
         # Todos os 3 containers escutam na porta 6379 dentro da rede Docker.
+        # A senha é lida de /run/secrets/redis_password em vez de variável de ambiente.
         command: >
             sh -c '
+              REDIS_PASS=$$(cat /run/secrets/redis_password)
               echo "Aguardando nós Redis estarem prontos..."
               redis-cli --cluster create
                 redis-1:6379
@@ -348,9 +409,9 @@ services:
                 redis-3:6379
                 --cluster-replicas 0
                 --cluster-yes
-                -a ${REDIS_PASSWORD}
+                -a $$REDIS_PASS
               echo "Cluster criado! Verificando estado:"
-              redis-cli -h redis-1 -p 6379 -a ${REDIS_PASSWORD} cluster info | grep cluster_state
+              redis-cli -h redis-1 -p 6379 -a $$REDIS_PASS cluster info | grep cluster_state
             '
         networks:
             - vibranium-staging-network
@@ -378,9 +439,12 @@ services:
             - '15672:15672'
         environment:
             RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
-            RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
-            RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?RABBITMQ_ERLANG_COOKIE is required — copie .env.example para .env}
+            RABBITMQ_DEFAULT_PASS_FILE: /run/secrets/rabbitmq_password
+            RABBITMQ_ERLANG_COOKIE_FILE: /run/secrets/rabbitmq_erlang_cookie
             RABBITMQ_NODENAME: rabbit@rabbitmq-1
+        secrets:
+            - rabbitmq_password
+            - rabbitmq_erlang_cookie
         volumes:
             - rabbitmq_1_data:/var/lib/rabbitmq
         networks:
@@ -407,16 +471,19 @@ services:
         # aguarda o nó local responder a `rabbitmq-diagnostics ping`, depois executa
         # stop_app / reset / join_cluster rabbit@rabbitmq-1 / start_app e devolve o
         # controle ao processo RabbitMQ em foreground. O cookie Erlang compartilhado
-        # (RABBITMQ_ERLANG_COOKIE) autentica a conexão entre os nós durante o join.
+        # (via Docker Secret) autentica a conexão entre os nós durante o join.
         entrypoint: ['/bin/sh', '/scripts/join-cluster.sh']
         ports:
             - '5673:5672'
             - '15673:15672'
         environment:
             RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
-            RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
-            RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?RABBITMQ_ERLANG_COOKIE is required — copie .env.example para .env}
+            RABBITMQ_DEFAULT_PASS_FILE: /run/secrets/rabbitmq_password
+            RABBITMQ_ERLANG_COOKIE_FILE: /run/secrets/rabbitmq_erlang_cookie
             RABBITMQ_NODENAME: rabbit@rabbitmq-2
+        secrets:
+            - rabbitmq_password
+            - rabbitmq_erlang_cookie
         volumes:
             - rabbitmq_2_data:/var/lib/rabbitmq
             # Script montado como somente leitura — não polui o volume de dados do broker.
@@ -454,9 +521,12 @@ services:
             - '15674:15672'
         environment:
             RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
-            RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
-            RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?RABBITMQ_ERLANG_COOKIE is required — copie .env.example para .env}
+            RABBITMQ_DEFAULT_PASS_FILE: /run/secrets/rabbitmq_password
+            RABBITMQ_ERLANG_COOKIE_FILE: /run/secrets/rabbitmq_erlang_cookie
             RABBITMQ_NODENAME: rabbit@rabbitmq-3
+        secrets:
+            - rabbitmq_password
+            - rabbitmq_erlang_cookie
         volumes:
             - rabbitmq_3_data:/var/lib/rabbitmq
             - ./rabbitmq/join-cluster.sh:/scripts/join-cluster.sh:ro
@@ -490,9 +560,9 @@ services:
         command:
             - -c
             - |
-                # Escreve o cookie Erlang para que rabbitmqctl possa se conectar aos nós
-                # remotos via Erlang distribution. Permissão 400 é exigida pelo OTP.
-                echo "$$RABBITMQ_ERLANG_COOKIE" > /root/.erlang.cookie
+                # Lê o cookie Erlang do Docker Secret (arquivo montado em /run/secrets/).
+                # Permissão 400 é exigida pelo OTP.
+                cp /run/secrets/rabbitmq_erlang_cookie /root/.erlang.cookie
                 chmod 400 /root/.erlang.cookie
 
                 echo '[cluster-init] Verificando status do cluster...'
@@ -511,8 +581,8 @@ services:
                 rabbitmqctl -n rabbit@rabbitmq-1 list_policies
 
                 echo '[cluster-init] Cluster RabbitMQ formado e HA configurado.'
-        environment:
-            RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?RABBITMQ_ERLANG_COOKIE is required — copie .env.example para .env}
+        secrets:
+            - rabbitmq_erlang_cookie
         depends_on:
             # Os 3 nós devem estar healthy (join concluído via healthcheck de cluster_status)
             # antes de tentar aplicar a policy — garante que a replicação está ativa.
@@ -546,11 +616,14 @@ services:
             SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required}@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
             SPRING_REDIS_HOST: redis-1
             SPRING_REDIS_PORT: 6379
-            SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+            # Credenciais de Redis e RabbitMQ injetadas via Docker Secrets (/run/secrets/)
+            # O DockerSecretEnvironmentPostProcessor lê automaticamente e sobrescreve as properties.
             SPRING_RABBITMQ_HOST: rabbitmq-1
             SPRING_RABBITMQ_PORT: 5672
             SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
-            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
+        secrets:
+            - redis_password
+            - rabbitmq_password
         depends_on:
             # Aguarda o replica set rs0 estar completamente formado (PRIMARY eleito)
             # antes de conectar — evita falha de MongoTransactionManager no boot.
@@ -591,11 +664,12 @@ services:
             SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required}@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
             SPRING_REDIS_HOST: redis-2
             SPRING_REDIS_PORT: 6379
-            SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
             SPRING_RABBITMQ_HOST: rabbitmq-2
             SPRING_RABBITMQ_PORT: 5672
             SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
-            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
+        secrets:
+            - redis_password
+            - rabbitmq_password
         depends_on:
             - order-service-1
         networks:
@@ -623,11 +697,12 @@ services:
             SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required}@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
             SPRING_REDIS_HOST: redis-3
             SPRING_REDIS_PORT: 6379
-            SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
             SPRING_RABBITMQ_HOST: rabbitmq-3
             SPRING_RABBITMQ_PORT: 5672
             SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
-            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
+        secrets:
+            - redis_password
+            - rabbitmq_password
         depends_on:
             - order-service-1
         networks:
@@ -655,11 +730,14 @@ services:
             SPRING_APPLICATION_NAME: wallet-service
             SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-primary:5432/vibranium_wallet
             SPRING_DATASOURCE_USERNAME: postgres
-            SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+            # Credenciais injetadas via Docker Secrets (/run/secrets/) —
+            # DockerSecretEnvironmentPostProcessor lê automaticamente.
             SPRING_RABBITMQ_HOST: rabbitmq-1
             SPRING_RABBITMQ_PORT: 5672
             SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
-            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
+        secrets:
+            - postgres_password
+            - rabbitmq_password
         depends_on:
             # service_healthy garante que initdb + pg-primary-init.sh + init-postgres.sql
             # já foram executados (schema vibranium criado) antes do Flyway conectar.
@@ -698,11 +776,12 @@ services:
             # "cannot execute INSERT in a read-only transaction" em produção.
             SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-primary:5432/vibranium_wallet
             SPRING_DATASOURCE_USERNAME: postgres
-            SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
             SPRING_RABBITMQ_HOST: rabbitmq-2
             SPRING_RABBITMQ_PORT: 5672
             SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
-            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
+        secrets:
+            - postgres_password
+            - rabbitmq_password
         depends_on:
             - wallet-service-1
         networks:
@@ -732,11 +811,12 @@ services:
             # consistência de escrita. Réplicas ficam disponíveis apenas para leitura futura.
             SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-primary:5432/vibranium_wallet
             SPRING_DATASOURCE_USERNAME: postgres
-            SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
             SPRING_RABBITMQ_HOST: rabbitmq-3
             SPRING_RABBITMQ_PORT: 5672
             SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
-            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required}
+        secrets:
+            - postgres_password
+            - rabbitmq_password
         depends_on:
             - wallet-service-1
         networks:
@@ -762,8 +842,10 @@ services:
         container_name: vibranium-keycloak-db-staging
         environment:
             POSTGRES_USER: keycloak
-            POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?KEYCLOAK_DB_PASSWORD is required — copie .env.example para .env}
+            POSTGRES_PASSWORD_FILE: /run/secrets/keycloak_db_password
             POSTGRES_DB: keycloak_db
+        secrets:
+            - keycloak_db_password
         volumes:
             - keycloak_db_staging_data:/var/lib/postgresql/data
         networks:
@@ -802,10 +884,10 @@ services:
             KC_DB: postgres
             KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak_db
             KC_DB_USERNAME: keycloak
-            KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?KEYCLOAK_DB_PASSWORD is required — copie .env.example para .env}
+            KC_DB_PASSWORD_FILE: /run/secrets/keycloak_db_password
 
             KEYCLOAK_ADMIN: admin
-            KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required — copie .env.example para .env}
+            KEYCLOAK_ADMIN_PASSWORD_FILE: /run/secrets/keycloak_admin_password
 
             KC_HTTP_ENABLED: 'true'
             KC_HTTP_PORT: 8080
@@ -827,10 +909,14 @@ services:
             KK_TO_RMQ_URL: rabbitmq-1
             KK_TO_RMQ_PORT: 5672
             KK_TO_RMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
-            KK_TO_RMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
+            KK_TO_RMQ_PASSWORD_FILE: /run/secrets/rabbitmq_password
             KK_TO_RMQ_VHOST: /
             KK_TO_RMQ_EXCHANGE: amq.topic
             KK_TO_RMQ_USE_TLS: 'false'
+        secrets:
+            - keycloak_db_password
+            - keycloak_admin_password
+            - rabbitmq_password
         volumes:
             - keycloak_staging_data:/opt/keycloak/data
             # Realm importado automaticamente na subida
@@ -868,9 +954,11 @@ services:
         image: redis:7-alpine
         container_name: vibranium-redis-kong-staging
         restart: unless-stopped
-        # requirepass via env var — senha dedicada ao Redis do Kong (diferente do app).
+        # requirepass via Docker Secret — senha dedicada ao Redis do Kong (diferente do app).
         # appendonly=no: contadores de rate-limiting são voláteis por design.
-        command: ['redis-server', '--appendonly', 'no', '--save', '', '--requirepass', '${REDIS_KONG_PASSWORD:?REDIS_KONG_PASSWORD is required — copie .env.example para .env}']
+        entrypoint: ['sh', '-c', 'redis-server --appendonly no --save "" --requirepass "$$(cat /run/secrets/redis_kong_password)"']
+        secrets:
+            - redis_kong_password
         networks:
             - vibranium-staging-network
         deploy:
@@ -892,8 +980,10 @@ services:
         container_name: kong-db-staging
         environment:
             POSTGRES_USER: kong
-            POSTGRES_PASSWORD: ${KONG_DB_PASSWORD:?KONG_DB_PASSWORD is required — copie .env.example para .env}
+            POSTGRES_PASSWORD_FILE: /run/secrets/kong_db_password
             POSTGRES_DB: kong
+        secrets:
+            - kong_db_password
         volumes:
             - kong_db_staging_data:/var/lib/postgresql/data
         networks:
@@ -919,7 +1009,9 @@ services:
             KONG_PG_HOST: kong-database
             KONG_PG_PORT: 5432
             KONG_PG_USER: kong
-            KONG_PG_PASSWORD: ${KONG_DB_PASSWORD:?KONG_DB_PASSWORD is required — copie .env.example para .env}
+            KONG_PG_PASSWORD_FILE: /run/secrets/kong_db_password
+        secrets:
+            - kong_db_password
         depends_on:
             kong-database:
                 condition: service_healthy
@@ -939,9 +1031,11 @@ services:
             KONG_PG_HOST: kong-database
             KONG_PG_PORT: 5432
             KONG_PG_USER: kong
-            KONG_PG_PASSWORD: ${KONG_DB_PASSWORD:?KONG_DB_PASSWORD is required — copie .env.example para .env}
+            KONG_PG_PASSWORD_FILE: /run/secrets/kong_db_password
             KONG_PROXY_ACCESS_LOG: /dev/stdout
             KONG_ADMIN_ACCESS_LOG: /dev/stdout
+        secrets:
+            - kong_db_password
         depends_on:
             kong-migration:
                 condition: service_completed_successfully
@@ -983,7 +1077,9 @@ services:
             # O `iss` dos JWTs emitidos usa o hostname acessível ao cliente — em staging
             # é localhost:8080. Em ambiente com DNS público, substituir pela URL externa.
             KEYCLOAK_ISSUER: http://localhost:8080/realms/orderbook-realm
-            REDIS_KONG_PASSWORD: ${REDIS_KONG_PASSWORD}
+            REDIS_KONG_PASSWORD_FILE: /run/secrets/redis_kong_password
+        secrets:
+            - redis_kong_password
         depends_on:
             kong:
                 condition: service_healthy

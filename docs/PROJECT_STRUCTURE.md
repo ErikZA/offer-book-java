@@ -148,9 +148,13 @@ libs/common-utils/src/main/java/com/vibranium/utils/
 │   └── CorrelationIdGenerator.java     # Geração de UUID v4 para rastreabilidade
 ├── messaging/
 │   └── AmqpHeaderExtractor.java        # Extração de correlation-ID de headers AMQP
-└── outbox/
-    ├── AbstractOutboxPublisher.java    # Template Method base do Transactional Outbox (AT-10)
-    └── OutboxConfigProperties.java     # Record (batchSize, pollingIntervalMs) com validação
+├── outbox/
+│   ├── AbstractOutboxPublisher.java    # Template Method base do Transactional Outbox (AT-10)
+│   └── OutboxConfigProperties.java     # Record (batchSize, pollingIntervalMs) com validação
+└── secret/
+    ├── SecretFileReader.java           # Leitura de Docker Secrets com fallback para env vars (AT-13)
+    ├── SecretReadException.java        # RuntimeException para falhas de leitura de secrets
+    └── DockerSecretEnvironmentPostProcessor.java  # Auto-injeta secrets no Spring Environment (AT-13)
 ```
 
 **Utilitários disponíveis:**
@@ -162,6 +166,8 @@ libs/common-utils/src/main/java/com/vibranium/utils/
 | `AmqpHeaderExtractor` | `extractCorrelationId(MessageProperties)` | Prioridade: `message-id` → `X-Correlation-ID` |
 | `AbstractOutboxPublisher<T>` | `pollAndPublish()` | Template Method: polling → dispatch → publish → recover |
 | `OutboxConfigProperties` | `batchSize()` / `pollingIntervalMs()` | Configuração base do Outbox (imutável, com validação) |
+| `SecretFileReader` | `readSecretFile(Path)` / `readSecretWithFallback(...)` | Leitura de Docker Secrets com fallback para env vars |
+| `DockerSecretEnvironmentPostProcessor` | `postProcessEnvironment(...)` | Injeta Docker Secrets como Spring properties antes do contexto |
 
 > **⚠️ BREAKING CHANGE (US-007):** O `order-service` era configurado com `WRITE_DATES_AS_TIMESTAMPS=true` (epoch-millis). Após a unificação via `VibraniumJacksonConfig`, ambos os serviços serializam datas como **ISO-8601**. Campos que precisam de epoch-millis devem usar `@JsonFormat(shape = NUMBER_INT)` individualmente.
 
@@ -170,6 +176,7 @@ libs/common-utils/src/main/java/com/vibranium/utils/
 - Manipuladores de erro globais (`@ControllerAdvice`)
 - Utilitários para logs (OpenTelemetry)
 - ~~Classes base para o padrão *Transactional Outbox*~~ ✅ Implementado (AT-10): `AbstractOutboxPublisher<T>` + `OutboxConfigProperties`
+- ~~Utilitários para gestão de secrets~~ ✅ Implementado (AT-13): `SecretFileReader` + `DockerSecretEnvironmentPostProcessor`
 - Exceções customizadas e respostas de erro padrão
 
 ### 3. 🚀 `apps/` — Os Microsserviços
@@ -217,6 +224,7 @@ Cada microsserviço é uma aplicação Spring Boot independente que aplica **Arq
 - **`infra/`:** Docker Compose e configs de infraestrutura centralizada. Requer o arquivo `.env` na raiz (copie `.env.example`). Execute `docker compose -f infra/docker-compose.dev.yml up -d` para subir RabbitMQ, PostgreSQL, MongoDB, Redis, Keycloak, Kong, Jaeger, **Prometheus**, **Grafana** e os dois microsserviços.
 - **`infra/prometheus/`:** Configuração de scrape do Prometheus (targets e intervalo).
 - **`infra/grafana/`:** Dashboards JSON, provisioning de datasources e alertas do Grafana.
+- **`infra/secrets/`:** Templates (`.txt.example`) para Docker Secrets. Secrets reais (`.txt`) são ignorados pelo `.gitignore`. Ver [SECRETS_MANAGEMENT.md](./SECRETS_MANAGEMENT.md).
 - **`tests/`:** Docker Compose isolado para testes de integração. Execute `docker compose -f tests/docker-compose.test.yml up` para rodar a suite completa.
 
 ---
@@ -317,6 +325,8 @@ make ... (Linux/macOS)
 | `AmqpHeaderExtractor` | Utility | **libs/common-utils/** |
 | `AbstractOutboxPublisher` | Base Class | **libs/common-utils/** |
 | `OutboxConfigProperties` | Config Record | **libs/common-utils/** |
+| `SecretFileReader` | Utility | **libs/common-utils/** |
+| `DockerSecretEnvironmentPostProcessor` | EnvironmentPostProcessor | **libs/common-utils/** |
 
 ## ✨ Destaques da Novo Organização
 
@@ -330,5 +340,5 @@ make ... (Linux/macOS)
 
 ---
 
-**Última Atualização**: 06/03/2026 (Atividade 3 — E2eSecurityConfig e E2eDataSeederController movidos para src/test/java em ambos os serviços; JAR de produção não contém classes E2E)
+**Última Atualização**: 07/03/2026 (Atividade 13 — Migração de credenciais para Docker Secrets; SecretFileReader + DockerSecretEnvironmentPostProcessor em common-utils; infra/secrets/ com templates)
 **Status**: ✅ Completo e Funcional

@@ -1,0 +1,5 @@
+# Docker Secret → Spring Environment property mapping
+# Registra o EnvironmentPostProcessor que lê /run/secrets/ e injeta
+# as credenciais como propriedades Spring ANTES do contexto subir.
+org.springframework.boot.env.EnvironmentPostProcessor=\
+    com.vibranium.utils.secret.DockerSecretEnvironmentPostProcessor

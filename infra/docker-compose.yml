@@ -14,9 +14,24 @@ version: '3.8'
 # - Isolamento de rede Docker
 # - Limites de recursos CPU/Memória
 # - Restart policy: unless-stopped
-# - Variáveis sensíveis devem ser externalizadas em produção real (Docker Secrets)
+# - Credenciais via Docker Secrets (arquivos em /run/secrets/)
 # - Portas administrativas restritas ao loopback onde possível
 # ================================================================================
+
+# ================================================================================
+# Docker Secrets — credenciais lidas de arquivo em vez de variáveis de ambiente.
+# `docker inspect` NÃO mostra o conteúdo dos secrets (apenas o nome).
+# Veja docs/SECRETS_MANAGEMENT.md para instruções de criação e rotação.
+# ================================================================================
+secrets:
+    postgres_password:
+        file: ./secrets/postgres_password.txt
+    rabbitmq_password:
+        file: ./secrets/rabbitmq_password.txt
+    keycloak_admin_password:
+        file: ./secrets/keycloak_admin_password.txt
+    redis_kong_password:
+        file: ./secrets/redis_kong_password.txt
 
 services:
     # ================================================================================
@@ -38,8 +53,11 @@ services:
 
         environment:
             POSTGRES_USER: postgres
-            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copie .env.example para .env}
+            POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
             POSTGRES_DB: vibranium_infra
+
+        secrets:
+            - postgres_password
 
         # Porta 5432 NÃO exposta ao host intencionalmente:
         # Kong e Keycloak acessam via rede Docker interna (hostname: postgresql).
@@ -83,8 +101,11 @@ services:
             KONG_PG_HOST: postgresql
             KONG_PG_PORT: 5432
             KONG_PG_USER: postgres
-            KONG_PG_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copie .env.example para .env}
+            KONG_PG_PASSWORD_FILE: /run/secrets/postgres_password
             KONG_PG_DATABASE: vibranium_infra
+
+        secrets:
+            - postgres_password
 
         depends_on:
             postgresql:
@@ -121,7 +142,7 @@ services:
             KONG_PG_HOST: postgresql
             KONG_PG_PORT: 5432
             KONG_PG_USER: postgres
-            KONG_PG_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copie .env.example para .env}
+            KONG_PG_PASSWORD_FILE: /run/secrets/postgres_password
             KONG_PG_DATABASE: vibranium_infra
             KONG_ADMIN_LISTEN: 0.0.0.0:8001
             KONG_ADMIN_GUI_LISTEN: 0.0.0.0:8002
@@ -130,6 +151,9 @@ services:
             KONG_UPSTREAM_KEEPALIVE: '60'
             KONG_UPSTREAM_KEEPALIVE_REQUESTS: '100'
             KONG_UPSTREAM_KEEPALIVE_TIMEOUT: '60'
+
+        secrets:
+            - postgres_password
 
         ports:
             - '8000:8000'
@@ -182,7 +206,10 @@ services:
 
         environment:
             RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
-            RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
+            RABBITMQ_DEFAULT_PASS_FILE: /run/secrets/rabbitmq_password
+
+        secrets:
+            - rabbitmq_password
 
         ports:
             - '5672:5672'
@@ -238,12 +265,12 @@ services:
             KC_DB: postgres
             KC_DB_URL: jdbc:postgresql://postgresql:5432/vibranium_infra
             KC_DB_USERNAME: postgres
-            KC_DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copie .env.example para .env}
+            KC_DB_PASSWORD_FILE: /run/secrets/postgres_password
             KC_DB_SCHEMA: keycloak
             KEYCLOAK_ADMIN: admin
-            KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required — copie .env.example para .env}
+            KEYCLOAK_ADMIN_PASSWORD_FILE: /run/secrets/keycloak_admin_password
             KC_BOOTSTRAP_ADMIN_USERNAME: admin
-            KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD is required — copie .env.example para .env}
+            KC_BOOTSTRAP_ADMIN_PASSWORD_FILE: /run/secrets/keycloak_admin_password
             KC_HTTP_ENABLED: 'true'
             KC_HTTP_PORT: 8080
             KC_HOSTNAME_STRICT: 'false'
@@ -257,10 +284,15 @@ services:
             KK_TO_RMQ_URL: rabbitmq
             KK_TO_RMQ_PORT: 5672
             KK_TO_RMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
-            KK_TO_RMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
+            KK_TO_RMQ_PASSWORD_FILE: /run/secrets/rabbitmq_password
             KK_TO_RMQ_VHOST: /
             KK_TO_RMQ_EXCHANGE: amq.topic
             KK_TO_RMQ_USE_TLS: 'false'
+
+        secrets:
+            - postgres_password
+            - keycloak_admin_password
+            - rabbitmq_password
 
         ports:
             - '8080:8080'
@@ -315,9 +347,12 @@ services:
                     cpus: '0.10'
                     memory: 32M
 
-        # requirepass via env var — senha dedicada ao Redis do Kong (diferente do app).
+        # requirepass via Docker Secret — senha dedicada ao Redis do Kong (diferente do app).
         # appendonly=no: contadores de rate-limiting não precisam de persistência.
-        command: ['redis-server', '--appendonly', 'no', '--save', '', '--requirepass', '${REDIS_KONG_PASSWORD:?REDIS_KONG_PASSWORD is required — copie .env.example para .env}']
+        entrypoint: ['sh', '-c', 'redis-server --appendonly no --save "" --requirepass "$$(cat /run/secrets/redis_kong_password)"']
+
+        secrets:
+            - redis_kong_password
 
         # Porta NÃO exposta ao host intencionalmente.
         # Kong acessa via hostname redis-kong na rede Docker interna.
@@ -359,7 +394,10 @@ services:
             KEYCLOAK_REALM: orderbook-realm
             KONG_CONSUMER_NAME: keycloak-realm-consumer
             KEYCLOAK_ISSUER: http://localhost:8080/realms/orderbook-realm
-            REDIS_KONG_PASSWORD: ${REDIS_KONG_PASSWORD}
+            REDIS_KONG_PASSWORD_FILE: /run/secrets/redis_kong_password
+
+        secrets:
+            - redis_kong_password
 
         depends_on:
             kong:
