@@ -21,6 +21,9 @@ Implementa CQRS com PostgreSQL no Command Side (escrita) e MongoDB no Query Side
   `FundsReservedEventConsumer` separa a operação Redis do escopo JPA em 3 fases via
   `TransactionTemplate` (Fase 1: JPA TX; Fase 2: `tryMatch` sem TX; Fase 3: JPA TX + Outbox).
   Compensação automática (`removeFromBook` + `cancelOrder`) em falha da Fase 3 (AT-2.1.1)
+- ✅ Compensação Redis avançada via `undo_match.lua`: quando a Fase 3 falha após match bem-sucedido,
+  reverte atomicamente contrapartes consumidas/modificadas (FULL/PARTIAL) — restaura o livro ao estado
+  anterior ao match com idempotência. Métrica `vibranium.redis.compensation` (AT-17)
 - ✅ Consumir eventos `REGISTER` do Keycloak (plugin aznamier) via `amq.topic` e popular `tb_user_registry`
 - ✅ Rotear mensagens falhas para Dead Letter Queue (`order.dead-letter`) após retry esgotado
 - ✅ Propagação W3C TraceContext em mensagens AMQP (`traceparent` header) e enriquecimento de spans com `saga.correlation_id` e `order.id` (AT-14.1)
@@ -315,6 +318,9 @@ mvn test -pl apps/order-service -Dtest="FundsReleaseFailedEventConsumerTest,Fund
 
 # Apenas os testes de deduplicação Redis Lua (AT-16)
 mvn test -pl apps/order-service -Dtest="RedisDeduplicationLuaTest,RedisDeduplicationConsumerTest"
+
+# Apenas os testes de compensação undo_match.lua (AT-17)
+mvn test -pl apps/order-service -Dtest="UndoMatchLuaTest,CompensationOnJpaFailureTest,CompensationMetricsTest"
 ```
 
 ## 🧪 Cobertura de Testes de Integração
@@ -345,6 +351,9 @@ mvn test -pl apps/order-service -Dtest="RedisDeduplicationLuaTest,RedisDeduplica
 | **`FundsReleaseFailedDlqTest`** | **Integração (DLQ)** | **Payload tóxico roteado para DLQ; smoke test da fila DLQ dedicada** | **Ativ.5** |
 | **`RedisDeduplicationLuaTest`** | **Integração (Redis Lua)** | **TC-DEDUP-1..4: HEXISTS guard — BUY/SELL duplicata retorna ALREADY_IN_BOOK; orderIds distintos OK; ordem consumida pode ser reinserida** | **AT-16** |
 | **`RedisDeduplicationConsumerTest`** | **Integração (Consumer)** | **TC-DEDUP-CONSUMER-1/2: re-entrega de BUY/SELL após match — ACK idempotente sem re-inserção no livro** | **AT-16** |
+| **`UndoMatchLuaTest`** | **Integração (Redis Lua)** | **TC-UNDO-1..6: FULL/PARTIAL match reversal, idempotência 2×, multi-match, SELL→BID** | **AT-17** |
+| **`CompensationOnJpaFailureTest`** | **Integração (End-to-End)** | **TC-COMP-1/2: match+undoMatch direto, no-match+removeFromBook** | **AT-17** |
+| **`CompensationMetricsTest`** | **Integração (Métricas)** | **TC-METRICS-1/2: `vibranium.redis.compensation` counter incrementado por undoMatch** | **AT-17** |
 
 ### AT-11.1 — Hash Tags Redis para Redis Cluster
 

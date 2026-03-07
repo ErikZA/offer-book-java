@@ -315,6 +315,7 @@ Acesso: `GET /actuator/prometheus` — retorna todas as métricas em formato tex
 | `vibranium.funds.released` | Counter | wallet-service | `reason=SAGA_COMPENSATION` | Incrementado em `WalletService.releaseFunds()` |
 | `vibranium.saga.duration` | Timer | order-service | `outcome=MATCHED\|CANCELLED` | Tempo `createdAt → match/cancel` da Saga TCC |
 | `vibranium.redis.match.latency` | Timer | order-service | — | Latência da execução Lua no Redis (match engine) |
+| `vibranium.redis.compensation` | Counter | order-service | — | Incrementado em cada execução bem-sucedida do `undoMatch()` (AT-17) |
 | `vibranium.outbox.publish.latency` | Timer | ambos | — | Latência de publicação de cada mensagem outbox |
 | `vibranium.outbox.queue.depth` | Gauge | ambos | — | Número de mensagens pendentes no outbox |
 
@@ -334,6 +335,7 @@ Acesso: `GET /actuator/prometheus` — retorna todas as métricas em formato tex
 |-------|---------|--------|
 | `OrderMetricsTest` | order-service | Valida `orders.created` (BUY + SELL) e `outbox.queue.depth` |
 | `PrometheusEndpointTest` | order-service | Valida `PrometheusMeterRegistry` bean + scrape contém métricas |
+| `CompensationMetricsTest` | order-service | Valida `redis.compensation` counter após `undoMatch()` (AT-17) |
 | `WalletMetricsTest` | wallet-service | Valida `funds.reserved` (BRL + VIB), `funds.settled`, `outbox.queue.depth` |
 | `PrometheusEndpointTest` | wallet-service | Valida `PrometheusMeterRegistry` bean + scrape contém métricas |
 

@@ -53,6 +53,7 @@ No nosso MVP, usaremos o DDD para separar claramente as responsabilidades:
   * **Política DLQ para race conditions:** `applyMatch` chamado em `CANCELLED` (ex: evento de match chegando após cancelamento assíncrono) lança `IllegalStateException` → container RabbitMQ envia NACK → mensagem roteada para DLQ.
   * Cada chamada ao método `applyMatch(executedQty)` decrementa `remainingAmount` e transita para `PARTIAL` (se há residual) ou `FILLED` (se zerou).
   * **O Redis Sorted Set (livro) e o PostgreSQL (estado da ordem) ficam sincronizados pelo Script Lua atômico**: o Lua faz o `ZADD` do residual e retorna a quantidade executada; o Java usa a quantidade retornada para chamar `applyMatch` e persistir.
+  * **Compensação Lua (AT-17):** Se a persistência JPA (Fase 3) falhar após um match bem-sucedido no Redis, o `undo_match.lua` reverte atomicamente as contrapartes consumidas/modificadas — restaurando o livro ao estado anterior ao match. Isso complementa o `removeFromBook` do AT-2.1.1 (que só removia a ordem ingressante).
 * A comunicação entre a `Wallet` e o `Order Book` não é feita chamando métodos um do outro diretamente, mas sim conversando através de **Eventos** (nosso Event Storming!).
 
 

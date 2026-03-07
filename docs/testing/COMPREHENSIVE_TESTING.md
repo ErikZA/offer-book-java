@@ -38,7 +38,9 @@
 34. [@JsonIgnoreProperties em Todos os Records — Forward Compatibility (AT-5.2.1)](#jsonignoreproperties-em-todos-os-records--forward-compatibility-at-521)
 35. [Inicialização do Redis Cluster no Staging — redis-cluster-init (AT-5.1.1)](#inicialização-do-redis-cluster-no-staging--redis-cluster-init-at-511)
 36. [Rotas GET Orders no Kong — Query Side CQRS via Gateway (Atividade 2)](#rotas-get-orders-no-kong--query-side-cqrs-via-gateway-atividade-2)
-37. [Referências](#referências)
+37. [Deduplicação de Ordens no Redis via Lua — HEXISTS Guard (AT-16)](#deduplicação-de-ordens-no-redis-via-lua--hexists-guard-at-16)
+38. [Atomicidade Redis+PostgreSQL com Lua Compensatório — undo_match.lua (AT-17)](#atomicidade-redispostgresql-com-lua-compensatório--undo_matchlua-at-17)
+39. [Referências](#referências)
 
 ---
 
@@ -3417,6 +3419,10 @@ acionada automaticamente:
 }
 ```
 
+> **Evolução AT-17:** A compensação foi aprimorada para diferenciar entre resultado
+> vazio (sem match → `removeFromBook`) e resultado com matches (`undoMatch` via
+> `undo_match.lua` — restaura contrapartes consumidas/modificadas). Ver seção 38.
+
 | Passo de compensação | Ação | Garantia |
 |---|---|---|
 | `removeFromBook()` | Remove a ordem do Sorted Set Redis | Livro de ofertas não fica com ordem "fantasma" |
@@ -4683,10 +4689,128 @@ mvn test -pl apps/order-service
 
 ---
 
+## Atomicidade Redis+PostgreSQL com Lua Compensatório — undo_match.lua (AT-17)
+
+### Problema
+
+A Saga TCC (AT-2.1.1) já protegia contra falhas de persistência na Fase 3 via `removeFromBook()`. No entanto, quando a Fase 2 (`tryMatch()`) executa com **sucesso** — consumindo/modificando contrapartes no Redis — e a Fase 3 falha, o `removeFromBook()` remove apenas a ordem **ingressante** do livro. As **contrapartes** consumidas (FULL match) ou com quantidade reduzida (PARTIAL match) permanecem em estado inconsistente:
+
+- **FULL match**: contraparte removida do Sorted Set (`ZREM`) e do `order_index` (`HDEL`) pelo `match_engine.lua` — mas sem registro no PostgreSQL, o match não existe.
+- **PARTIAL match**: contraparte teve seu membro substituído por um com `qty` reduzida — a quantidade original está perdida.
+- **Ordem ingressante PARTIAL**: se o `match_engine.lua` retornou `PARTIAL`, a ordem ingressante foi reinserida no livro com `qty` residual — essa inserção também precisa ser revertida.
+
+### Solução: Script Lua `undo_match.lua`
+
+Um novo script Lua (`undo_match.lua`) executa a reversão atômica de um match no Redis, restaurando o estado anterior ao `match_engine.lua`. A atomicidade é garantida pelo Redis: um script Lua é executado como operação atômica (single-threaded) — nenhum outro comando Redis pode intercalar.
+
+#### Protocolo de ARGV
+
+```
+ARGV[1] = incomingOrderType   "BUY" ou "SELL"
+ARGV[2] = incomingOrderId     UUID da ordem ingressante
+ARGV[3] = matchCount          número de contrapartes a restaurar
+
+Para cada contraparte i (0-indexed), base = 4 + i*5:
+  ARGV[base]   = counterpartValue   "orderId|userId|walletId|qty|correlId|epochMs"
+  ARGV[base+1] = counterpartScore   price × 100_000_000 (PRICE_PRECISION)
+  ARGV[base+2] = fillType           "FULL", "PARTIAL_ASK" ou "PARTIAL_BID"
+  ARGV[base+3] = originalQty        quantidade original antes do match
+  ARGV[base+4] = counterpartOrderId UUID da contraparte
+```
+
+#### Lógica de restauração por `fillType`
+
+| fillType | O que o `match_engine.lua` fez | O que o `undo_match.lua` reverte |
+|---|---|---|
+| `FULL` | `ZREM` + `HDEL` (contraparte totalmente consumida) | `ZADD` com valor/score originais + `HSET` no `order_index` |
+| `PARTIAL_ASK` | `ZREM` do membro antigo + `ZADD` com qty reduzida | `ZREM` do membro residual + `ZADD` do membro original (qty completa) |
+| `PARTIAL_BID` | Mesmo padrão do `PARTIAL_ASK` mas no `bids_key` | Mesmo padrão de restauração no `bids_key` |
+
+#### Idempotência
+
+Antes de re-inserir cada contraparte, o script verifica via `ZSCORE` se o membro já existe no Sorted Set. Se já existir com o score esperado, é um no-op para aquela contraparte. Executar `undo_match.lua` N vezes com os mesmos argumentos produz o mesmo resultado.
+
+#### Fallback de score via `order_index`
+
+Para **FULL matches**, o `match_engine.lua` executa `HDEL` no `order_index`, perdendo o score original. O Consumer resolve isso consultando o PostgreSQL (`orderRepository.findById()`) para obter o preço da contraparte e calcular o score (`price × PRICE_PRECISION`).
+
+Para **PARTIAL matches**, o `order_index` preserva a entrada (com qty atualizada). Se o score passado for `0`, o Lua faz fallback via `HGET` no `order_index` para recuperar o score.
+
+#### Remoção da ordem ingressante residual
+
+Se o `match_engine.lua` retornou `PARTIAL`, a ordem ingressante foi reinserida no livro com qty residual. O `undo_match.lua` remove essa inserção via `HGET → ZREM → HDEL` no `order_index`, garantindo que o livro volta ao estado anterior ao match.
+
+### Integração no Consumer — Compensação diferenciada
+
+O catch da Fase 3 no `FundsReservedEventConsumer` foi aprimorado para diferenciar entre resultado vazio (sem match) e resultado com matches:
+
+```java
+} catch (Exception phase3Ex) {
+    if (result.isEmpty()) {
+        // Sem match: remove a ordem ingressante do livro (comportamento AT-2.1.1)
+        matchEngine.removeFromBook(order.getId(), order.getOrderType());
+    } else {
+        // COM match: reverte contrapartes consumidas/modificadas via undo_match.lua
+        Map<UUID, BigDecimal> counterpartPrices = new HashMap<>();
+        for (MatchResult mr : result) {
+            orderRepository.findById(mr.counterpartId())
+                .ifPresent(cp -> counterpartPrices.put(cp.getId(), cp.getPrice()));
+        }
+        matchEngine.undoMatch(order.getOrderType(), order.getId(),
+                             result, counterpartPrices);
+    }
+    // Sempre cancela a ordem em TX separada
+    cancelOrder(freshOrder, FailureReason.INTERNAL_ERROR, "FASE3_PERSISTENCE_FAILURE");
+}
+```
+
+### Métrica de compensação
+
+| Métrica | Tipo | Descrição |
+|---------|------|-----------|
+| `vibranium.redis.compensation` | Counter | Incrementado em cada execução bem-sucedida do `undoMatch()` |
+
+Registrado em `RedisMatchEngineAdapter` via `Counter.builder("vibranium.redis.compensation").register(meterRegistry)`.
+
+### Testes TDD
+
+| Classe | Testes | Descrição |
+|--------|--------|-----------|
+| `UndoMatchLuaTest` | 6 | TC-UNDO-1 (FULL BUY→ASK), TC-UNDO-2 (PARTIAL_ASK), TC-UNDO-3 (PARTIAL book exhausted), TC-UNDO-4 (idempotência 2×), TC-UNDO-5 (multi-match 3 ASKs), TC-UNDO-6 (SELL→BID) |
+| `CompensationOnJpaFailureTest` | 2 | TC-COMP-1 (match + undoMatch direto), TC-COMP-2 (no-match + removeFromBook) |
+| `CompensationMetricsTest` | 2 | TC-METRICS-1 (single undo incrementa counter), TC-METRICS-2 (dois undos incrementam por 2) |
+
+Todos os testes estendem `AbstractIntegrationTest` (Testcontainers: PostgreSQL + RabbitMQ + Redis).
+
+### Critérios de Aceite
+
+| ID | Critério | Implementação | Teste |
+|---|---|---|---|
+| AT17-C1 | `undo_match.lua` reverte FULL match atomicamente | ZADD + HSET restauram contraparte; ZSCORE garante idempotência | TC-UNDO-1, TC-UNDO-6 |
+| AT17-C2 | `undo_match.lua` reverte PARTIAL match | ZREM residual + ZADD original + atualiza order_index | TC-UNDO-2, TC-UNDO-3 |
+| AT17-C3 | Idempotência: 2× undo = mesmo estado | ZSCORE check antes de ZADD | TC-UNDO-4 |
+| AT17-C4 | Multi-match: N contrapartes restauradas | Loop com bloco de 5 ARGV por contraparte | TC-UNDO-5 |
+| AT17-C5 | Consumer chama `undoMatch` na Fase 3 com matches | Catch diferenciado: empty → removeFromBook, non-empty → undoMatch | TC-COMP-1, TC-COMP-2 |
+| AT17-C6 | Métrica `vibranium.redis.compensation` incrementada | Counter no `RedisMatchEngineAdapter.undoMatch()` | TC-METRICS-1, TC-METRICS-2 |
+
+### Artefatos AT-17
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `apps/order-service/src/main/resources/lua/undo_match.lua` | Novo | Script Lua de compensação atômica — reverte FULL/PARTIAL matches com idempotência |
+| `apps/order-service/src/main/java/.../redis/RedisMatchEngineAdapter.java` | Alterado | +`undoMatchScript` (DefaultRedisScript), +`compensationCounter` (Counter), +`undoMatch()` method |
+| `apps/order-service/src/main/java/.../messaging/FundsReservedEventConsumer.java` | Alterado | Fase 3 catch: compensação diferenciada (removeFromBook vs undoMatch) com lookup de preços via DB |
+| `apps/order-service/src/test/java/.../integration/UndoMatchLuaTest.java` | Novo | 6 testes de integração Lua: TC-UNDO-1..6 |
+| `apps/order-service/src/test/java/.../integration/CompensationOnJpaFailureTest.java` | Novo | 2 testes de integração end-to-end: TC-COMP-1/2 |
+| `apps/order-service/src/test/java/.../integration/CompensationMetricsTest.java` | Novo | 2 testes de integração de métricas: TC-METRICS-1/2 |
+
+---
+
 **Status**: ✅ Consolidado e Completo  
-**Última atualização**: 6 de março de 2026
+**Última atualização**: 7 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-17 (2026-03-07)**: Atomicidade Redis+PostgreSQL com Lua Compensatório — `undo_match.lua` reverte atomicamente matches (FULL/PARTIAL) quando Fase 3 JPA falha. `RedisMatchEngineAdapter.undoMatch()` com `Counter` `vibranium.redis.compensation`. `FundsReservedEventConsumer` Fase 3 catch diferenciado: empty→removeFromBook, non-empty→undoMatch com lookup de preços via DB. 10 novos testes TDD (6 Lua integração + 2 compensation end-to-end + 2 métricas), 0 regressões. Adicionada seção 38 neste guia.
 > - **AT-16 (2026-03-06)**: Deduplicação de Ordens no Redis via Lua — HEXISTS guard no `match_engine.lua` verifica `order_index` antes de inserção; retorna `ALREADY_IN_BOOK` para ordens duplicadas. `RedisMatchEngineAdapter.parseResult()` trata novo status; `FundsReservedEventConsumer` faz ACK idempotente entre Fase 2 e 3. 8 novos testes TDD (4 Lua integração + 2 consumer integração + 2 parseResult unitários), 39 total, 0 regressões. Adicionada seção 37 neste guia.
 > - **Atividade 3 (2026-03-06)**: Movimentação de `E2eSecurityConfig` de `src/main/java` para `src/test/java` em `order-service` e `wallet-service` — classes de bypass de segurança para E2E não são mais incluídas no JAR de produção. Novo `Dockerfile.e2e` (estratégia exploded JAR + injeção de `target/test-classes/` em `BOOT-INF/classes/`) para ambos os serviços. `docker-compose.e2e.yml` atualizado para usar `Dockerfile.e2e`. `maven-failsafe-plugin` adicionado a ambos os POMs com `<include>**/ProductionJarSecurityIT.java</include>`. 6 novos testes TDD (3 por serviço): `ProductionJarSecurityIT` (failsafe, introspecção de JAR via `java.util.jar.JarFile` — asserta ausência de `E2eSecurityConfig.class` e `E2eDataSeederController.class`), `ProductionProfileSecurityTest` (verifica que nenhum bean `E2eSecurityConfig` existe no contexto com profile "test" e `/e2e/` retorna 404), `E2eProfileStillWorksTest` (verifica que beans E2E estão ativos com profile "e2e" e endpoints acessíveis sem autenticação). `order-service`: 169 surefire + 2 failsafe, BUILD SUCCESS. `wallet-service`: 131 surefire + 2 failsafe, BUILD SUCCESS.
 > - **Atividade 2 (2026-03-06)**: Rotas GET Orders no Kong — Query Side CQRS via Gateway. `infra/kong/kong-init.yml` atualizado com `list-orders-route` (`GET /api/v1/orders`) e `get-order-by-id-route` (`GET ~/api/v1/orders/[^/]+$`), cada uma com rate-limiting 200 req/s route-level (sobrescreve service-level 100 req/s do POST). `infra/kong/kong-setup.sh` sincronizado com as mesmas rotas (STEP 3b/3c) e plugins por rota (jwt `run_on_preflight=false`, rate-limiting 200/s, cors). Topologia final: 5 rotas idênticas em ambos os arquivos (`place-order-route`, `list-orders-route`, `get-order-by-id-route`, `get-wallet-route`, `update-wallet-balance-route`). `infra/kong/kong-config.md` reescrito com tabela completa de rotas, plugins, consumer JWT e mapeamento controller→rota. Criado `tests/AT-kong-routes-validation.sh` com 2 seções: (1) Admin API — existência de rota, `strip_path=false`, métodos, plugins e rate-limits; (2) Proxy — 401 sem JWT em todas as 5 rotas. FASE RED: GET `/api/v1/orders` retornava 404. FASE GREEN: 401 (rota existe, JWT obrigatório). Adicionada seção 36 neste guia.

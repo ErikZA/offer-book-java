@@ -21,6 +21,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import io.micrometer.core.instrument.Counter;
 import org.springframework.data.redis.core.Cursor;
 import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.ZSetOperations;
@@ -106,6 +107,16 @@ public class RedisMatchEngineAdapter {
      */
     private DefaultRedisScript<Long> removeScript;
 
+    /**
+     * AT-17: Script Lua de compensação (undo_match.lua).
+     * Reverte atomicamente um match executado pelo match_engine.lua,
+     * restaurando contrapartes no sorted set e removendo inserções residuais.
+     */
+    private DefaultRedisScript<Long> undoMatchScript;
+
+    /** AT-17: Contador de compensações Redis executadas. */
+    private final Counter compensationCounter;
+
     public RedisMatchEngineAdapter(StringRedisTemplate redisTemplate,
                                    MeterRegistry meterRegistry,
                                    CircuitBreaker circuitBreaker) {
@@ -113,6 +124,9 @@ public class RedisMatchEngineAdapter {
         this.circuitBreaker = circuitBreaker;
         this.redisMatchLatencyTimer = Timer.builder("vibranium.redis.match.latency")
                 .description("Latency of Redis EVALSHA match engine execution")
+                .register(meterRegistry);
+        this.compensationCounter = Counter.builder("vibranium.redis.compensation")
+                .description("Number of Redis undo_match compensations executed (AT-17)")
                 .register(meterRegistry);
     }
 
@@ -129,6 +143,12 @@ public class RedisMatchEngineAdapter {
         removeScript.setScriptSource(
                 new ResourceScriptSource(new ClassPathResource("lua/remove_from_book.lua")));
         removeScript.setResultType(Long.class);
+
+        // AT-17: carrega o script de compensação (undo_match)
+        undoMatchScript = new DefaultRedisScript<>();
+        undoMatchScript.setScriptSource(
+                new ResourceScriptSource(new ClassPathResource("lua/undo_match.lua")));
+        undoMatchScript.setResultType(Long.class);
     }
 
     // =========================================================================
@@ -443,6 +463,109 @@ public class RedisMatchEngineAdapter {
         logger.info("requeueResidual (fallback manual): fillType={} counterpartId={} remainingQty={} key={}",
                 result.fillType(), result.counterpartId(),
                 result.remainingCounterpartQty(), targetKey);
+    }
+
+    /**
+     * Reverte atomicamente um match no Redis via {@code undo_match.lua} (AT-17).
+     *
+     * <p>Invocado no catch da Fase 3 do {@code FundsReservedEventConsumer} quando
+     * o commit JPA falha após um match bem-sucedido. Restaura as contrapartes
+     * consumidas/modificadas pelo {@code match_engine.lua} e remove a inserção
+     * residual da ordem ingressante (se PARTIAL).</p>
+     *
+     * <p><strong>Idempotência:</strong> executar 2× com os mesmos argumentos produz
+     * o mesmo resultado — o Lua verifica via {@code ZSCORE} se o membro já existe
+     * antes de re-inserir.</p>
+     *
+     * <p><strong>Tentativa única:</strong> NÃO faz retry. Se o Redis falhar durante
+     * a compensação, loga como CRITICAL e retorna -1. O caller deve alertar para
+     * resolução manual.</p>
+     *
+     * @param incomingOrderType  tipo da ordem ingressante (BUY ou SELL)
+     * @param incomingOrderId    orderId da ordem ingressante
+     * @param matchResults       lista de MatchResult retornada pelo {@code tryMatch()}
+     * @param counterpartPrices  mapeamento counterpartId → preço original (para recálculo do score).
+     *                           Para PARTIAL matches o Lua usa order_index como fallback;
+     *                           para FULL matches este mapa é obrigatório (order_index foi HDEL).
+     *                           O Consumer obtém os preços via {@code orderRepository.findById()}.
+     * @return número de contrapartes restauradas, ou -1 se o Redis falhou
+     */
+    public int undoMatch(OrderType incomingOrderType, UUID incomingOrderId,
+                         List<MatchResult> matchResults,
+                         java.util.Map<UUID, BigDecimal> counterpartPrices) {
+        if (matchResults == null || matchResults.isEmpty()) {
+            logger.debug("undoMatch: nada a compensar (resultado vazio) orderId={}", incomingOrderId);
+            return 0;
+        }
+
+        try {
+            List<String> args = new ArrayList<>();
+            args.add(incomingOrderType.name());
+            args.add(incomingOrderId.toString());
+            args.add(String.valueOf(matchResults.size()));
+
+            for (MatchResult mr : matchResults) {
+                // Reconstruir o valor pipe-delimited da contraparte.
+                // Os campos correlId e epochMs não estão no MatchResult — usamos placeholders.
+                // O match_engine.lua retorna o member original como counterpartValue, mas
+                // parseSingleMatchEntry descarta correlId/epochMs. Para o undo, os campos
+                // essenciais são orderId, userId, walletId e qty (usados no próximo match);
+                // correlId e epochMs do member NÃO são usados pelo parseResult().
+                BigDecimal originalQty = "FULL".equals(mr.fillType())
+                        ? mr.matchedQty()
+                        : mr.matchedQty().add(mr.remainingCounterpartQty());
+
+                String counterpartValue = String.join("|",
+                        mr.counterpartId().toString(),
+                        mr.counterpartUserId(),
+                        mr.counterpartWalletId().toString(),
+                        originalQty.toPlainString(),
+                        "compensated",
+                        "0"
+                );
+
+                // Score da contraparte: obtido do mapa de preços (Consumer fez DB lookup).
+                // Para PARTIAL matches onde o mapa não tem a entrada, o undo_match.lua
+                // faz fallback via HGET no order_index (que preserva o score).
+                // Para FULL matches o order_index foi HDEL — o score do mapa é obrigatório.
+                long counterpartScore = 0L;
+                BigDecimal counterpartPrice = counterpartPrices.get(mr.counterpartId());
+                if (counterpartPrice != null) {
+                    counterpartScore = counterpartPrice.multiply(
+                            BigDecimal.valueOf(PRICE_PRECISION)).longValue();
+                }
+
+                args.add(counterpartValue);
+                args.add(String.valueOf(counterpartScore));
+                args.add(mr.fillType());
+                args.add(originalQty.toPlainString());
+                args.add(mr.counterpartId().toString());
+            }
+
+            Long restored = redisTemplate.execute(
+                    undoMatchScript,
+                    Arrays.asList(asksKey, bidsKey, orderIndexKey),
+                    args.toArray(new String[0])
+            );
+
+            int restoredCount = restored != null ? restored.intValue() : 0;
+
+            logger.info("undoMatch compensação executada: orderId={} incomingType={} matchCount={} restored={}",
+                    incomingOrderId, incomingOrderType, matchResults.size(), restoredCount);
+
+            // AT-17: incrementa métrica de compensação
+            compensationCounter.increment();
+
+            return restoredCount;
+
+        } catch (Exception ex) {
+            // CRITICAL: Redis falhou durante compensação — inconsistência residual inevitável.
+            // NÃO faz retry (regra obrigatória). Alertar para resolução manual.
+            logger.error("CRITICAL: undoMatch falhou (Redis indisponível durante compensação) — " +
+                            "inconsistência residual inevitável. orderId={} incomingType={} error={}",
+                    incomingOrderId, incomingOrderType, ex.getMessage(), ex);
+            return -1;
+        }
     }
 
     /**

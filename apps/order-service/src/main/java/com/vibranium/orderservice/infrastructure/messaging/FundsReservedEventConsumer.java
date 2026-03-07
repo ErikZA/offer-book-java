@@ -320,17 +320,38 @@ public class FundsReservedEventConsumer {
                     logger.error("Fase 3 falhou — falha ao persistir resultado: orderId={} matched={} error={}",
                             order.getId(), !result.isEmpty(), phase3Ex.getMessage(), phase3Ex);
 
-                    // Compensação Redis: se no-match, a ordem foi inserida no livro pelo Lua
-                    // porém a persistência JPA falhou. Remove do livro para manter consistência.
-                    // Para match: o Lua já consumiu a contraparte atomicamente — impossível
-                    // desfazer no Redis; apenas cancelamos a ordem no banco.
+                    // AT-17: Compensação Redis diferenciada por resultado do match.
                     if (result.isEmpty()) {
+                        // Sem match: a ordem foi inserida no livro pelo Lua. Remove do livro.
                         try {
                             matchEngine.removeFromBook(order.getId(), order.getOrderType());
                             logger.info("Compensação Redis removeFromBook executada: orderId={}", order.getId());
                         } catch (Exception removeEx) {
                             logger.error("Compensação removeFromBook falhou (Redis indisponível): orderId={} error={}",
                                     order.getId(), removeEx.getMessage());
+                        }
+                    } else {
+                        // COM match: o Lua consumiu/modificou contrapartes. Executar undo_match.lua
+                        // para restaurar o estado anterior no Redis.
+                        // Obter preços das contrapartes do PostgreSQL para calcular os scores.
+                        try {
+                            java.util.Map<UUID, java.math.BigDecimal> counterpartPrices = new java.util.HashMap<>();
+                            for (MatchResult mr : result) {
+                                orderRepository.findById(mr.counterpartId())
+                                        .ifPresent(cp -> counterpartPrices.put(
+                                                cp.getId(), cp.getPrice()));
+                            }
+                            int restored = matchEngine.undoMatch(
+                                    order.getOrderType(), order.getId(),
+                                    result, counterpartPrices);
+                            logger.info("Compensação Redis undoMatch executada: orderId={} restored={}",
+                                    order.getId(), restored);
+                        } catch (Exception undoEx) {
+                            // CRITICAL: compensação falhou — inconsistência residual.
+                            // NÃO faz retry (regra AT-17). Alertar para resolução manual.
+                            logger.error("CRITICAL: undoMatch falhou — inconsistência residual " +
+                                            "inevitável. orderId={} error={}",
+                                    order.getId(), undoEx.getMessage(), undoEx);
                         }
                     }
 
