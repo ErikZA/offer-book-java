@@ -13,6 +13,8 @@ Implementa CQRS com PostgreSQL no Command Side (escrita) e MongoDB no Query Side
 - ✅ `OrderOutboxPublisherService` (scheduler) faz o relay atômico para o RabbitMQ de forma eventual
   com `SELECT FOR UPDATE SKIP LOCKED` (batch configurável, `@Retryable` + `@Recover`, delay 500 ms)
 - ✅ Consumir eventos `FundsReservedEvent` / `FundsReservationFailedEvent` do wallet-service
+- ✅ Deduplicação de ordens no Redis via HEXISTS guard no Lua — impede double-booking em re-entrega
+  rápida; retorna `ALREADY_IN_BOOK` e ACK idempotente no consumer (AT-16)
 - ✅ Consumir `FundsReleaseFailedEvent` — compensação terminal da Saga: cancela a ordem e grava
   `OrderCancelledEvent` no outbox com idempotência, métricas Micrometer e DLQ dedicada (Ativ.5)
 - ✅ Executar o Motor de Match atômico via Script Lua no Redis Sorted Set com **Saga TCC**:
@@ -310,6 +312,9 @@ mvn test -pl apps/order-service -Dtest="OrderOutboxSkipLockedConcurrencyTest,Ord
 
 # Apenas os testes do FundsReleaseFailedEventConsumer (Ativ.5)
 mvn test -pl apps/order-service -Dtest="FundsReleaseFailedEventConsumerTest,FundsReleaseFailedEventConsumerIT,FundsReleaseFailedDlqTest"
+
+# Apenas os testes de deduplicação Redis Lua (AT-16)
+mvn test -pl apps/order-service -Dtest="RedisDeduplicationLuaTest,RedisDeduplicationConsumerTest"
 ```
 
 ## 🧪 Cobertura de Testes de Integração
@@ -338,6 +343,8 @@ mvn test -pl apps/order-service -Dtest="FundsReleaseFailedEventConsumerTest,Fund
 | **`FundsReleaseFailedEventConsumerTest`** | **Unitário** | **6 cenários: cancel+outbox+metric, duplicata, CANCELLED/FILLED/not found → WARN+ACK** | **Ativ.5** |
 | **`FundsReleaseFailedEventConsumerIT`** | **Integração** | **End-to-end cancel + outbox + ProcessedEvent; idempotência 2x → 1 cancel** | **Ativ.5** |
 | **`FundsReleaseFailedDlqTest`** | **Integração (DLQ)** | **Payload tóxico roteado para DLQ; smoke test da fila DLQ dedicada** | **Ativ.5** |
+| **`RedisDeduplicationLuaTest`** | **Integração (Redis Lua)** | **TC-DEDUP-1..4: HEXISTS guard — BUY/SELL duplicata retorna ALREADY_IN_BOOK; orderIds distintos OK; ordem consumida pode ser reinserida** | **AT-16** |
+| **`RedisDeduplicationConsumerTest`** | **Integração (Consumer)** | **TC-DEDUP-CONSUMER-1/2: re-entrega de BUY/SELL após match — ACK idempotente sem re-inserção no livro** | **AT-16** |
 
 ### AT-11.1 — Hash Tags Redis para Redis Cluster
 

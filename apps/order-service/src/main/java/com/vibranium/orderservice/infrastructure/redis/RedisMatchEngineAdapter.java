@@ -167,6 +167,20 @@ public class RedisMatchEngineAdapter {
             return new MatchResult(false, null, null, null,
                     BigDecimal.ZERO, BigDecimal.ZERO, "NO_MATCH");
         }
+
+        /**
+         * Resultado de deduplicação: orderId já existe no book (AT-16).
+         * Comportamento esperado — não indica erro.
+         */
+        public static MatchResult alreadyInBook() {
+            return new MatchResult(false, null, null, null,
+                    BigDecimal.ZERO, BigDecimal.ZERO, "ALREADY_IN_BOOK");
+        }
+
+        /** {@code true} se a ordem já existia no book (deduplicação AT-16). */
+        public boolean isAlreadyInBook() {
+            return "ALREADY_IN_BOOK".equals(fillType);
+        }
     }
 
     /**
@@ -278,6 +292,11 @@ public class RedisMatchEngineAdapter {
         // ── Sem match ────────────────────────────────────────────────────────
         if ("NO_MATCH".equals(first)) {
             return List.of();
+        }
+
+        // ── AT-16: orderId já existe no book (deduplicação Lua) ─────────────
+        if ("ALREADY_IN_BOOK".equals(first)) {
+            return List.of(MatchResult.alreadyInBook());
         }
 
         // ── Formato novo: ["MULTI_MATCH"|"PARTIAL", N, (val,qty,fill,rem)×N, ?rem] ──

@@ -291,6 +291,18 @@ public class FundsReservedEventConsumer {
                 }
 
                 // ================================================================
+                // AT-16: Deduplicação Redis — orderId já existe no book.
+                // ALREADY_IN_BOOK é resultado válido (não erro): a ordem já foi
+                // inserida no book por uma execução anterior. ACK idempotente.
+                // ================================================================
+                if (result.size() == 1 && result.get(0).isAlreadyInBook()) {
+                    logger.debug("Ordem {} já existe no book (ALREADY_IN_BOOK) — ACK idempotente",
+                            order.getId());
+                    channel.basicAck(deliveryTag, false);
+                    return;
+                }
+
+                // ================================================================
                 // FASE 3 — TX JPA: persiste resultado do match no Outbox
                 // ================================================================
                 try {

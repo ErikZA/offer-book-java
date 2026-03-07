@@ -572,4 +572,47 @@ class RedisMatchEngineAdapterParseResultTest {
             assertThat(results.get(0).matchedQty()).isEqualByComparingTo("30.00");
         }
     }
+
+    // =========================================================================
+    // AT-16: ALREADY_IN_BOOK — deduplicação de orderId no Lua
+    // =========================================================================
+
+    @Nested
+    @DisplayName("ALREADY_IN_BOOK (AT-16 — deduplicação Lua)")
+    class AlreadyInBookTests {
+
+        @Test
+        @DisplayName("Quando Lua retorna ALREADY_IN_BOOK: deve retornar 1 MatchResult com fillType=ALREADY_IN_BOOK e matched=false")
+        void whenAlreadyInBook_returnsSingleResultWithCorrectFillType() {
+            List<Object> luaResponse = List.of("ALREADY_IN_BOOK");
+
+            List<RedisMatchEngineAdapter.MatchResult> results =
+                    RedisMatchEngineAdapter.parseResult(luaResponse);
+
+            assertThat(results)
+                    .as("ALREADY_IN_BOOK deve retornar exatamente 1 resultado")
+                    .hasSize(1);
+
+            RedisMatchEngineAdapter.MatchResult result = results.get(0);
+            assertThat(result.matched()).isFalse();
+            assertThat(result.fillType()).isEqualTo("ALREADY_IN_BOOK");
+            assertThat(result.counterpartId()).isNull();
+            assertThat(result.matchedQty()).isEqualByComparingTo(java.math.BigDecimal.ZERO);
+        }
+
+        @Test
+        @DisplayName("Quando ALREADY_IN_BOOK como byte[]: parsing funciona com serializer de bytes")
+        void whenAlreadyInBookAsByteArray_returnsSingleResult() {
+            List<Object> luaResponse = List.of(
+                    "ALREADY_IN_BOOK".getBytes(StandardCharsets.UTF_8)
+            );
+
+            List<RedisMatchEngineAdapter.MatchResult> results =
+                    RedisMatchEngineAdapter.parseResult(luaResponse);
+
+            assertThat(results).hasSize(1);
+            assertThat(results.get(0).fillType()).isEqualTo("ALREADY_IN_BOOK");
+            assertThat(results.get(0).matched()).isFalse();
+        }
+    }
 }

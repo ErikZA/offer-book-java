@@ -4590,14 +4590,109 @@ docker exec vibranium-redis-1 redis-cli cluster info | grep cluster_slots_assign
 
 ---
 
+## Deduplicação de Ordens no Redis via Lua — HEXISTS Guard (AT-16)
+
+### Problema
+
+Com entrega **at-least-once** do RabbitMQ, o broker pode re-entregar um `FundsReservedEvent` antes que o ACK da primeira entrega chegue ao broker. Se duas entregas passarem pela Fase 2 (Redis) simultaneamente, a mesma ordem seria inserida **duas vezes** no Sorted Set — quebrando o invariante de unicidade do livro de ofertas.
+
+A idempotência por `eventId` no PostgreSQL (`tb_processed_events`) protege contra re-processamento na Fase 1, mas **não impede** que a Fase 2 execute duas vezes: a janela entre `tryMatch()` e `channel.basicAck()` é suficiente para uma re-entrega alcançar o Redis.
+
+### Solução — HEXISTS no `order_index`
+
+O `match_engine.lua` verifica se o `orderId` já existe no hash `{vibranium}:order_index` (KEYS[3]) **antes** de qualquer lógica BUY/SELL:
+
+```lua
+-- AT-16: Deduplicação via HEXISTS no order_index
+local incomingOrderId = splitPipe(orderValue)[1]
+if redis.call('HEXISTS', KEYS[3], incomingOrderId) == 1 then
+    return {'ALREADY_IN_BOOK'}
+end
+```
+
+O retorno `ALREADY_IN_BOOK` é tratado em duas camadas:
+
+1. **`RedisMatchEngineAdapter.parseResult()`** — reconhece `"ALREADY_IN_BOOK"` e retorna `List.of(MatchResult.alreadyInBook())`.
+2. **`FundsReservedEventConsumer`** — verifica `result.get(0).isAlreadyInBook()`. Se verdadeiro, emite log `DEBUG` e faz `channel.basicAck()` (ACK idempotente), sem entrar na Fase 3.
+
+### Abordagem TDD — RED → GREEN
+
+#### FASE RED
+
+8 testes escritos **antes** de qualquer alteração no código de produção:
+
+**`RedisDeduplicationLuaTest`** (4 testes de integração — Lua puro):
+- **TC-DEDUP-1**: BUY duplicata → `ALREADY_IN_BOOK`
+- **TC-DEDUP-2**: SELL duplicata → `ALREADY_IN_BOOK`
+- **TC-DEDUP-3**: orderIds distintos no mesmo lado → ambos inseridos OK
+- **TC-DEDUP-4**: ordem consumida por match pode ser reinserida (HEXISTS retorna 0 após HDEL)
+
+**`RedisDeduplicationConsumerTest`** (2 testes de integração — end-to-end):
+- **TC-DEDUP-CONSUMER-1**: re-entrega de BUY após match → ACK idempotente, sem duplicata no livro
+- **TC-DEDUP-CONSUMER-2**: re-entrega de SELL após match → ACK idempotente, sem duplicata no livro
+
+**`RedisMatchEngineAdapterParseResultTest.AlreadyInBookTests`** (2 testes unitários):
+- `parseResult` com `"ALREADY_IN_BOOK"` (String) → `isAlreadyInBook() == true`
+- `parseResult` com `"ALREADY_IN_BOOK"` (byte[]) → `isAlreadyInBook() == true`
+
+Todos os 8 falharam — RED confirmado.
+
+#### FASE GREEN
+
+3 arquivos alterados:
+
+| Artefato | Alteração |
+|---|---|
+| `match_engine.lua` | HEXISTS guard adicionado após `splitPipe()`, antes dos branches BUY/SELL (`~linha 68-79`) |
+| `RedisMatchEngineAdapter.java` | `MatchResult.alreadyInBook()` factory + `isAlreadyInBook()` + `parseResult()` trata `"ALREADY_IN_BOOK"` |
+| `FundsReservedEventConsumer.java` | Check `isAlreadyInBook()` entre Fase 2 e Fase 3 → ACK idempotente |
+
+Resultado: **39 testes** (25 unitários + 14 integração), **0 falhas**, **0 regressões**.
+
+### Catálogo de testes
+
+| ID | Classe | Cenário | Asserção |
+|---|---|---|---|
+| TC-DEDUP-1 | `RedisDeduplicationLuaTest` | BUY inserida 2× | 2ª execução retorna `ALREADY_IN_BOOK` |
+| TC-DEDUP-2 | `RedisDeduplicationLuaTest` | SELL inserida 2× | 2ª execução retorna `ALREADY_IN_BOOK` |
+| TC-DEDUP-3 | `RedisDeduplicationLuaTest` | orderIds distintos (mesmo lado) | Ambos inseridos sem conflito |
+| TC-DEDUP-4 | `RedisDeduplicationLuaTest` | Ordem consumida por match + reinserção | HEXISTS retorna 0 após HDEL; nova inserção OK |
+| TC-DEDUP-CONSUMER-1 | `RedisDeduplicationConsumerTest` | Re-entrega BUY via RabbitMQ | ACK idempotente; Sorted Set sem duplicata |
+| TC-DEDUP-CONSUMER-2 | `RedisDeduplicationConsumerTest` | Re-entrega SELL via RabbitMQ | ACK idempotente; Sorted Set sem duplicata |
+
+### Execução
+
+```bash
+# Apenas testes de deduplicação AT-16
+mvn test -pl apps/order-service -Dtest="RedisDeduplicationLuaTest,RedisDeduplicationConsumerTest"
+
+# Suíte completa do order-service (inclui AT-16)
+mvn test -pl apps/order-service
+```
+
+### Artefatos alterados pelo AT-16
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `apps/order-service/src/main/resources/lua/match_engine.lua` | Alterado | HEXISTS guard antes de BUY/SELL — retorna `{'ALREADY_IN_BOOK'}` se orderId já no `order_index` |
+| `apps/order-service/src/main/java/.../redis/RedisMatchEngineAdapter.java` | Alterado | `MatchResult.alreadyInBook()` + `isAlreadyInBook()` + `parseResult` trata `ALREADY_IN_BOOK` |
+| `apps/order-service/src/main/java/.../messaging/FundsReservedEventConsumer.java` | Alterado | Check `isAlreadyInBook()` entre Fase 2 e 3 → ACK idempotente com log DEBUG |
+| `apps/order-service/src/test/java/.../integration/RedisDeduplicationLuaTest.java` | Novo | 4 testes de integração Lua: TC-DEDUP-1..4 |
+| `apps/order-service/src/test/java/.../integration/RedisDeduplicationConsumerTest.java` | Novo | 2 testes de integração end-to-end: TC-DEDUP-CONSUMER-1/2 |
+| `apps/order-service/src/test/java/.../redis/RedisMatchEngineAdapterParseResultTest.java` | Alterado | +2 testes unitários: `AlreadyInBookTests` (String + byte[]) |
+
+---
+
 **Status**: ✅ Consolidado e Completo  
 **Última atualização**: 6 de março de 2026
 
 > **Mudanças recentes:**
+> - **AT-16 (2026-03-06)**: Deduplicação de Ordens no Redis via Lua — HEXISTS guard no `match_engine.lua` verifica `order_index` antes de inserção; retorna `ALREADY_IN_BOOK` para ordens duplicadas. `RedisMatchEngineAdapter.parseResult()` trata novo status; `FundsReservedEventConsumer` faz ACK idempotente entre Fase 2 e 3. 8 novos testes TDD (4 Lua integração + 2 consumer integração + 2 parseResult unitários), 39 total, 0 regressões. Adicionada seção 37 neste guia.
 > - **Atividade 3 (2026-03-06)**: Movimentação de `E2eSecurityConfig` de `src/main/java` para `src/test/java` em `order-service` e `wallet-service` — classes de bypass de segurança para E2E não são mais incluídas no JAR de produção. Novo `Dockerfile.e2e` (estratégia exploded JAR + injeção de `target/test-classes/` em `BOOT-INF/classes/`) para ambos os serviços. `docker-compose.e2e.yml` atualizado para usar `Dockerfile.e2e`. `maven-failsafe-plugin` adicionado a ambos os POMs com `<include>**/ProductionJarSecurityIT.java</include>`. 6 novos testes TDD (3 por serviço): `ProductionJarSecurityIT` (failsafe, introspecção de JAR via `java.util.jar.JarFile` — asserta ausência de `E2eSecurityConfig.class` e `E2eDataSeederController.class`), `ProductionProfileSecurityTest` (verifica que nenhum bean `E2eSecurityConfig` existe no contexto com profile "test" e `/e2e/` retorna 404), `E2eProfileStillWorksTest` (verifica que beans E2E estão ativos com profile "e2e" e endpoints acessíveis sem autenticação). `order-service`: 169 surefire + 2 failsafe, BUILD SUCCESS. `wallet-service`: 131 surefire + 2 failsafe, BUILD SUCCESS.
 > - **Atividade 2 (2026-03-06)**: Rotas GET Orders no Kong — Query Side CQRS via Gateway. `infra/kong/kong-init.yml` atualizado com `list-orders-route` (`GET /api/v1/orders`) e `get-order-by-id-route` (`GET ~/api/v1/orders/[^/]+$`), cada uma com rate-limiting 200 req/s route-level (sobrescreve service-level 100 req/s do POST). `infra/kong/kong-setup.sh` sincronizado com as mesmas rotas (STEP 3b/3c) e plugins por rota (jwt `run_on_preflight=false`, rate-limiting 200/s, cors). Topologia final: 5 rotas idênticas em ambos os arquivos (`place-order-route`, `list-orders-route`, `get-order-by-id-route`, `get-wallet-route`, `update-wallet-balance-route`). `infra/kong/kong-config.md` reescrito com tabela completa de rotas, plugins, consumer JWT e mapeamento controller→rota. Criado `tests/AT-kong-routes-validation.sh` com 2 seções: (1) Admin API — existência de rota, `strip_path=false`, métodos, plugins e rate-limits; (2) Proxy — 401 sem JWT em todas as 5 rotas. FASE RED: GET `/api/v1/orders` retornava 404. FASE GREEN: 401 (rota existe, JWT obrigatório). Adicionada seção 36 neste guia.
 > - **Correção de regressão (2ª rodada, 2026-03-03)**: Suíte completa do `wallet-service` zerada: 131/131 testes passando. Causa raiz: (a) 4 testes publicavam comandos no exchange `wallet.commands` + routing key `wallet.command.*` — topologia real usa `vibranium.commands` + `wallet.commands.*`; (b) `KeycloakUserCreationIntegrationTest` assertava `processed = false` no outbox, mas `OutboxPublisherService` pode marcar `processed = true` antes da assertion; (c) causa raiz sistêmica: múltiplos `ApplicationContext` ativos simultaneamente — classes com `@MockBean` criam novo contexto mas o anterior (com o listener real) permanecia vivo → round-robin RabbitMQ → listener errado consome mensagem → `ConditionTimeout`. Correção definitiva: `@DirtiesContext(classMode = AFTER_CLASS)` adicionado em `AbstractIntegrationTest` do `wallet-service`, mesma estratégia já usada no `order-service`. Removidos os `@DirtiesContext(BEFORE_CLASS)` das classes filhas (obsoletos). Adicionada seção de troubleshooting "ConditionTimeout em suíte completa" neste guia.
 > - **AT-5.1.1**: Inicialização do Redis Cluster no Staging — `infra/docker-compose.staging.yml` atualizado com healthchecks (`redis-cli ping`) nos 3 nós Redis; `depends_on` de redis-2/redis-3 corrigido de sintaxe de lista para `condition: service_healthy`; novo serviço `redis-cluster-init` (container de curta duração `restart: 'no'`, imagem `redis:7-alpine`, executa `redis-cli --cluster create redis-1:6379 redis-2:6379 redis-3:6379 --cluster-replicas 0 --cluster-yes`, depende dos 3 nós com `service_healthy`); `order-service-1.depends_on` atualizado: substituição de `redis-1: service_started` por `redis-cluster-init: service_completed_successfully`. Risco documentado: hash tag `{vibranium}` concentra todos os slots do motor de match em 1 dos 3 nós — comportamento intencional para garantir atomicidade do `EVAL` Lua multi-key. FASE RED: `cluster_state:fail`, `cluster_slots_assigned:0`. FASE GREEN: `cluster_state:ok`, `cluster_slots_assigned:16384`. Adicionada seção 35 neste guia.
+> - **AT-16**: Deduplicação de Ordens no Redis via Lua — HEXISTS guard no `match_engine.lua` (KEYS[3] = `{vibranium}:order_index`). Retorna `{'ALREADY_IN_BOOK'}` se `orderId` já existe no hash antes de qualquer BUY/SELL. `RedisMatchEngineAdapter`: `MatchResult.alreadyInBook()` + `isAlreadyInBook()` + `parseResult()` trata novo status. `FundsReservedEventConsumer`: check `isAlreadyInBook()` entre Fase 2 e 3 → ACK idempotente com `logger.debug()`. Novos testes TDD: `RedisDeduplicationLuaTest` (TC-DEDUP-1..4), `RedisDeduplicationConsumerTest` (TC-DEDUP-CONSUMER-1/2), `AlreadyInBookTests` (2 unitários). 39 testes, 0 regressões. Adicionada seção 37 neste guia.
 > - **AT-5.2.1**: `@JsonIgnoreProperties(ignoreUnknown = true)` adicionado a todos os 18 records de `common-contracts` (13 eventos + 5 comandos). A anotação em nível de tipo sobrepõe `FAIL_ON_UNKNOWN_PROPERTIES=true` do mapper — records são auto-protegidos contra campos futuros independente da configuração do consumer. `ContractSchemaVersionTest` ampliado com Cenário 4 (`ForwardCompatAnnotation`): novo teste `testForwardCompat_withDefaultObjectMapper_unknownFieldsIgnored()` usa `new ObjectMapper().registerModule(new JavaTimeModule())` sem config global de `FAIL_ON_UNKNOWN_PROPERTIES` e asserta `doesNotThrowAnyException()`; teste `givenJsonWithUnknownField_withStrictMapper_*` atualizado para refletir que a anotação sobrepõe o mapper estrito. 18 arquivos alterados (imports + anotação), 64 testes, 0 falhas, BUILD SUCCESS. Adicionada seção 34 neste guia.
 > - **AT-3.1.1**: Multi-Match Loop Atômico no Lua EVAL — `match_engine.lua` refatorado de `LIMIT 0 1` para loop `while remainingQty > 0 and iterations < MAX_MATCHES` (MAX=100). Protocolo de retorno novo: array plano `{STATUS, N, v₁, q₁, f₁, r₁, …}` com STATUS ∈ {MULTI_MATCH, PARTIAL, NO_MATCH}; formato `MATCH` legado suportado por retrocompatibilidade. `RedisMatchEngineAdapter.tryMatch()` e `parseResult()` passaram a retornar `List<MatchResult>`; helper `parseSingleMatchEntry()` extraiu lógica compartilhada. `FundsReservedEventConsumer.handleMatches()` itera a lista, emite `MatchExecutedEvent` por contraparte e um único evento de fill ao final (`OrderFilledEvent` ou `OrderPartiallyFilledEvent` baseado no status final da ordem). 7 arquivos alterados: Lua script, adapter, consumer, 2 testes unitários e 2 testes de integração. Novos testes: `MultiMatchFormatTests` (4 casos), `PartialFormatTests` (2 casos), TC-MM-1..4 em `MatchEngineRedisIntegrationTest`. 157 testes executados, zero regressões introduzidas. Adicionada seção 33 neste guia.
 > - **AT-4.3.1**: Externalização de senhas via variáveis de ambiente nos compose files de produção e staging. `infra/docker-compose.yml`: 9 credenciais substituídas — `POSTGRES_PASSWORD`, `KONG_PG_PASSWORD` (×2), `KC_DB_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD`/`KC_BOOTSTRAP_ADMIN_PASSWORD`, `RABBITMQ_DEFAULT_PASS`, `KK_TO_RMQ_PASSWORD`. `infra/docker-compose.staging.yml`: ~25 credenciais substituídas cobrindo MongoDB (×3 nós + healthchecks inline + mongo-rs-init), PostgreSQL (×3 réplicas), RabbitMQ (×3 nós incluindo `RABBITMQ_ERLANG_COOKIE: secret-cookie`), order-service (×3 — URI inline `admin:admin123` + `SPRING_RABBITMQ_PASSWORD`), wallet-service (×3 — `SPRING_DATASOURCE_PASSWORD` + `SPRING_RABBITMQ_PASSWORD`), Keycloak-DB, Keycloak (`KC_DB_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD`, `KK_TO_RMQ_PASSWORD`), kong-database, kong-migration e kong (`KONG_PG_PASSWORD`). Sintaxe `${VAR:?msg}` para falha rápida em variáveis obrigatórias; `${VAR:-default}` para nomes de usuário sem segredo. `.env.example` expandido: header referencia os 3 compose files; novas entradas de staging `MONGO_REPLICA_KEY` (gerado via `openssl rand -base64 756`), `RABBITMQ_ERLANG_COOKIE` (via `openssl rand -hex 32`) e `KONG_DB_PASSWORD`. `.gitignore`: `.env` já listado — sem alteração. Verificação FASE GREEN: `grep` retornou 0 matches de senhas literais em ambos os arquivos. Adicionada seção 32 neste guia.
