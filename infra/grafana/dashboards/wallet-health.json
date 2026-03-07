@@ -1,339 +1,339 @@
 {
-  "annotations": {
-    "list": [
-      {
-        "builtIn": 1,
-        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
-        "enable": true,
-        "hide": true,
-        "iconColor": "rgba(0, 211, 255, 1)",
-        "name": "Annotations & Alerts",
-        "type": "dashboard"
-      }
-    ]
-  },
-  "editable": true,
-  "fiscalYearStartMonth": 0,
-  "graphTooltip": 1,
-  "id": null,
-  "links": [],
-  "panels": [
-    {
-      "title": "Funds Reserved / sec",
-      "description": "Taxa de reservas de fundos por asset (BRL / VIBRANIUM)",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisLabel": "reserves/s",
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "gradientMode": "scheme",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" }
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(vibranium_funds_reserved_total{job=\"wallet-service\"}[1m])) by (asset)",
-          "legendFormat": "reserve {{asset}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "title": "Funds Settled / sec",
-      "description": "Taxa de liquidações de fundos por asset (confirmação pós-match)",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisLabel": "settles/s",
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "gradientMode": "scheme",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" }
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(vibranium_funds_settled_total{job=\"wallet-service\"}[1m])) by (asset)",
-          "legendFormat": "settle {{asset}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "title": "Funds Released / sec",
-      "description": "Taxa de liberações de fundos (compensação de saga / rollback)",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "fixedColor": "orange", "mode": "fixed" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisLabel": "releases/s",
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "gradientMode": "scheme",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" }
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(vibranium_funds_released_total{job=\"wallet-service\"}[1m])) by (reason)",
-          "legendFormat": "release {{reason}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "title": "Wallet Errors",
-      "description": "Erros: falhas de liberação de fundos e erros HTTP 5xx no wallet-service",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "fixedColor": "red", "mode": "fixed" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisLabel": "errors/s",
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "gradientMode": "scheme",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "normal" }
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(vibranium_funds_release_failed_total{job=\"order-service\"}[1m]))",
-          "legendFormat": "fund release failures",
-          "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(http_server_requests_seconds_count{job=\"wallet-service\", status=~\"5..\"}[1m]))",
-          "legendFormat": "HTTP 5xx",
-          "refId": "B"
-        }
-      ]
-    },
-    {
-      "title": "Outbox Queue Depth (Wallet Service)",
-      "description": "Mensagens pendentes na tabela outbox do wallet-service",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisLabel": "messages",
-            "drawStyle": "line",
-            "fillOpacity": 30,
-            "gradientMode": "scheme",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "line+area" }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 500 },
-              { "color": "red", "value": 1000 }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "vibranium_outbox_queue_depth{job=\"wallet-service\"}",
-          "legendFormat": "outbox depth",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "title": "Outbox Publish Latency (Wallet Service)",
-      "description": "Latência de publicação das mensagens da outbox para o RabbitMQ",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisLabel": "latency",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "scheme",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" }
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.50, sum(rate(vibranium_outbox_publish_latency_seconds_bucket{job=\"wallet-service\"}[5m])) by (le))",
-          "legendFormat": "p50",
-          "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, sum(rate(vibranium_outbox_publish_latency_seconds_bucket{job=\"wallet-service\"}[5m])) by (le))",
-          "legendFormat": "p95",
-          "refId": "B"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.99, sum(rate(vibranium_outbox_publish_latency_seconds_bucket{job=\"wallet-service\"}[5m])) by (le))",
-          "legendFormat": "p99",
-          "refId": "C"
-        }
-      ]
-    },
-    {
-      "title": "Wallet Operations Summary",
-      "description": "Visão geral das operações de carteira: reservas vs liquidações vs liberações",
-      "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 24 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "unit": "ops"
-        },
-        "overrides": [
-          {
-            "matcher": { "id": "byName", "options": "releases/s" },
-            "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
-          }
-        ]
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "textMode": "auto",
-        "orientation": "horizontal"
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(vibranium_funds_reserved_total{job=\"wallet-service\"}[5m]))",
-          "legendFormat": "reserves/s",
-          "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(vibranium_funds_settled_total{job=\"wallet-service\"}[5m]))",
-          "legendFormat": "settles/s",
-          "refId": "B"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(vibranium_funds_released_total{job=\"wallet-service\"}[5m]))",
-          "legendFormat": "releases/s",
-          "refId": "C"
-        }
-      ]
-    }
-  ],
-  "schemaVersion": 39,
-  "tags": ["vibranium", "wallet-service", "wallet-health"],
-  "templating": { "list": [] },
-  "time": { "from": "now-1h", "to": "now" },
-  "timepicker": {},
-  "timezone": "",
-  "title": "Vibranium — Wallet Health",
-  "uid": "vibranium-wallet-health",
-  "version": 1
+	"annotations": {
+		"list": [
+			{
+				"builtIn": 1,
+				"datasource": { "type": "grafana", "uid": "-- Grafana --" },
+				"enable": true,
+				"hide": true,
+				"iconColor": "rgba(0, 211, 255, 1)",
+				"name": "Annotations & Alerts",
+				"type": "dashboard"
+			}
+		]
+	},
+	"editable": true,
+	"fiscalYearStartMonth": 0,
+	"graphTooltip": 1,
+	"id": null,
+	"links": [],
+	"panels": [
+		{
+			"title": "Funds Reserved / sec",
+			"description": "Taxa de reservas de fundos por asset (BRL / VIBRANIUM)",
+			"type": "timeseries",
+			"datasource": { "type": "prometheus", "uid": "prometheus" },
+			"gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+			"fieldConfig": {
+				"defaults": {
+					"color": { "mode": "palette-classic" },
+					"custom": {
+						"axisBorderShow": false,
+						"axisLabel": "reserves/s",
+						"drawStyle": "line",
+						"fillOpacity": 20,
+						"gradientMode": "scheme",
+						"lineInterpolation": "smooth",
+						"lineWidth": 2,
+						"pointSize": 5,
+						"showPoints": "auto",
+						"spanNulls": false,
+						"stacking": { "group": "A", "mode": "none" }
+					},
+					"unit": "ops"
+				},
+				"overrides": []
+			},
+			"options": {
+				"legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+				"tooltip": { "mode": "multi", "sort": "desc" }
+			},
+			"targets": [
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "sum(rate(vibranium_funds_reserved_total{job=\"wallet-service\"}[1m])) by (asset)",
+					"legendFormat": "reserve {{asset}}",
+					"refId": "A"
+				}
+			]
+		},
+		{
+			"title": "Funds Settled / sec",
+			"description": "Taxa de liquidações de fundos por asset (confirmação pós-match)",
+			"type": "timeseries",
+			"datasource": { "type": "prometheus", "uid": "prometheus" },
+			"gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+			"fieldConfig": {
+				"defaults": {
+					"color": { "mode": "palette-classic" },
+					"custom": {
+						"axisBorderShow": false,
+						"axisLabel": "settles/s",
+						"drawStyle": "line",
+						"fillOpacity": 20,
+						"gradientMode": "scheme",
+						"lineInterpolation": "smooth",
+						"lineWidth": 2,
+						"pointSize": 5,
+						"showPoints": "auto",
+						"spanNulls": false,
+						"stacking": { "group": "A", "mode": "none" }
+					},
+					"unit": "ops"
+				},
+				"overrides": []
+			},
+			"options": {
+				"legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+				"tooltip": { "mode": "multi", "sort": "desc" }
+			},
+			"targets": [
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "sum(rate(vibranium_funds_settled_total{job=\"wallet-service\"}[1m])) by (asset)",
+					"legendFormat": "settle {{asset}}",
+					"refId": "A"
+				}
+			]
+		},
+		{
+			"title": "Funds Released / sec",
+			"description": "Taxa de liberações de fundos (compensação de saga / rollback)",
+			"type": "timeseries",
+			"datasource": { "type": "prometheus", "uid": "prometheus" },
+			"gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+			"fieldConfig": {
+				"defaults": {
+					"color": { "fixedColor": "orange", "mode": "fixed" },
+					"custom": {
+						"axisBorderShow": false,
+						"axisLabel": "releases/s",
+						"drawStyle": "line",
+						"fillOpacity": 20,
+						"gradientMode": "scheme",
+						"lineInterpolation": "smooth",
+						"lineWidth": 2,
+						"pointSize": 5,
+						"showPoints": "auto",
+						"spanNulls": false,
+						"stacking": { "group": "A", "mode": "none" }
+					},
+					"unit": "ops"
+				},
+				"overrides": []
+			},
+			"options": {
+				"legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+				"tooltip": { "mode": "multi", "sort": "desc" }
+			},
+			"targets": [
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "sum(rate(vibranium_funds_released_total{job=\"wallet-service\"}[1m])) by (reason)",
+					"legendFormat": "release {{reason}}",
+					"refId": "A"
+				}
+			]
+		},
+		{
+			"title": "Wallet Errors",
+			"description": "Erros: falhas de liberação de fundos e erros HTTP 5xx no wallet-service",
+			"type": "timeseries",
+			"datasource": { "type": "prometheus", "uid": "prometheus" },
+			"gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+			"fieldConfig": {
+				"defaults": {
+					"color": { "fixedColor": "red", "mode": "fixed" },
+					"custom": {
+						"axisBorderShow": false,
+						"axisLabel": "errors/s",
+						"drawStyle": "line",
+						"fillOpacity": 15,
+						"gradientMode": "scheme",
+						"lineInterpolation": "smooth",
+						"lineWidth": 2,
+						"pointSize": 5,
+						"showPoints": "auto",
+						"spanNulls": false,
+						"stacking": { "group": "A", "mode": "normal" }
+					},
+					"unit": "ops"
+				},
+				"overrides": []
+			},
+			"options": {
+				"legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+				"tooltip": { "mode": "multi", "sort": "desc" }
+			},
+			"targets": [
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "sum(rate(vibranium_funds_release_failed_total{job=\"order-service\"}[1m]))",
+					"legendFormat": "fund release failures",
+					"refId": "A"
+				},
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "sum(rate(http_server_requests_seconds_count{job=\"wallet-service\", status=~\"5..\"}[1m]))",
+					"legendFormat": "HTTP 5xx",
+					"refId": "B"
+				}
+			]
+		},
+		{
+			"title": "Outbox Queue Depth (Wallet Service)",
+			"description": "Mensagens pendentes na tabela outbox do wallet-service",
+			"type": "timeseries",
+			"datasource": { "type": "prometheus", "uid": "prometheus" },
+			"gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+			"fieldConfig": {
+				"defaults": {
+					"color": { "mode": "palette-classic" },
+					"custom": {
+						"axisBorderShow": false,
+						"axisLabel": "messages",
+						"drawStyle": "line",
+						"fillOpacity": 30,
+						"gradientMode": "scheme",
+						"lineInterpolation": "smooth",
+						"lineWidth": 2,
+						"pointSize": 5,
+						"showPoints": "auto",
+						"spanNulls": false,
+						"stacking": { "group": "A", "mode": "none" },
+						"thresholdsStyle": { "mode": "line+area" }
+					},
+					"thresholds": {
+						"mode": "absolute",
+						"steps": [
+							{ "color": "green", "value": null },
+							{ "color": "yellow", "value": 500 },
+							{ "color": "red", "value": 1000 }
+						]
+					},
+					"unit": "short"
+				},
+				"overrides": []
+			},
+			"options": {
+				"legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+				"tooltip": { "mode": "multi", "sort": "desc" }
+			},
+			"targets": [
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "vibranium_outbox_queue_depth{job=\"wallet-service\"}",
+					"legendFormat": "outbox depth",
+					"refId": "A"
+				}
+			]
+		},
+		{
+			"title": "Outbox Publish Latency (Wallet Service)",
+			"description": "Latência de publicação das mensagens da outbox para o RabbitMQ",
+			"type": "timeseries",
+			"datasource": { "type": "prometheus", "uid": "prometheus" },
+			"gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+			"fieldConfig": {
+				"defaults": {
+					"color": { "mode": "palette-classic" },
+					"custom": {
+						"axisBorderShow": false,
+						"axisLabel": "latency",
+						"drawStyle": "line",
+						"fillOpacity": 10,
+						"gradientMode": "scheme",
+						"lineInterpolation": "smooth",
+						"lineWidth": 2,
+						"pointSize": 5,
+						"showPoints": "auto",
+						"spanNulls": false,
+						"stacking": { "group": "A", "mode": "none" }
+					},
+					"unit": "s"
+				},
+				"overrides": []
+			},
+			"options": {
+				"legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+				"tooltip": { "mode": "multi", "sort": "desc" }
+			},
+			"targets": [
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "histogram_quantile(0.50, sum(rate(vibranium_outbox_publish_latency_seconds_bucket{job=\"wallet-service\"}[5m])) by (le))",
+					"legendFormat": "p50",
+					"refId": "A"
+				},
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "histogram_quantile(0.95, sum(rate(vibranium_outbox_publish_latency_seconds_bucket{job=\"wallet-service\"}[5m])) by (le))",
+					"legendFormat": "p95",
+					"refId": "B"
+				},
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "histogram_quantile(0.99, sum(rate(vibranium_outbox_publish_latency_seconds_bucket{job=\"wallet-service\"}[5m])) by (le))",
+					"legendFormat": "p99",
+					"refId": "C"
+				}
+			]
+		},
+		{
+			"title": "Wallet Operations Summary",
+			"description": "Visão geral das operações de carteira: reservas vs liquidações vs liberações",
+			"type": "stat",
+			"datasource": { "type": "prometheus", "uid": "prometheus" },
+			"gridPos": { "h": 4, "w": 24, "x": 0, "y": 24 },
+			"fieldConfig": {
+				"defaults": {
+					"color": { "mode": "palette-classic" },
+					"unit": "ops"
+				},
+				"overrides": [
+					{
+						"matcher": { "id": "byName", "options": "releases/s" },
+						"properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+					}
+				]
+			},
+			"options": {
+				"reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+				"colorMode": "background",
+				"graphMode": "area",
+				"justifyMode": "auto",
+				"textMode": "auto",
+				"orientation": "horizontal"
+			},
+			"targets": [
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "sum(rate(vibranium_funds_reserved_total{job=\"wallet-service\"}[5m]))",
+					"legendFormat": "reserves/s",
+					"refId": "A"
+				},
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "sum(rate(vibranium_funds_settled_total{job=\"wallet-service\"}[5m]))",
+					"legendFormat": "settles/s",
+					"refId": "B"
+				},
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "sum(rate(vibranium_funds_released_total{job=\"wallet-service\"}[5m]))",
+					"legendFormat": "releases/s",
+					"refId": "C"
+				}
+			]
+		}
+	],
+	"schemaVersion": 39,
+	"tags": ["vibranium", "wallet-service", "wallet-health"],
+	"templating": { "list": [] },
+	"time": { "from": "now-1h", "to": "now" },
+	"timepicker": {},
+	"timezone": "",
+	"title": "Vibranium — Wallet Health",
+	"uid": "vibranium-wallet-health",
+	"version": 1
 }

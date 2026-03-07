@@ -6,39 +6,39 @@
 # ================================================================================
 
 global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
-  scrape_timeout: 10s
+    scrape_interval: 15s
+    evaluation_interval: 15s
+    scrape_timeout: 10s
 
 scrape_configs:
-  # --------------------------------------------------------------------------
-  # Prometheus self-monitoring
-  # --------------------------------------------------------------------------
-  - job_name: 'prometheus'
-    static_configs:
-      - targets: ['localhost:9090']
+    # --------------------------------------------------------------------------
+    # Prometheus self-monitoring
+    # --------------------------------------------------------------------------
+    - job_name: 'prometheus'
+      static_configs:
+          - targets: ['localhost:9090']
 
-  # --------------------------------------------------------------------------
-  # order-service — porta 8080, expõe /actuator/prometheus (Micrometer)
-  # Métricas: vibranium_orders_created, vibranium_orders_matched,
-  #           vibranium_orders_cancelled, vibranium_outbox_queue_depth,
-  #           vibranium_redis_match_latency, vibranium_saga_duration
-  # --------------------------------------------------------------------------
-  - job_name: 'order-service'
-    metrics_path: '/actuator/prometheus'
-    static_configs:
-      - targets: ['order-service:8080']
-        labels:
-          application: 'order-service'
+    # --------------------------------------------------------------------------
+    # order-service — porta 8080, expõe /actuator/prometheus (Micrometer)
+    # Métricas: vibranium_orders_created, vibranium_orders_matched,
+    #           vibranium_orders_cancelled, vibranium_outbox_queue_depth,
+    #           vibranium_redis_match_latency, vibranium_saga_duration
+    # --------------------------------------------------------------------------
+    - job_name: 'order-service'
+      metrics_path: '/actuator/prometheus'
+      static_configs:
+          - targets: ['order-service:8080']
+            labels:
+                application: 'order-service'
 
-  # --------------------------------------------------------------------------
-  # wallet-service — porta 8081, expõe /actuator/prometheus (Micrometer)
-  # Métricas: vibranium_funds_reserved, vibranium_funds_released,
-  #           vibranium_funds_settled, vibranium_outbox_queue_depth
-  # --------------------------------------------------------------------------
-  - job_name: 'wallet-service'
-    metrics_path: '/actuator/prometheus'
-    static_configs:
-      - targets: ['wallet-service:8081']
-        labels:
-          application: 'wallet-service'
+    # --------------------------------------------------------------------------
+    # wallet-service — porta 8081, expõe /actuator/prometheus (Micrometer)
+    # Métricas: vibranium_funds_reserved, vibranium_funds_released,
+    #           vibranium_funds_settled, vibranium_outbox_queue_depth
+    # --------------------------------------------------------------------------
+    - job_name: 'wallet-service'
+      metrics_path: '/actuator/prometheus'
+      static_configs:
+          - targets: ['wallet-service:8081']
+            labels:
+                application: 'wallet-service'

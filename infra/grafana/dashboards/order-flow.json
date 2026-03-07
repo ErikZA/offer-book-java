@@ -1,356 +1,356 @@
 {
-  "annotations": {
-    "list": [
-      {
-        "builtIn": 1,
-        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
-        "enable": true,
-        "hide": true,
-        "iconColor": "rgba(0, 211, 255, 1)",
-        "name": "Annotations & Alerts",
-        "type": "dashboard"
-      }
-    ]
-  },
-  "editable": true,
-  "fiscalYearStartMonth": 0,
-  "graphTooltip": 1,
-  "id": null,
-  "links": [],
-  "panels": [
-    {
-      "title": "Orders Created / sec",
-      "description": "Taxa de criação de ordens por segundo (BUY/SELL)",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisLabel": "orders/s",
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "gradientMode": "scheme",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" }
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(vibranium_orders_created_total{job=\"order-service\"}[1m])) by (type)",
-          "legendFormat": "{{type}}",
-          "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(vibranium_orders_created_total{job=\"order-service\"}[1m]))",
-          "legendFormat": "total",
-          "refId": "B"
-        }
-      ]
-    },
-    {
-      "title": "Matches / sec",
-      "description": "Taxa de ordens matcheadas por segundo no motor de matching Redis",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisLabel": "matches/s",
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "gradientMode": "scheme",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" }
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(vibranium_orders_matched_total{job=\"order-service\"}[1m]))",
-          "legendFormat": "matches/s",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "title": "Cancellations / sec",
-      "description": "Taxa de cancelamento de ordens (timeout, matching failure, etc.)",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "fixedColor": "red", "mode": "fixed" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisLabel": "cancels/s",
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "gradientMode": "scheme",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" }
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(vibranium_orders_cancelled_total{job=\"order-service\"}[1m]))",
-          "legendFormat": "cancels/s",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "title": "Outbox Queue Depth (Order Service)",
-      "description": "Mensagens pendentes na tabela outbox do order-service. Valores altos indicam gargalo na publicação.",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisLabel": "messages",
-            "drawStyle": "line",
-            "fillOpacity": 30,
-            "gradientMode": "scheme",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "line+area" }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 500 },
-              { "color": "red", "value": 1000 }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "vibranium_outbox_queue_depth{job=\"order-service\"}",
-          "legendFormat": "outbox depth",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "title": "Saga Duration (p50 / p95 / p99)",
-      "description": "Duração end-to-end da saga: PlaceOrder → FundsReserved → Match → Settlement",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisLabel": "duration",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "scheme",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" }
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.50, sum(rate(vibranium_saga_duration_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
-          "legendFormat": "p50",
-          "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, sum(rate(vibranium_saga_duration_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
-          "legendFormat": "p95",
-          "refId": "B"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.99, sum(rate(vibranium_saga_duration_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
-          "legendFormat": "p99",
-          "refId": "C"
-        }
-      ]
-    },
-    {
-      "title": "Redis Match Engine Latency (p50 / p95 / p99)",
-      "description": "Latência do EVALSHA no Redis para matching de ordens",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisLabel": "latency",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "scheme",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" }
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.50, sum(rate(vibranium_redis_match_latency_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
-          "legendFormat": "p50",
-          "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, sum(rate(vibranium_redis_match_latency_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
-          "legendFormat": "p95",
-          "refId": "B"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.99, sum(rate(vibranium_redis_match_latency_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
-          "legendFormat": "p99",
-          "refId": "C"
-        }
-      ]
-    },
-    {
-      "title": "Outbox Publish Latency (Order Service)",
-      "description": "Latência de publicação das mensagens da outbox para o RabbitMQ",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisLabel": "latency",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "scheme",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" }
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.50, sum(rate(vibranium_outbox_publish_latency_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
-          "legendFormat": "p50",
-          "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, sum(rate(vibranium_outbox_publish_latency_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
-          "legendFormat": "p95",
-          "refId": "B"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.99, sum(rate(vibranium_outbox_publish_latency_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
-          "legendFormat": "p99",
-          "refId": "C"
-        }
-      ]
-    }
-  ],
-  "schemaVersion": 39,
-  "tags": ["vibranium", "order-service", "order-flow"],
-  "templating": { "list": [] },
-  "time": { "from": "now-1h", "to": "now" },
-  "timepicker": {},
-  "timezone": "",
-  "title": "Vibranium — Order Flow",
-  "uid": "vibranium-order-flow",
-  "version": 1
+	"annotations": {
+		"list": [
+			{
+				"builtIn": 1,
+				"datasource": { "type": "grafana", "uid": "-- Grafana --" },
+				"enable": true,
+				"hide": true,
+				"iconColor": "rgba(0, 211, 255, 1)",
+				"name": "Annotations & Alerts",
+				"type": "dashboard"
+			}
+		]
+	},
+	"editable": true,
+	"fiscalYearStartMonth": 0,
+	"graphTooltip": 1,
+	"id": null,
+	"links": [],
+	"panels": [
+		{
+			"title": "Orders Created / sec",
+			"description": "Taxa de criação de ordens por segundo (BUY/SELL)",
+			"type": "timeseries",
+			"datasource": { "type": "prometheus", "uid": "prometheus" },
+			"gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+			"fieldConfig": {
+				"defaults": {
+					"color": { "mode": "palette-classic" },
+					"custom": {
+						"axisBorderShow": false,
+						"axisCenteredZero": false,
+						"axisLabel": "orders/s",
+						"drawStyle": "line",
+						"fillOpacity": 20,
+						"gradientMode": "scheme",
+						"lineInterpolation": "smooth",
+						"lineWidth": 2,
+						"pointSize": 5,
+						"showPoints": "auto",
+						"spanNulls": false,
+						"stacking": { "group": "A", "mode": "none" }
+					},
+					"unit": "ops"
+				},
+				"overrides": []
+			},
+			"options": {
+				"legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+				"tooltip": { "mode": "multi", "sort": "desc" }
+			},
+			"targets": [
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "sum(rate(vibranium_orders_created_total{job=\"order-service\"}[1m])) by (type)",
+					"legendFormat": "{{type}}",
+					"refId": "A"
+				},
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "sum(rate(vibranium_orders_created_total{job=\"order-service\"}[1m]))",
+					"legendFormat": "total",
+					"refId": "B"
+				}
+			]
+		},
+		{
+			"title": "Matches / sec",
+			"description": "Taxa de ordens matcheadas por segundo no motor de matching Redis",
+			"type": "timeseries",
+			"datasource": { "type": "prometheus", "uid": "prometheus" },
+			"gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+			"fieldConfig": {
+				"defaults": {
+					"color": { "mode": "palette-classic" },
+					"custom": {
+						"axisBorderShow": false,
+						"axisLabel": "matches/s",
+						"drawStyle": "line",
+						"fillOpacity": 20,
+						"gradientMode": "scheme",
+						"lineInterpolation": "smooth",
+						"lineWidth": 2,
+						"pointSize": 5,
+						"showPoints": "auto",
+						"spanNulls": false,
+						"stacking": { "group": "A", "mode": "none" }
+					},
+					"unit": "ops"
+				},
+				"overrides": []
+			},
+			"options": {
+				"legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+				"tooltip": { "mode": "multi", "sort": "desc" }
+			},
+			"targets": [
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "sum(rate(vibranium_orders_matched_total{job=\"order-service\"}[1m]))",
+					"legendFormat": "matches/s",
+					"refId": "A"
+				}
+			]
+		},
+		{
+			"title": "Cancellations / sec",
+			"description": "Taxa de cancelamento de ordens (timeout, matching failure, etc.)",
+			"type": "timeseries",
+			"datasource": { "type": "prometheus", "uid": "prometheus" },
+			"gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+			"fieldConfig": {
+				"defaults": {
+					"color": { "fixedColor": "red", "mode": "fixed" },
+					"custom": {
+						"axisBorderShow": false,
+						"axisLabel": "cancels/s",
+						"drawStyle": "line",
+						"fillOpacity": 15,
+						"gradientMode": "scheme",
+						"lineInterpolation": "smooth",
+						"lineWidth": 2,
+						"pointSize": 5,
+						"showPoints": "auto",
+						"spanNulls": false,
+						"stacking": { "group": "A", "mode": "none" }
+					},
+					"unit": "ops"
+				},
+				"overrides": []
+			},
+			"options": {
+				"legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+				"tooltip": { "mode": "multi", "sort": "desc" }
+			},
+			"targets": [
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "sum(rate(vibranium_orders_cancelled_total{job=\"order-service\"}[1m]))",
+					"legendFormat": "cancels/s",
+					"refId": "A"
+				}
+			]
+		},
+		{
+			"title": "Outbox Queue Depth (Order Service)",
+			"description": "Mensagens pendentes na tabela outbox do order-service. Valores altos indicam gargalo na publicação.",
+			"type": "timeseries",
+			"datasource": { "type": "prometheus", "uid": "prometheus" },
+			"gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+			"fieldConfig": {
+				"defaults": {
+					"color": { "mode": "palette-classic" },
+					"custom": {
+						"axisBorderShow": false,
+						"axisLabel": "messages",
+						"drawStyle": "line",
+						"fillOpacity": 30,
+						"gradientMode": "scheme",
+						"lineInterpolation": "smooth",
+						"lineWidth": 2,
+						"pointSize": 5,
+						"showPoints": "auto",
+						"spanNulls": false,
+						"stacking": { "group": "A", "mode": "none" },
+						"thresholdsStyle": { "mode": "line+area" }
+					},
+					"thresholds": {
+						"mode": "absolute",
+						"steps": [
+							{ "color": "green", "value": null },
+							{ "color": "yellow", "value": 500 },
+							{ "color": "red", "value": 1000 }
+						]
+					},
+					"unit": "short"
+				},
+				"overrides": []
+			},
+			"options": {
+				"legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+				"tooltip": { "mode": "multi", "sort": "desc" }
+			},
+			"targets": [
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "vibranium_outbox_queue_depth{job=\"order-service\"}",
+					"legendFormat": "outbox depth",
+					"refId": "A"
+				}
+			]
+		},
+		{
+			"title": "Saga Duration (p50 / p95 / p99)",
+			"description": "Duração end-to-end da saga: PlaceOrder → FundsReserved → Match → Settlement",
+			"type": "timeseries",
+			"datasource": { "type": "prometheus", "uid": "prometheus" },
+			"gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+			"fieldConfig": {
+				"defaults": {
+					"color": { "mode": "palette-classic" },
+					"custom": {
+						"axisBorderShow": false,
+						"axisLabel": "duration",
+						"drawStyle": "line",
+						"fillOpacity": 10,
+						"gradientMode": "scheme",
+						"lineInterpolation": "smooth",
+						"lineWidth": 2,
+						"pointSize": 5,
+						"showPoints": "auto",
+						"spanNulls": false,
+						"stacking": { "group": "A", "mode": "none" }
+					},
+					"unit": "s"
+				},
+				"overrides": []
+			},
+			"options": {
+				"legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+				"tooltip": { "mode": "multi", "sort": "desc" }
+			},
+			"targets": [
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "histogram_quantile(0.50, sum(rate(vibranium_saga_duration_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
+					"legendFormat": "p50",
+					"refId": "A"
+				},
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "histogram_quantile(0.95, sum(rate(vibranium_saga_duration_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
+					"legendFormat": "p95",
+					"refId": "B"
+				},
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "histogram_quantile(0.99, sum(rate(vibranium_saga_duration_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
+					"legendFormat": "p99",
+					"refId": "C"
+				}
+			]
+		},
+		{
+			"title": "Redis Match Engine Latency (p50 / p95 / p99)",
+			"description": "Latência do EVALSHA no Redis para matching de ordens",
+			"type": "timeseries",
+			"datasource": { "type": "prometheus", "uid": "prometheus" },
+			"gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+			"fieldConfig": {
+				"defaults": {
+					"color": { "mode": "palette-classic" },
+					"custom": {
+						"axisBorderShow": false,
+						"axisLabel": "latency",
+						"drawStyle": "line",
+						"fillOpacity": 10,
+						"gradientMode": "scheme",
+						"lineInterpolation": "smooth",
+						"lineWidth": 2,
+						"pointSize": 5,
+						"showPoints": "auto",
+						"spanNulls": false,
+						"stacking": { "group": "A", "mode": "none" }
+					},
+					"unit": "s"
+				},
+				"overrides": []
+			},
+			"options": {
+				"legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+				"tooltip": { "mode": "multi", "sort": "desc" }
+			},
+			"targets": [
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "histogram_quantile(0.50, sum(rate(vibranium_redis_match_latency_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
+					"legendFormat": "p50",
+					"refId": "A"
+				},
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "histogram_quantile(0.95, sum(rate(vibranium_redis_match_latency_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
+					"legendFormat": "p95",
+					"refId": "B"
+				},
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "histogram_quantile(0.99, sum(rate(vibranium_redis_match_latency_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
+					"legendFormat": "p99",
+					"refId": "C"
+				}
+			]
+		},
+		{
+			"title": "Outbox Publish Latency (Order Service)",
+			"description": "Latência de publicação das mensagens da outbox para o RabbitMQ",
+			"type": "timeseries",
+			"datasource": { "type": "prometheus", "uid": "prometheus" },
+			"gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+			"fieldConfig": {
+				"defaults": {
+					"color": { "mode": "palette-classic" },
+					"custom": {
+						"axisBorderShow": false,
+						"axisLabel": "latency",
+						"drawStyle": "line",
+						"fillOpacity": 10,
+						"gradientMode": "scheme",
+						"lineInterpolation": "smooth",
+						"lineWidth": 2,
+						"pointSize": 5,
+						"showPoints": "auto",
+						"spanNulls": false,
+						"stacking": { "group": "A", "mode": "none" }
+					},
+					"unit": "s"
+				},
+				"overrides": []
+			},
+			"options": {
+				"legend": { "calcs": ["mean", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom" },
+				"tooltip": { "mode": "multi", "sort": "desc" }
+			},
+			"targets": [
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "histogram_quantile(0.50, sum(rate(vibranium_outbox_publish_latency_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
+					"legendFormat": "p50",
+					"refId": "A"
+				},
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "histogram_quantile(0.95, sum(rate(vibranium_outbox_publish_latency_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
+					"legendFormat": "p95",
+					"refId": "B"
+				},
+				{
+					"datasource": { "type": "prometheus", "uid": "prometheus" },
+					"expr": "histogram_quantile(0.99, sum(rate(vibranium_outbox_publish_latency_seconds_bucket{job=\"order-service\"}[5m])) by (le))",
+					"legendFormat": "p99",
+					"refId": "C"
+				}
+			]
+		}
+	],
+	"schemaVersion": 39,
+	"tags": ["vibranium", "order-service", "order-flow"],
+	"templating": { "list": [] },
+	"time": { "from": "now-1h", "to": "now" },
+	"timepicker": {},
+	"timezone": "",
+	"title": "Vibranium — Order Flow",
+	"uid": "vibranium-order-flow",
+	"version": 1
 }
