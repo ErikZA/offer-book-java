@@ -32,7 +32,14 @@
 * **JWKS Rotator Sidecar (AT-13.1):** Container Alpine (`jwks-rotator`) que verifica a cada 6 horas se o `kid` da chave RSA do Keycloak mudou e atualiza a credencial JWT do consumer no Kong via Admin API — sem reinicialização do Kong, sem downtime. Script `jwks-rotation.sh` idempotente (no-op se `kid` não mudou); log auditável em NDJSON. Equivalente a um CronJob `0 */6 * * *` em Kubernetes.
 * **DevOps:** Docker e Docker Compose para orquestração idêntica de ambientes de desenvolvimento e *staging*, incluindo limites configurados de CPU e RAM para simular cenários reais de estresse.
 
-## 5. Testes & Qualidade de Código
+## 5. Observabilidade & Métricas
+
+* **Jaeger (AT-14.1):** Distributed tracing via OpenTelemetry (OTLP HTTP). Visualização de traces end-to-end da Saga no Jaeger UI (`localhost:16686`).
+* **Micrometer Registry Prometheus (AT-15.2):** Exportação de métricas de negócio (`vibranium.*`) e JVM via `/actuator/prometheus`.
+* **Prometheus (AT-12):** Coleta de métricas dos microsserviços via scrape HTTP a cada 15 segundos. Targets: `order-service:8080`, `wallet-service:8081`.
+* **Grafana (AT-12):** Dashboards provisionados automaticamente via volumes Docker — 4 dashboards (Order Flow, Wallet Health, Infrastructure, SLA) + 3 alertas críticos (outbox depth, error rate, circuit breaker). Acesso: `localhost:3000`.
+
+## 6. Testes & Qualidade de Código
 
 * **Testcontainers:** Automação da subida de instâncias reais e efêmeras (PostgreSQL, MongoDB, Redis e RabbitMQ) via Docker para testes de integração 100% confiáveis. O container PostgreSQL dos testes não requer mais `wal_level=logical` pois o relay do Outbox agora usa Polling com SKIP LOCKED.
 * **ArchUnit:** Testes automatizados de arquitetura para garantir, via CI/CD, que as regras do CQRS, Clean Architecture e isolamento de módulos não sejam violadas pela equipe.

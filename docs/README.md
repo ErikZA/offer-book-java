@@ -41,7 +41,7 @@ Entenda a visão geral, fluxos e padrões do sistema.
 - **[order-book-mvp-sequence.md](./architecture/order-book-mvp-sequence.md)** - Diagramas de sequência
 - **[ddd-cqrs-event-source.md](./architecture/ddd-cqrs-event-source.md)** - Padrões (DDD/CQRS/Event Sourcing) + Transactional Outbox com Polling SKIP LOCKED
 - **[tools-stack.md](./architecture/tools-stack.md)** - Stack de ferramentas (inclui Testcontainers, Spring Retry e Polling SKIP LOCKED)
-- **[quality-and-tracing.md](./architecture/quality-and-tracing.md)** - Qualidade e observabilidade (inclui race condition de slot CDC e isolamento de testes de carga)
+- **[quality-and-tracing.md](./architecture/quality-and-tracing.md)** - Qualidade e observabilidade (inclui tracing Jaeger, métricas Prometheus + Grafana, Circuit Breaker)
 
 ### 📋 Referência
 - **[SETUP_COMPLETE.md](./SETUP_COMPLETE.md)** - Resumo do que foi implementado

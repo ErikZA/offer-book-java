@@ -24,6 +24,7 @@
 ✅ AT-09 — Consumer Group e Prefetch Tuning: prefetch=10, concurrency 1-5, 5 testes de integração
 ✅ AT-10 — Unificar Outbox Pattern: AbstractOutboxPublisher extraído para common-utils (Template Method)
 ✅ AT-15.2 — Métricas de Negócio via Micrometer/Prometheus: 10 métricas instrumentadas + endpoint /actuator/prometheus
+✅ AT-12 — Observability Stack Prometheus + Grafana: 4 dashboards provisionados + 3 alertas críticos
 ```
 
 ### Implementações recentes
@@ -104,6 +105,14 @@
 | **`OrderMetricsTest`** (AT-15.2) | ✅ 3/3 GREEN | Testes: `orders.created` BUY/SELL + `outbox.queue.depth` |
 | **`PrometheusEndpointTest`** (AT-15.2) | ✅ 3+3 GREEN | Testes: bean, scrape, endpoint (ambos os serviços) |
 | **`WalletMetricsTest`** (AT-15.2) | ✅ 4/4 GREEN | Testes: `funds.reserved` BRL/VIB + `funds.settled` + `outbox.queue.depth` |
+| **Prometheus** (AT-12) | ✅ | Container `prom/prometheus:v2.53.0`; scrape `order-service:8080` + `wallet-service:8081` a cada 15s |
+| **Grafana** (AT-12) | ✅ | Container `grafana/grafana:11.1.0`; datasource + 4 dashboards auto-provisionados |
+| **Dashboard Order Flow** (AT-12) | ✅ | orders/s, matches/s, cancels/s, outbox depth, saga duration, Redis match latency |
+| **Dashboard Wallet Health** (AT-12) | ✅ | reserves/s, settles/s, releases/s, errors, wallet outbox depth |
+| **Dashboard Infrastructure** (AT-12) | ✅ | Redis ops, HikariCP connections, JVM heap/GC/CPU, circuit breaker state |
+| **Dashboard SLA** (AT-12) | ✅ | HTTP latência p50/p95/p99 por endpoint, error rate, request rate, saga percentiles |
+| **Alertas Grafana** (AT-12) | ✅ | Outbox depth > 1000 (5m), Error rate > 5% (5m), Circuit breaker open (1m) |
+| **`AT-12-observability-stack-validation.sh`** (AT-12) | ✅ | 14 checks: Prometheus health/targets, Grafana health/dashboards/datasource |
 ---
 
 ## 🎯 O Que Foi Realizado

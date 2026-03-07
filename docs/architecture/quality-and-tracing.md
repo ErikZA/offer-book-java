@@ -134,6 +134,64 @@ Acesso: **`http://localhost:16686`** → selecionar serviço `order-service` ou 
 
 Em produção usar tail-based sampling via **OpenTelemetry Collector** (intermediário entre apps e backend) para amostrar apenas traces lentos ou com erro — sem reconfigurar os serviços.
 
+### 3.2 Stack de Métricas (AT-12 — Prometheus + Grafana)
+
+Complementando o tracing distribuído (Jaeger), a stack de **métricas** permite monitorar a saúde operacional dos serviços em tempo real.
+
+#### Componentes
+
+| Componente | Imagem | Porta (dev) | Função |
+|:-----------|:-------|:------------|:-------|
+| **Prometheus** | `prom/prometheus:v2.53.0` | `9090` | Coleta métricas via scrape `/actuator/prometheus` a cada 15s |
+| **Grafana** | `grafana/grafana:11.1.0` | `3000` | Visualização, dashboards provisionados e alertas |
+
+#### Scrape Targets
+
+- `order-service:8080/actuator/prometheus` — métricas de ordens, matching, saga, outbox
+- `wallet-service:8081/actuator/prometheus` — métricas de reservas, liquidações, liberações, outbox
+
+#### Dashboards Provisionados (4)
+
+| Dashboard | UID | Métricas principais |
+|:----------|:----|:--------------------|
+| **Order Flow** | `vibranium-order-flow` | `vibranium_orders_created_total`, `vibranium_orders_matched_total`, `vibranium_orders_cancelled_total`, `vibranium_outbox_queue_depth`, `vibranium_saga_duration_seconds`, `vibranium_redis_match_latency_seconds` |
+| **Wallet Health** | `vibranium-wallet-health` | `vibranium_funds_reserved_total`, `vibranium_funds_settled_total`, `vibranium_funds_released_total`, `vibranium_outbox_queue_depth` |
+| **Infrastructure** | `vibranium-infrastructure` | `hikaricp_connections_*`, `jvm_memory_*`, `jvm_gc_pause_seconds`, `process_cpu_usage`, `resilience4j_circuitbreaker_state` |
+| **SLA** | `vibranium-sla` | `http_server_requests_seconds_bucket` (p50/p95/p99), error rate (5xx/total), `vibranium_saga_duration_seconds` |
+
+#### Alertas Provisionados (3 cenários críticos)
+
+| Alerta | Condição | `for` | Severidade |
+|:-------|:---------|:------|:-----------|
+| **Outbox Depth Critical** | `vibranium_outbox_queue_depth > 1000` | 5m | critical |
+| **Error Rate > 5%** | `HTTP 5xx / total > 0.05` | 5m | critical |
+| **Circuit Breaker Open** | `resilience4j_circuitbreaker_state > 0` | 1m | warning |
+
+#### Provisioning via volumes (zero configuração manual)
+
+Toda a configuração é injetada via volumes Docker no `docker-compose.dev.yml`:
+
+```
+infra/
+├── prometheus/
+│   └── prometheus.yml              # Scrape config (targets + interval)
+└── grafana/
+    ├── provisioning/
+    │   ├── datasources/
+    │   │   └── prometheus.yml       # Datasource Prometheus (auto-default)
+    │   ├── dashboards/
+    │   │   └── dashboard.yml        # Provider: carrega JSONs de /var/lib/grafana/dashboards
+    │   └── alerting/
+    │       └── alerting.yml         # Contact points + policies + 3 alert rules
+    └── dashboards/
+        ├── order-flow.json
+        ├── wallet-health.json
+        ├── infrastructure.json
+        └── sla.json
+```
+
+Acesso: **`http://localhost:3000`** (admin/admin) → Folder "Vibranium" com os 4 dashboards.
+
 ---
 
 ## 4. Tolerância a Falhas (Resilience4j)

@@ -1,0 +1,20 @@
+# ================================================================================
+# Grafana Datasource Provisioning — Prometheus (dev)
+# ================================================================================
+# Auto-provisiona Prometheus como datasource default ao iniciar o Grafana.
+# URL usa o nome do container Docker na rede interna (vibranium-network-dev).
+# ================================================================================
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: '15s'

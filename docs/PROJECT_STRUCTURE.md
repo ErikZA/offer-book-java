@@ -75,6 +75,21 @@ vibranium-orderbook/
 │   │   ├── kong-setup.sh           # Provisionamento inicial (one-shot)
 │   │   ├── jwks-rotation.sh        # ⭐ Script idempotente de rotação JWKS (AT-13.1)
 │   │   └── jwks-rotator-entrypoint.sh  # ⭐ Loop 6h do sidecar rotator (AT-13.1)
+│   ├── prometheus/                  # ⭐ AT-12 — Configuração Prometheus
+│   │   └── prometheus.yml           # Scrape config: order-service + wallet-service (15s)
+│   ├── grafana/                     # ⭐ AT-12 — Dashboards e Provisioning Grafana
+│   │   ├── provisioning/
+│   │   │   ├── datasources/
+│   │   │   │   └── prometheus.yml   # Datasource Prometheus (auto-default)
+│   │   │   ├── dashboards/
+│   │   │   │   └── dashboard.yml    # Provider de dashboards via filesystem
+│   │   │   └── alerting/
+│   │   │       └── alerting.yml     # 3 alertas: outbox depth, error rate, circuit breaker
+│   │   └── dashboards/
+│   │       ├── order-flow.json      # Orders/s, matches/s, cancels/s, outbox depth
+│   │       ├── wallet-health.json   # Reserves/s, settles/s, releases/s, errors
+│   │       ├── infrastructure.json  # Redis, PG, JVM heap, circuit breaker state
+│   │       └── sla.json             # Latência p50/p95/p99, error rate, saga duration
 │   └── keycloak/
 │       └── keycloak-setup.sh
 │
@@ -199,7 +214,9 @@ Cada microsserviço é uma aplicação Spring Boot independente que aplica **Arq
 
 ### 4. 🐳 `docker/` e ☁️ `infra/` — O Ambiente
 
-- **`infra/`:** Docker Compose e configs de infraestrutura centralizada. Requer o arquivo `.env` na raiz (copie `.env.example`). Execute `docker compose -f infra/docker-compose.dev.yml up -d` para subir RabbitMQ, PostgreSQL, MongoDB, Redis, Keycloak, Kong e os dois microsserviços.
+- **`infra/`:** Docker Compose e configs de infraestrutura centralizada. Requer o arquivo `.env` na raiz (copie `.env.example`). Execute `docker compose -f infra/docker-compose.dev.yml up -d` para subir RabbitMQ, PostgreSQL, MongoDB, Redis, Keycloak, Kong, Jaeger, **Prometheus**, **Grafana** e os dois microsserviços.
+- **`infra/prometheus/`:** Configuração de scrape do Prometheus (targets e intervalo).
+- **`infra/grafana/`:** Dashboards JSON, provisioning de datasources e alertas do Grafana.
 - **`tests/`:** Docker Compose isolado para testes de integração. Execute `docker compose -f tests/docker-compose.test.yml up` para rodar a suite completa.
 
 ---

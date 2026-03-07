@@ -1,0 +1,198 @@
+# ================================================================================
+# Grafana Alerting Provisioning — Vibranium Platform (dev)
+# ================================================================================
+# Provisiona alert rules para os 3 cenários críticos:
+#   1. Outbox depth > 1000 por > 5 min
+#   2. Error rate > 5%
+#   3. Circuit breaker open
+#
+# Ref: https://grafana.com/docs/grafana/latest/alerting/set-up/provision-alerting-resources/file-provisioning/
+# ================================================================================
+
+apiVersion: 1
+
+# --------------------------------------------------------------------------
+# Contact Points — define para onde os alertas são enviados
+# Em dev: logs do Grafana (sem integração externa)
+# Em prod: substituir por Slack, PagerDuty, OpsGenie, etc.
+# --------------------------------------------------------------------------
+contactPoints:
+  - orgId: 1
+    name: vibranium-dev-alerts
+    receivers:
+      - uid: vibranium-dev-log
+        type: email
+        disableResolveMessage: false
+        settings:
+          addresses: ops-dev@vibranium.local
+          singleEmail: true
+
+# --------------------------------------------------------------------------
+# Notification Policies — roteamento de alertas
+# --------------------------------------------------------------------------
+policies:
+  - orgId: 1
+    receiver: vibranium-dev-alerts
+    group_by: ['alertname', 'job']
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+
+# --------------------------------------------------------------------------
+# Alert Rules — 3 cenários críticos para a plataforma Vibranium
+# --------------------------------------------------------------------------
+groups:
+  - orgId: 1
+    name: vibranium-critical
+    folder: Vibranium Alerts
+    interval: 1m
+    rules:
+      # ------------------------------------------------------------------
+      # ALERTA 1: Outbox Depth > 1000 por > 5 min
+      # Indica gargalo na publicação outbox → RabbitMQ.
+      # Pode causar atraso na saga e inconsistência eventual.
+      # ------------------------------------------------------------------
+      - uid: vibranium-outbox-depth-critical
+        title: 'Outbox Depth Critical (> 1000 for 5m)'
+        condition: C
+        for: 5m
+        annotations:
+          summary: 'Outbox queue depth acima de 1000 por mais de 5 minutos'
+          description: 'O serviço {{ $labels.job }} tem {{ $values.A }} mensagens pendentes na outbox. Possível gargalo no RabbitMQ ou no outbox publisher.'
+          runbook_url: ''
+        labels:
+          severity: critical
+          team: platform
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: 'max(vibranium_outbox_queue_depth) by (job)'
+              legendFormat: '{{ job }}'
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [1000]
+              refId: C
+
+      # ------------------------------------------------------------------
+      # ALERTA 2: Error Rate > 5%
+      # Indica degradação do serviço. Taxa de erro HTTP 5xx acima do SLA.
+      # ------------------------------------------------------------------
+      - uid: vibranium-error-rate-high
+        title: 'Error Rate > 5%'
+        condition: C
+        for: 5m
+        annotations:
+          summary: 'Taxa de erro HTTP 5xx acima de 5% no {{ $labels.job }}'
+          description: 'O serviço {{ $labels.job }} está com {{ $values.A | humanizePercentage }} de taxa de erro (5xx). Investigar logs e traces no Jaeger.'
+          runbook_url: ''
+        labels:
+          severity: critical
+          team: platform
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: 'sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m])) by (job) / sum(rate(http_server_requests_seconds_count[5m])) by (job)'
+              legendFormat: '{{ job }}'
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0.05]
+              refId: C
+
+      # ------------------------------------------------------------------
+      # ALERTA 3: Circuit Breaker Open
+      # Resilience4j state: 0=CLOSED, 1=OPEN, 2=HALF_OPEN
+      # Se state >= 1 por mais de 1 min, dispara alerta.
+      # Circuit breaker aberto impede chamadas ao Redis match engine.
+      # ------------------------------------------------------------------
+      - uid: vibranium-circuit-breaker-open
+        title: 'Circuit Breaker Open'
+        condition: C
+        for: 1m
+        annotations:
+          summary: 'Circuit breaker "{{ $labels.name }}" está OPEN no {{ $labels.job }}'
+          description: 'O circuit breaker {{ $labels.name }} está aberto, bloqueando chamadas ao serviço downstream. Verificar saúde do Redis e logs do order-service.'
+          runbook_url: ''
+        labels:
+          severity: warning
+          team: platform
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: 'resilience4j_circuitbreaker_state{job="order-service"}'
+              legendFormat: '{{ name }}'
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+              refId: C

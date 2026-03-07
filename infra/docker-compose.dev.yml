@@ -215,6 +215,88 @@ services:
             start_period: 10s
 
     # ================================================================================
+    # Prometheus 2 — Coleta de métricas dos microsserviços via /actuator/prometheus
+    # ================================================================================
+    # UI:          http://localhost:9090
+    # Targets:     order-service:8080, wallet-service:8081
+    # Scrape:      15s (padrão dev)
+    #
+    # O Prometheus scrape as métricas Micrometer (AT-15.2) de ambos os serviços.
+    # Métricas coletadas: vibranium_orders_*, vibranium_funds_*, vibranium_outbox_*,
+    # vibranium_redis_*, vibranium_saga_*, http_server_requests_*, jvm_*, hikaricp_*
+    # ================================================================================
+    prometheus:
+        image: prom/prometheus:v2.53.0
+        container_name: vibranium-prometheus-dev
+        ports:
+            - '9090:9090'
+        volumes:
+            - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+            - prometheus_data:/prometheus
+        command:
+            - '--config.file=/etc/prometheus/prometheus.yml'
+            - '--storage.tsdb.path=/prometheus'
+            - '--storage.tsdb.retention.time=7d'
+            - '--web.enable-lifecycle'
+        networks:
+            - vibranium-network-dev
+        healthcheck:
+            test: ['CMD-SHELL', 'wget --quiet --tries=1 --spider http://localhost:9090/-/healthy || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+            start_period: 10s
+
+    # ================================================================================
+    # Grafana 11 — Dashboards de observabilidade da plataforma Vibranium
+    # ================================================================================
+    # UI:           http://localhost:3000  (admin/admin)
+    # Datasource:   Prometheus auto-provisionado via volume
+    # Dashboards:   4 dashboards provisionados automaticamente:
+    #   - Order Flow:      ordens/s, matches/s, cancels/s, outbox depth
+    #   - Wallet Health:   reserves/s, settles/s, releases/s, errors
+    #   - Infrastructure:  Redis ops, PG connections, JVM heap, circuit breaker
+    #   - SLA:             latência p50/p95/p99 por endpoint
+    #
+    # Alertas provisionados para 3 cenários críticos:
+    #   - Outbox depth > 1000 por > 5 min
+    #   - Error rate > 5%
+    #   - Circuit breaker open
+    # ================================================================================
+    grafana:
+        image: grafana/grafana:11.1.0
+        container_name: vibranium-grafana-dev
+        ports:
+            - '3000:3000'
+        environment:
+            # Credenciais padrão dev — alterar em produção
+            GF_SECURITY_ADMIN_USER: admin
+            GF_SECURITY_ADMIN_PASSWORD: admin
+            # Habilita unified alerting (Grafana 9+)
+            GF_UNIFIED_ALERTING_ENABLED: 'true'
+            GF_ALERTING_ENABLED: 'false'
+        volumes:
+            # Provisioning: datasources, dashboards, alerting
+            - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+            - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+            - ./grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
+            # Dashboard JSON files
+            - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+            # Persistent storage
+            - grafana_data:/var/lib/grafana
+        depends_on:
+            prometheus:
+                condition: service_healthy
+        networks:
+            - vibranium-network-dev
+        healthcheck:
+            test: ['CMD-SHELL', 'wget --quiet --tries=1 --spider http://localhost:3000/api/health || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+            start_period: 15s
+
+    # ================================================================================
     # Keycloak Database — Banco dedicado para o Keycloak (separado dos bancos de app)
     # ================================================================================
     keycloak-db:
@@ -482,4 +564,6 @@ volumes:
     rabbitmq_data:
     keycloak_db_data:
     keycloak_dev_data:
+    prometheus_data:
+    grafana_data:
     m2_cache:
