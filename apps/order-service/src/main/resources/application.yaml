@@ -175,6 +175,44 @@ app:
             bids: '{vibranium}:bids'
             order-index: '{vibranium}:order_index'
 
+# -----------------------------------------------------------------------
+# AT-11 — Resilience4j: Circuit Breaker + Rate Limiter para o Motor de Match Redis.
+# Protege contra cascata de falhas quando Redis fica indisponível.
+# -----------------------------------------------------------------------
+resilience4j:
+    circuitbreaker:
+        instances:
+            redisMatchEngine:
+                # Abre o circuito quando 50% das chamadas na janela falham.
+                failure-rate-threshold: 50
+                # Janela deslizante de 10 chamadas (COUNT_BASED).
+                sliding-window-size: 10
+                sliding-window-type: count_based
+                # Número mínimo de chamadas antes de calcular a taxa de falha.
+                minimum-number-of-calls: 5
+                # Tempo que o circuito permanece OPEN antes de transitar para HALF_OPEN.
+                wait-duration-in-open-state: 30s
+                # Número de chamadas permitidas em HALF_OPEN para testar recuperação.
+                permitted-number-of-calls-in-half-open-state: 1
+                # Transição automática de OPEN → HALF_OPEN após waitDuration.
+                automatic-transition-from-open-to-half-open-enabled: true
+                # Apenas exceções de infraestrutura Redis disparam o circuit breaker.
+                # Exceções de negócio (IllegalArgumentException, etc.) NÃO contam como falha.
+                record-exceptions:
+                    - org.springframework.data.redis.RedisConnectionFailureException
+                    - org.springframework.data.redis.RedisSystemException
+                    - io.lettuce.core.RedisConnectionException
+                    - io.lettuce.core.RedisCommandTimeoutException
+                    - org.springframework.dao.QueryTimeoutException
+    ratelimiter:
+        instances:
+            redisMatchEngine:
+                # Limita a 500 chamadas por segundo para proteger Redis de burst pós-recovery.
+                limit-for-period: 500
+                limit-refresh-period: 1s
+                # Timeout máximo aguardando permissão do rate limiter.
+                timeout-duration: 100ms
+
 logging:
     level:
         root: INFO
@@ -199,7 +237,7 @@ management:
     endpoints:
         web:
             exposure:
-                include: health,info,metrics,prometheus
+                include: health,info,metrics,prometheus,circuitbreakers,circuitbreakerevents,ratelimiters
     endpoint:
         health:
             show-details: always

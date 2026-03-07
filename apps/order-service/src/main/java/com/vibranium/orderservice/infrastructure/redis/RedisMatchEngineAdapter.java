@@ -1,6 +1,7 @@
 package com.vibranium.orderservice.infrastructure.redis;
 
 import com.vibranium.contracts.enums.OrderType;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
@@ -88,6 +89,13 @@ public class RedisMatchEngineAdapter {
     /** AT-15.2: Timer para latência do EVALSHA no Redis (vibranium.redis.match.latency). */
     private final Timer redisMatchLatencyTimer;
 
+    /**
+     * AT-11: Circuit Breaker Resilience4j para o motor de match Redis.
+     * Protege contra cascata de falhas quando o Redis fica indisponível.
+     * Configuração via application.yaml (instância: redisMatchEngine).
+     */
+    private final CircuitBreaker circuitBreaker;
+
     /** Script Lua carregado do classpath — reutilizado para evitar reparsa a cada execução. */
     @SuppressWarnings("rawtypes")
     private DefaultRedisScript<List> matchScript;
@@ -98,8 +106,11 @@ public class RedisMatchEngineAdapter {
      */
     private DefaultRedisScript<Long> removeScript;
 
-    public RedisMatchEngineAdapter(StringRedisTemplate redisTemplate, MeterRegistry meterRegistry) {
+    public RedisMatchEngineAdapter(StringRedisTemplate redisTemplate,
+                                   MeterRegistry meterRegistry,
+                                   CircuitBreaker circuitBreaker) {
         this.redisTemplate = redisTemplate;
+        this.circuitBreaker = circuitBreaker;
         this.redisMatchLatencyTimer = Timer.builder("vibranium.redis.match.latency")
                 .description("Latency of Redis EVALSHA match engine execution")
                 .register(meterRegistry);
@@ -186,17 +197,19 @@ public class RedisMatchEngineAdapter {
         // Converte preço em score inteiro (sem ponto flutuante)
         long priceScore = price.multiply(BigDecimal.valueOf(PRICE_PRECISION)).longValue();
 
-        // Executa o script Lua atomicamente; KEYS[3] = order_index para AT-04.2
-        // AT-15.2: mede a latência do EVALSHA via Timer
-        List<Object> result = redisMatchLatencyTimer.record(() ->
-                redisTemplate.execute(
-                        matchScript,
-                        Arrays.asList(asksKey, bidsKey, orderIndexKey),
-                        orderType.name(),
-                        String.valueOf(priceScore),
-                        orderValue,
-                        quantity.toPlainString()
-                ));
+        // AT-11: decora a execução Redis com o Circuit Breaker.
+        // Se o circuito estiver OPEN, lança CallNotPermittedException sem tentar Redis.
+        // Se CLOSED ou HALF_OPEN, executa normalmente e registra sucesso/falha.
+        List<Object> result = circuitBreaker.executeSupplier(() ->
+                redisMatchLatencyTimer.record(() ->
+                        redisTemplate.execute(
+                                matchScript,
+                                Arrays.asList(asksKey, bidsKey, orderIndexKey),
+                                orderType.name(),
+                                String.valueOf(priceScore),
+                                orderValue,
+                                quantity.toPlainString()
+                        )));
 
         return parseResult(result);
     }

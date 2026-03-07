@@ -143,6 +143,67 @@ O desafio pede para compreender o que acontece quando diferentes componentes fal
 * **O Conceito**: Implementamos padrões de "disjuntor" (Circuit Breaker) e limites de taxa (Rate Limiting).
 * **A Aplicação**: Se o banco de dados PostgreSQL ficar lento sob carga extrema, o *Resilience4j* "abre o circuito" para evitar que o serviço de Wallet trave completamente o sistema, permitindo uma falha graciosa ou uma resposta de erro rápida enquanto o banco se recupera.
 
+### 4.1 Circuit Breaker — Redis Match Engine (order-service)
+
+O `RedisMatchEngineAdapter` é protegido por um Circuit Breaker (`redisMatchEngine`) que evita chamadas repetidas ao Redis quando o servidor está indisponível.
+
+#### Estados do Circuit Breaker
+
+| Estado | Comportamento |
+|:---------|:---------------------------------------------------------------|
+| **CLOSED** | Requisições fluem normalmente para o Redis. Falhas são contadas na sliding window. |
+| **OPEN** | Requisições falham imediatamente com `CallNotPermittedException` — sem tocar no Redis. A ordem é cancelada com motivo `REDIS_UNAVAILABLE`. |
+| **HALF_OPEN** | Após `waitDurationInOpenState`, 1 requisição de teste é permitida. Se sucesso → CLOSED; se falha → OPEN novamente. |
+
+#### Configuração
+
+```yaml
+resilience4j:
+  circuitbreaker:
+    instances:
+      redisMatchEngine:
+        failure-rate-threshold: 50          # Abre com 50% de falhas
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10             # Janela de 10 chamadas
+        minimum-number-of-calls: 5          # Mínimo para avaliar
+        wait-duration-in-open-state: 30s    # Tempo em OPEN antes de HALF_OPEN
+        permitted-number-of-calls-in-half-open-state: 1
+        automatic-transition-from-open-to-half-open-enabled: true
+  ratelimiter:
+    instances:
+      redisMatchEngine:
+        limit-for-period: 500               # Proteção contra burst pós-recovery
+        limit-refresh-period: 1s
+        timeout-duration: 100ms
+```
+
+#### Exceções Monitoradas
+
+Apenas exceções de infraestrutura Redis são registradas como falhas:
+- `RedisConnectionFailureException`, `RedisSystemException` (Spring Data Redis)
+- `RedisConnectionException`, `RedisCommandTimeoutException` (Lettuce)
+- `QueryTimeoutException` (Spring DAO)
+
+Exceções de negócio (ex: `IllegalArgumentException`) **não** contam como falha do circuito.
+
+#### Métricas (Micrometer + Actuator)
+
+O módulo `resilience4j-micrometer` publica automaticamente métricas que podem ser consultadas via Prometheus/Grafana:
+- `resilience4j_circuitbreaker_state` — estado atual (0=CLOSED, 1=OPEN, 2=HALF_OPEN)
+- `resilience4j_circuitbreaker_calls_seconds` — latência por resultado (successful, failed)
+- `resilience4j_circuitbreaker_failure_rate` — taxa de falha na sliding window
+
+Endpoints Actuator: `/actuator/circuitbreakers`, `/actuator/circuitbreakerevents`
+
+#### Testes
+
+| Classe | Tipo | Cenários |
+|:-------|:-----|:---------|
+| `CircuitBreakerOpenTest` | Unitário | Abertura após 5 falhas consecutivas, fail-fast em < 50ms, exceções de negócio não abrem |
+| `CircuitBreakerHalfOpenTest` | Unitário | Fechamento após chamada bem-sucedida, reabertura se falhar em half-open |
+| `CircuitBreakerMetricsIntegrationTest` | Integração | Registro no registry, endpoint Actuator, métricas Micrometer |
+| `GracefulDegradationIntegrationTest` | Integração | Cancelamento gracioso com `REDIS_UNAVAILABLE`, processamento normal quando closed |
+
 ---
 
 ## 5. Isolamento de Contexto Spring em Testes de Integração (wallet-service)

@@ -90,6 +90,7 @@ src/main/java/com/vibranium/orderservice/
     ├── MongoTransactionConfig.java                   # TransactionManager MongoDB
     ├── OutboxConfig.java                             # @EnableRetry + @EnableConfigurationProperties
     ├── OutboxProperties.java                         # Record: batchSize + delayMs (app.outbox.*)
+    ├── CircuitBreakerConfig.java                     # ⭐ Bean CircuitBreaker do registry (AT-11)
     ├── RabbitMQConfig.java                           # Topologia: exchanges, filas, bindings, DLQ
     └── TimeConfig.java                              # ⭐ Bean Clock.systemUTC() (AT-09.2)
 
@@ -467,6 +468,8 @@ O `GlobalExceptionHandler` retorna `ResponseEntity<Map<String, Object>>` com cam
 | Spring Security OAuth2            | JWT Resource Server                             |
 | Flyway                            | Migrations (`V1`–`V5` tabelas, `V6__add_index_orders_saga_timeout`) |
 | spring-retry                      | `@Retryable`/`@Recover` no `OrderOutboxPublisherService`            |
+| Resilience4j Circuit Breaker      | Proteção do `RedisMatchEngineAdapter` contra falhas Redis (AT-11)   |
+| Resilience4j Micrometer           | Métricas de circuit breaker exportadas para Prometheus              |
 | common-contracts                  | DTOs/Events compartilhados entre serviços       |
 | testcontainers:mongodb (test)     | `MongoDBContainer` para testes de integração    |
 | testcontainers:rabbitmq (test)    | `RabbitMQContainer` — AT-01.2 resiliência com `docker pause/unpause` |
@@ -666,4 +669,29 @@ O `RedisMatchEngineAdapter.tryMatch()` passa a retornar `List<MatchResult>` (vaz
 ```powershell
 mvn test -pl apps/order-service -Dtest=MatchEngineRedisIntegrationTest
 mvn test -pl apps/order-service -Dtest=RedisMatchEngineAdapterParseResultTest
+```
+
+### 🔌 Circuit Breaker — Proteção Redis (AT-11)
+
+O `RedisMatchEngineAdapter` é protegido por um **Resilience4j Circuit Breaker** (`redisMatchEngine`) que impede chamadas repetidas ao Redis quando o servidor está indisponível.
+
+**Comportamento:**
+- **CLOSED** → Requisições fluem para o Redis normalmente. Falhas contadas em sliding window de 10 chamadas.
+- **OPEN** → Fail-fast imediato com `CallNotPermittedException`. A ordem é cancelada com motivo `REDIS_UNAVAILABLE`.
+- **HALF_OPEN** → Após 30s, 1 chamada de teste é permitida. Se sucesso → CLOSED; se falha → OPEN.
+
+Um **Rate Limiter** (500 req/s) protege contra burst de requisições após recovery.
+
+Configuração: [`CircuitBreakerConfig.java`](src/main/java/com/vibranium/orderservice/config/CircuitBreakerConfig.java) + `application.yaml` seção `resilience4j`.
+
+**Testes:**
+
+```powershell
+# Testes unitários — Circuit Breaker
+mvn test -pl apps/order-service -Dtest=CircuitBreakerOpenTest
+mvn test -pl apps/order-service -Dtest=CircuitBreakerHalfOpenTest
+
+# Testes de integração — Degradação graciosa
+mvn test -pl apps/order-service -Dtest=CircuitBreakerMetricsIntegrationTest
+mvn test -pl apps/order-service -Dtest=GracefulDegradationIntegrationTest
 ```

@@ -100,6 +100,34 @@ app:
         pending-timeout-minutes: 5
         cleanup-delay-ms: 3600000 # 1h — efetivamente desabilita execução automática em testes
 
+# -----------------------------------------------------------------------
+# AT-11 — Resilience4j: Circuit Breaker configurado para testes.
+# waitDuration curto para viabilizar testes de transição OPEN→HALF_OPEN.
+# -----------------------------------------------------------------------
+resilience4j:
+    circuitbreaker:
+        instances:
+            redisMatchEngine:
+                failure-rate-threshold: 50
+                sliding-window-size: 10
+                sliding-window-type: count_based
+                minimum-number-of-calls: 5
+                wait-duration-in-open-state: 1s
+                permitted-number-of-calls-in-half-open-state: 1
+                automatic-transition-from-open-to-half-open-enabled: true
+                record-exceptions:
+                    - org.springframework.data.redis.RedisConnectionFailureException
+                    - org.springframework.data.redis.RedisSystemException
+                    - io.lettuce.core.RedisConnectionException
+                    - io.lettuce.core.RedisCommandTimeoutException
+                    - org.springframework.dao.QueryTimeoutException
+    ratelimiter:
+        instances:
+            redisMatchEngine:
+                limit-for-period: 500
+                limit-refresh-period: 1s
+                timeout-duration: 100ms
+
 logging:
     level:
         root: WARN

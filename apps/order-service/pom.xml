@@ -113,6 +113,23 @@
         </dependency>
 
         <!-- =====================================================================
+             AT-11 — Resilience4j: Circuit Breaker + Rate Limiter para o Motor de Match Redis.
+             Protege contra cascata de falhas quando Redis fica indisponível.
+             resilience4j-spring-boot3: auto-configuração via application.yaml.
+             resilience4j-micrometer: exporta métricas do circuit breaker para /actuator/prometheus.
+        ====================================================================== -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-spring-boot3</artifactId>
+            <version>2.2.0</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-micrometer</artifactId>
+            <version>2.2.0</version>
+        </dependency>
+
+        <!-- =====================================================================
              AT-14.1 — Observabilidade Distribuída: Micrometer Tracing + OpenTelemetry
         ====================================================================== -->
 

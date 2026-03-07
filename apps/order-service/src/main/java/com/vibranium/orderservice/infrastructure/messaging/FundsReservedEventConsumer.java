@@ -20,6 +20,7 @@ import com.vibranium.orderservice.domain.model.ProcessedEvent;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
 import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -262,6 +263,18 @@ public class FundsReservedEventConsumer {
                             order.getRemainingAmount(),
                             order.getCorrelationId()
                     );
+                } catch (CallNotPermittedException cbEx) {
+                    // AT-11: Circuit breaker OPEN — falha rápida sem tentar Redis.
+                    // Cancela a ordem imediatamente com reason específica.
+                    logger.error("Circuit breaker OPEN — falha rápida: orderId={} cbState={}",
+                            order.getId(), cbEx.getCausingCircuitBreakerName());
+                    txTemplate.execute(s -> {
+                        cancelOrder(order, FailureReason.INTERNAL_ERROR,
+                                "REDIS_UNAVAILABLE: Circuit breaker is OPEN");
+                        return null;
+                    });
+                    channel.basicAck(deliveryTag, false);
+                    return;
                 } catch (Exception redisEx) {
                     // Redis indisponível ou timeout: compensa cancelando a ordem em nova TX.
                     // A Fase 1 já commitou OPEN; esta TX reverte para CANCELLED com registro
