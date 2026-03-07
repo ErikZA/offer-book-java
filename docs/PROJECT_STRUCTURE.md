@@ -63,6 +63,7 @@ vibranium-orderbook/
 │   ├── docker-compose.yml          # Infra geral (Kong, Keycloak, Postgres, jwks-rotator)
 │   ├── docker-compose.dev.yml      # Desenvolvimento local (microsserviços + hotreload)
 │   ├── docker-compose.staging.yml  # Staging com réplicas
+│   ├── docker-compose.redis-cluster.yml  # ⭐ AT-15: Redis Cluster 6 nodes HA
 │   ├── docker/
 │   │   ├── Dockerfile              # Imagem do test-runner Maven
 │   │   ├── Dockerfile.keycloak     # Keycloak com plugin RabbitMQ
@@ -75,6 +76,8 @@ vibranium-orderbook/
 │   │   ├── kong-setup.sh           # Provisionamento inicial (one-shot)
 │   │   ├── jwks-rotation.sh        # ⭐ Script idempotente de rotação JWKS (AT-13.1)
 │   │   └── jwks-rotator-entrypoint.sh  # ⭐ Loop 6h do sidecar rotator (AT-13.1)
+│   ├── redis/                        # ⭐ AT-15 — Redis Cluster HA
+│   │   └── redis-cluster.conf       # Config base: cluster-enabled, AOF, timeout 5000ms
 │   ├── prometheus/                  # ⭐ AT-12 — Configuração Prometheus
 │   │   └── prometheus.yml           # Scrape config: order-service + wallet-service (15s)
 │   ├── grafana/                     # ⭐ AT-12 — Dashboards e Provisioning Grafana

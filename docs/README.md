@@ -42,6 +42,7 @@ Entenda a visão geral, fluxos e padrões do sistema.
 - **[ddd-cqrs-event-source.md](./architecture/ddd-cqrs-event-source.md)** - Padrões (DDD/CQRS/Event Sourcing) + Transactional Outbox com Polling SKIP LOCKED
 - **[tools-stack.md](./architecture/tools-stack.md)** - Stack de ferramentas (inclui Testcontainers, Spring Retry e Polling SKIP LOCKED)
 - **[quality-and-tracing.md](./architecture/quality-and-tracing.md)** - Qualidade e observabilidade (inclui tracing Jaeger, métricas Prometheus + Grafana, Circuit Breaker)
+- **[redis-cluster-setup.md](./architecture/redis-cluster-setup.md)** - Redis Cluster HA para Order Book (AT-15: 6 nodes, failover, recovery, monitoramento)
 
 ### 🔐 [Segurança & Secrets](./SECRETS_MANAGEMENT.md)
 Gestão de credenciais com Docker Secrets.

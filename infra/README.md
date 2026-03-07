@@ -10,6 +10,9 @@ infra/
 ├── docker-compose.yml          # Infra-only (Kong + Keycloak + PostgreSQL + RabbitMQ + Redis-Kong + jwks-rotator)
 ├── docker-compose.dev.yml      # Dev completo (infra + order-service + wallet-service hot-reload)
 ├── docker-compose.staging.yml  # Staging com réplicas (3× MongoDB rs0, PostgreSQL, Redis, RabbitMQ + Redis-Kong + kong-init)
+├── docker-compose.redis-cluster.yml  # ⭐ AT-15: Redis Cluster HA (6 nodes: 3M+3R) para Order Book
+├── redis/
+│   └── redis-cluster.conf        # ⭐ AT-15: Config base compartilhada por todos os nós do cluster
 ├── docker/
 │   ├── Dockerfile              # Imagem base para apps (build multi-stage Maven)
 │   ├── Dockerfile.keycloak     # Keycloak 22 + plugin keycloak-to-rabbit-3.0.5.jar
@@ -66,6 +69,17 @@ docker compose -f infra/docker-compose.dev.yml up -d postgres redis rabbitmq mon
 docker compose -f infra/docker-compose.yml up -d
 ```
 
+### Redis Cluster HA (AT-15)
+```bash
+# Cluster Redis com 6 nós (3 masters + 3 replicas) para HA do Order Book
+export REDIS_PASSWORD=sua_senha_segura
+docker compose -f infra/docker-compose.redis-cluster.yml up -d
+
+# Verificar status do cluster
+docker exec vibranium-redis-node-1 redis-cli -a $REDIS_PASSWORD cluster info
+docker exec vibranium-redis-node-1 redis-cli -a $REDIS_PASSWORD cluster nodes
+```
+
 ### Staging (réplicas)
 ```bash
 # Subir apenas os nós MongoDB e aguardar PRIMARY (recomendado para validação)
@@ -117,6 +131,7 @@ docker compose -f infra/docker-compose.staging.yml up -d
 | Jaeger UI        | 16686                        |
 | Jaeger OTLP HTTP | 4318 (apps → Jaeger spans)   |
 | Jaeger OTLP gRPC | 4317                         |
+| Redis Cluster    | 6379–6384 (AT-15, redis-cluster) |
 
 > **Redis-Kong** (`redis-kong` / `vibranium-redis-kong`) **não expõe porta pública**.
 > Acessível somente internamente via `vibranium-infra`. Serve exclusivamente ao plugin
@@ -149,6 +164,7 @@ KONG_ADMIN_URL=http://localhost:8001 ./tests/AT-12.1-rate-limiting-redis-validat
 - **Keycloak**: imagem customizada com `keycloak-to-rabbit-3.0.5.jar` compilada via `kc.sh build --db=postgres --health-enabled=true`. O modo `start --optimized` (staging) exige essas flags no build-time.
 - **Kong 3.4**: não possui `curl` na imagem — healthcheck usa `kong health`.
 - **Redis-Kong**: Redis standalone dedicado ao Kong rate-limiting. Os redis de aplicação (`redis-1/2/3`) usam cluster mode — incompatível com o plugin rate-limiting do Kong 3.x (requer standalone ou Sentinel). Dados efêmeros por design (`appendonly no`).
+- **Redis Cluster HA (AT-15)**: `docker-compose.redis-cluster.yml` provisiona 6 nós (3 masters + 3 replicas) com failover automático em < 10s (`cluster-node-timeout 5000`, `cluster-require-full-coverage no`). Todas as keys do Order Book usam hash tag `{vibranium}` para garantir mesmo slot CRC16. O profile Spring `cluster` ativa `spring.data.redis.cluster.nodes` com Lettuce adaptive topology refresh. Documentação completa: `docs/architecture/redis-cluster-setup.md`.
 - **MongoDB 7.0 — Replica Set Staging (AT-1.3.2)**: `docker-compose.staging.yml` usa 3 nós (`mongodb-1/2/3`) com `--replSet rs0 --keyFile /etc/mongod-keyfile`. Diferente do dev (keyFile aleatório por boot, safe para single-node), em staging o `docker-entrypoint-override-staging.sh` grava `MONGO_REPLICA_KEY` (env var FIXA e IDÊNTICA nos 3 nós) como keyFile — necessário para intra-cluster auth. O serviço `mongo-rs-init` executa `rs.initiate({_id:'rs0', members:[mongodb-1,mongodb-2,mongodb-3]})` após `service_healthy` nos 3 nós e aguarda eleicão do PRIMARY antes de sair com código 0. Os `order-services` usam `service_completed_successfully` em `mongo-rs-init`.
 - **MongoDB 7.0 — Replica Set (AT-1.3.1)**: `MongoTransactionManager` exige replica set para criar sessões de transação. O serviço `mongodb` sobe com `--replSet rs0 --keyFile /etc/mongod-keyfile` (MongoDB 7 exige keyFile quando `--auth + --replSet` estão ativos). O `docker-entrypoint-override.sh` gera o keyFile via `openssl rand -base64 756` em cada boot (seguro para single-node dev). O serviço `mongo-rs-init` executa `rs.initiate()` após o healthcheck pass e aguarda `stateStr === 'PRIMARY'` antes de sair com código 0. O `order-service` usa `depends_on: mongo-rs-init: service_completed_successfully`.
 - **init-app-databases.sh**: usa heredoc para passar `\gexec` ao `psql` (metacomando não funciona com `--command`).

@@ -1,0 +1,294 @@
+# =============================================================================
+# AT-15 — Redis Cluster para HA do Order Book
+#
+# 6 nodes: 3 masters + 3 replicas (quorum mínimo para failover automático).
+# Cada nó usa a mesma imagem redis:7-alpine com configuração base montada
+# de infra/redis/redis-cluster.conf.
+#
+# Uso:
+#   docker compose -f docker-compose.redis-cluster.yml up -d
+#   docker compose -f docker-compose.redis-cluster.yml ps
+#
+# Verificação:
+#   docker exec vibranium-redis-node-1 redis-cli -a <password> cluster info
+#   docker exec vibranium-redis-node-1 redis-cli -a <password> cluster nodes
+#
+# Hash Tags: todas as keys do Order Book usam {vibranium} para garantir
+# que asks, bids e order_index fiquem no mesmo hash slot CRC16.
+# Com --cluster-replicas 1, o slot {vibranium} terá 1 master + 1 replica.
+#
+# Failover: cluster-node-timeout=5000 + cluster-require-full-coverage=no
+# garante promoção da replica em < 10s e operação contínua.
+# =============================================================================
+
+services:
+    # ======================== Redis Node 1 (Master) ========================
+    redis-node-1:
+        image: redis:7-alpine
+        container_name: vibranium-redis-node-1
+        ports:
+            - '6379:6379'
+            - '16379:16379'
+        volumes:
+            - redis_node_1_data:/data
+            - ./redis/redis-cluster.conf:/usr/local/etc/redis/redis-cluster.conf:ro
+        command: >
+            redis-server /usr/local/etc/redis/redis-cluster.conf
+            --port 6379
+            --cluster-announce-ip redis-node-1
+            --cluster-announce-port 6379
+            --cluster-announce-bus-port 16379
+            --requirepass ${REDIS_PASSWORD:?Defina REDIS_PASSWORD}
+            --masterauth ${REDIS_PASSWORD}
+        networks:
+            - redis-cluster-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        healthcheck:
+            test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', '-p', '6379', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 10
+
+    # ======================== Redis Node 2 (Master) ========================
+    redis-node-2:
+        image: redis:7-alpine
+        container_name: vibranium-redis-node-2
+        ports:
+            - '6380:6379'
+            - '16380:16379'
+        volumes:
+            - redis_node_2_data:/data
+            - ./redis/redis-cluster.conf:/usr/local/etc/redis/redis-cluster.conf:ro
+        command: >
+            redis-server /usr/local/etc/redis/redis-cluster.conf
+            --port 6379
+            --cluster-announce-ip redis-node-2
+            --cluster-announce-port 6379
+            --cluster-announce-bus-port 16379
+            --requirepass ${REDIS_PASSWORD}
+            --masterauth ${REDIS_PASSWORD}
+        networks:
+            - redis-cluster-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        healthcheck:
+            test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', '-p', '6379', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 10
+        depends_on:
+            redis-node-1:
+                condition: service_healthy
+
+    # ======================== Redis Node 3 (Master) ========================
+    redis-node-3:
+        image: redis:7-alpine
+        container_name: vibranium-redis-node-3
+        ports:
+            - '6381:6379'
+            - '16381:16379'
+        volumes:
+            - redis_node_3_data:/data
+            - ./redis/redis-cluster.conf:/usr/local/etc/redis/redis-cluster.conf:ro
+        command: >
+            redis-server /usr/local/etc/redis/redis-cluster.conf
+            --port 6379
+            --cluster-announce-ip redis-node-3
+            --cluster-announce-port 6379
+            --cluster-announce-bus-port 16379
+            --requirepass ${REDIS_PASSWORD}
+            --masterauth ${REDIS_PASSWORD}
+        networks:
+            - redis-cluster-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        healthcheck:
+            test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', '-p', '6379', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 10
+        depends_on:
+            redis-node-1:
+                condition: service_healthy
+
+    # ======================== Redis Node 4 (Replica) ========================
+    redis-node-4:
+        image: redis:7-alpine
+        container_name: vibranium-redis-node-4
+        ports:
+            - '6382:6379'
+            - '16382:16379'
+        volumes:
+            - redis_node_4_data:/data
+            - ./redis/redis-cluster.conf:/usr/local/etc/redis/redis-cluster.conf:ro
+        command: >
+            redis-server /usr/local/etc/redis/redis-cluster.conf
+            --port 6379
+            --cluster-announce-ip redis-node-4
+            --cluster-announce-port 6379
+            --cluster-announce-bus-port 16379
+            --requirepass ${REDIS_PASSWORD}
+            --masterauth ${REDIS_PASSWORD}
+        networks:
+            - redis-cluster-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        healthcheck:
+            test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', '-p', '6379', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 10
+        depends_on:
+            redis-node-1:
+                condition: service_healthy
+
+    # ======================== Redis Node 5 (Replica) ========================
+    redis-node-5:
+        image: redis:7-alpine
+        container_name: vibranium-redis-node-5
+        ports:
+            - '6383:6379'
+            - '16383:16379'
+        volumes:
+            - redis_node_5_data:/data
+            - ./redis/redis-cluster.conf:/usr/local/etc/redis/redis-cluster.conf:ro
+        command: >
+            redis-server /usr/local/etc/redis/redis-cluster.conf
+            --port 6379
+            --cluster-announce-ip redis-node-5
+            --cluster-announce-port 6379
+            --cluster-announce-bus-port 16379
+            --requirepass ${REDIS_PASSWORD}
+            --masterauth ${REDIS_PASSWORD}
+        networks:
+            - redis-cluster-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        healthcheck:
+            test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', '-p', '6379', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 10
+        depends_on:
+            redis-node-1:
+                condition: service_healthy
+
+    # ======================== Redis Node 6 (Replica) ========================
+    redis-node-6:
+        image: redis:7-alpine
+        container_name: vibranium-redis-node-6
+        ports:
+            - '6384:6379'
+            - '16384:16379'
+        volumes:
+            - redis_node_6_data:/data
+            - ./redis/redis-cluster.conf:/usr/local/etc/redis/redis-cluster.conf:ro
+        command: >
+            redis-server /usr/local/etc/redis/redis-cluster.conf
+            --port 6379
+            --cluster-announce-ip redis-node-6
+            --cluster-announce-port 6379
+            --cluster-announce-bus-port 16379
+            --requirepass ${REDIS_PASSWORD}
+            --masterauth ${REDIS_PASSWORD}
+        networks:
+            - redis-cluster-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        healthcheck:
+            test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', '-p', '6379', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 10
+        depends_on:
+            redis-node-1:
+                condition: service_healthy
+
+    # ======================== Cluster Init ========================
+    # Container de curta duração: cria o cluster com 3 masters + 3 replicas
+    # e encerra com exit 0. --cluster-replicas 1 distribui automaticamente
+    # 1 replica para cada master.
+    redis-cluster-init:
+        image: redis:7-alpine
+        container_name: vibranium-redis-cluster-init
+        command: >
+            sh -c '
+              echo "Aguardando nós Redis estarem prontos..."
+              sleep 2
+              echo "Criando cluster 3 masters + 3 replicas..."
+              redis-cli --cluster create
+                redis-node-1:6379
+                redis-node-2:6379
+                redis-node-3:6379
+                redis-node-4:6379
+                redis-node-5:6379
+                redis-node-6:6379
+                --cluster-replicas 1
+                --cluster-yes
+                -a ${REDIS_PASSWORD}
+              echo ""
+              echo "=== Cluster Info ==="
+              redis-cli -h redis-node-1 -p 6379 -a ${REDIS_PASSWORD} cluster info
+              echo ""
+              echo "=== Cluster Nodes ==="
+              redis-cli -h redis-node-1 -p 6379 -a ${REDIS_PASSWORD} cluster nodes
+            '
+        networks:
+            - redis-cluster-network
+        depends_on:
+            redis-node-1:
+                condition: service_healthy
+            redis-node-2:
+                condition: service_healthy
+            redis-node-3:
+                condition: service_healthy
+            redis-node-4:
+                condition: service_healthy
+            redis-node-5:
+                condition: service_healthy
+            redis-node-6:
+                condition: service_healthy
+        deploy:
+            resources:
+                limits:
+                    memory: 64M
+                reservations:
+                    cpus: '0.1'
+        restart: 'no'
+
+networks:
+    redis-cluster-network:
+        driver: bridge
+
+volumes:
+    redis_node_1_data:
+    redis_node_2_data:
+    redis_node_3_data:
+    redis_node_4_data:
+    redis_node_5_data:
+    redis_node_6_data:

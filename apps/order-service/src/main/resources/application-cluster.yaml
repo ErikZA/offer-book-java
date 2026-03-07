@@ -1,0 +1,48 @@
+# =============================================================================
+# AT-15 — Profile "cluster" para Redis Cluster HA
+#
+# Ativação: spring.profiles.active=cluster (ou SPRING_PROFILES_ACTIVE=cluster)
+#
+# Este profile sobrescreve a configuração standalone do application.yaml
+# (spring.data.redis.host/port) pela configuração de cluster
+# (spring.data.redis.cluster.nodes).
+#
+# O Lettuce (cliente Redis padrão do Spring Data Redis) detecta automaticamente
+# o modo cluster e configura o ClusterTopologyRefreshOptions para redescoberta
+# de nós, permitindo failover transparente para o Order Book.
+# =============================================================================
+
+spring:
+    data:
+        redis:
+            # Desabilita host/port standalone — cluster.nodes assume o controle.
+            # NOTA: Spring Data Redis usa cluster.nodes em vez de host/port
+            # quando esta propriedade está presente.
+            cluster:
+                nodes:
+                    - redis-node-1:6379
+                    - redis-node-2:6379
+                    - redis-node-3:6379
+                    - redis-node-4:6379
+                    - redis-node-5:6379
+                    - redis-node-6:6379
+                # Número máximo de redirects MOVED/ASK antes de falhar.
+                # Default: 5. Suficiente para 16384 slots com 3 masters.
+                max-redirects: 3
+            password: ${REDIS_PASSWORD:}
+            timeout: 2000ms
+            lettuce:
+                pool:
+                    max-active: 8
+                    max-idle: 4
+                    min-idle: 1
+                cluster:
+                    refresh:
+                        # Habilita refresh periódico da topologia do cluster.
+                        # Essencial para que o Lettuce descubra o novo master
+                        # após failover sem precisar de restart da aplicação.
+                        period: 10s
+                        # Habilita adaptive refresh: o Lettuce monitora MOVED/ASK
+                        # redirects e atualiza a topologia imediatamente quando
+                        # detecta mudanças (failover, rebalanceamento, etc.).
+                        adaptive: true
