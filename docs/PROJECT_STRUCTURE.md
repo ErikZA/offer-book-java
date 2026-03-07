@@ -200,6 +200,7 @@ Cada microsserviço é uma aplicação Spring Boot independente que aplica **Arq
 │       ├── repository/     # Repositórios de leitura (MongoRepository)
 │       └── consumer/       # Projeção de eventos → Read Model
 │           service/        # Escritores atômicos (ex: OrderAtomicHistoryWriter)
+│                           # ⭐ ProjectionRebuildService — rebuild MongoDB a partir do PG (AT-08)
 │
 ├── infrastructure/         # Adapters técnicos — driven side (detalhes de implementação)
 │   ├── messaging/          # RabbitMQ listeners/consumers/publishers

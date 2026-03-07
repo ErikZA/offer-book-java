@@ -301,6 +301,21 @@ POST /api/v1/orders ──► Command Side ──► PostgreSQL (ACID)
 GET  /api/v1/orders ──► Query Side  ──► MongoDB (OrderDocument)
 ```
 
+**Replay Mechanism — Reconstrução da Projeção (AT-08):**
+
+Se o MongoDB for corrompido ou perder dados, o Read Model pode ser completamente reconstruído:
+```
+POST /admin/projections/rebuild (ROLE_ADMIN)
+   → Stream<Order> com cursor PostgreSQL (fetch size 500) — memória constante
+   → Para cada Order: upsert OrderDocument + histórico do tb_order_outbox
+   → ?mode=incremental — processa apenas ordens modificadas desde último rebuild
+```
+
+- **Idempotente:** upsert garante que 2x rebuild = mesmo resultado
+- **Non-blocking:** leituras continuam durante o rebuild (sem delete + recreate)
+- **Timeout:** configurável via `app.projection.rebuild.timeout-minutes` (padrão: 30)
+- **Incremental automático:** `@Scheduled` com cron configurável (desabilitado por padrão)
+
 1. Usuário envia ordem ➡️ **Command Side** ➡️ Valida no Postgres ➡️ Joga pro Redis.
 2. Usuário quer ver histórico ➡️ **Query Side** ➡️ Lê do MongoDB com resposta < 50ms.
 3. Robô quer ver as 10 melhores ofertas ➡️ **Query Side** ➡️ Pega direto do Redis quase instantaneamente.
@@ -330,3 +345,4 @@ Ao juntar esses três padrões, criamos um sistema **robusto e escalável** para
 | DLQ Policy     | ✅     | `applyMatch` em status terminal → `IllegalStateException` → NACK → DLQ |
 | Lazy Projection (AT-05.1) | ✅ | `createMinimalPending()` + `enrichFields()`; zero `IllegalStateException` por evento out-of-order; zero descarte silencioso |
 | SLA 200ms p99  | ✅     | Virtual Threads + isolamento de containers em testes                  |
+| Projection Rebuild (AT-08) | ✅ | `POST /admin/projections/rebuild` reconstrói Read Model MongoDB a partir do PG + Outbox; `Stream<Order>` cursor (fetch 500); upsert idempotente; rebuild incremental via `@Scheduled` |

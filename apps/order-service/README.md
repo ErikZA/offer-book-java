@@ -35,6 +35,10 @@ Implementa CQRS com PostgreSQL no Command Side (escrita) e MongoDB no Query Side
 - ✅ Expor histórico paginado de ordens por usuário (`GET /api/v1/orders`)
 - ✅ Expor detalhe de ordem com array `history[]` completo (`GET /api/v1/orders/{orderId}`)
 - ✅ Idempotência: `eventId` como chave de deduplicação no history — reentregas seguras
+- ✅ **Replay Mechanism (AT-08):** `POST /admin/projections/rebuild` reconstrói 100% dos `OrderDocument`
+  a partir do PostgreSQL (fonte de verdade) + outbox. `Stream<Order>` com cursor server-side
+  (fetch size 500) garante memória constante. Upsert idempotente (não bloqueia leituras).
+  Rebuild incremental via `@Scheduled` (cron configurável). Protegido por `ROLE_ADMIN`.
 
 ## 🏗️ Estrutura de Pacotes
 
@@ -73,7 +77,8 @@ src/main/java/com/vibranium/orderservice/
 │       ├── repository/
 │       │   └── OrderHistoryRepository.java           # MongoRepository com paginação por userId
 │       └── service/
-│           └── OrderAtomicHistoryWriter.java         # Escritor atômico de history[] no MongoDB
+│           ├── OrderAtomicHistoryWriter.java         # Escritor atômico de history[] no MongoDB
+│           └── ProjectionRebuildService.java         # ⭐ Rebuild MongoDB a partir do PG (AT-08)
 ├── infrastructure/
 │   ├── messaging/
 │   │   ├── FundsReleaseFailedEventConsumer.java      # ⭐ Compensação terminal: cancel order (Ativ.5)
@@ -86,6 +91,7 @@ src/main/java/com/vibranium/orderservice/
 ├── web/
 │   ├── controller/
 │   │   ├── AdminEventStoreController.java            # ⭐ GET /admin/events (ROLE_ADMIN — AT-14)
+│   │   ├── AdminProjectionController.java            # ⭐ POST /admin/projections/rebuild (AT-08)
 │   │   ├── OrderCommandController.java               # POST /api/v1/orders
 │   │   └── OrderQueryController.java                 # GET /api/v1/orders, GET /{orderId}
 │   └── exception/
@@ -275,6 +281,12 @@ POST /api/v1/orders
 
 GET /api/v1/orders          → OrderQueryController → MongoDB (Read Model — consistência eventual)
 GET /api/v1/orders/{id}     → OrderQueryController → MongoDB (history[] completo)
+
+POST /admin/projections/rebuild → AdminProjectionController → PostgreSQL → MongoDB (Replay — AT-08)
+   → Stream<Order> com cursor server-side (fetch size 500)
+   → Upsert idempotente de cada OrderDocument (non-blocking reads)
+   → Histórico reconstruído via tb_order_outbox
+   → ?mode=incremental para delta desde último rebuild
 ```
 
 ## 🔐 Segurança

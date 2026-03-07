@@ -2,7 +2,11 @@ package com.vibranium.orderservice.domain.repository;
 
 import com.vibranium.contracts.enums.OrderStatus;
 import com.vibranium.orderservice.domain.model.Order;
+import jakarta.persistence.QueryHint;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.jpa.repository.QueryHints;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
@@ -10,6 +14,9 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Stream;
+
+import static org.hibernate.jpa.HibernateHints.HINT_FETCH_SIZE;
 
 /**
  * Repositório Spring Data JPA para {@link Order}.
@@ -87,4 +94,43 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
      * @return Lista de ordens elegíveis; nunca {@code null}.
      */
     List<Order> findByStatusInAndCreatedAtBefore(Collection<OrderStatus> statuses, Instant cutoff);
+
+    /**
+     * Stream de todas as ordens com cursor PostgreSQL (fetch size 500).
+     *
+     * <p>Usado pelo {@link com.vibranium.orderservice.application.query.service.ProjectionRebuildService}
+     * para reconstruir a projeção MongoDB sem carregar todas as ordens em memória.
+     * O {@code HINT_FETCH_SIZE} configura o JDBC fetch size, forçando o driver PostgreSQL
+     * a usar um cursor server-side que busca 500 linhas por vez.</p>
+     *
+     * <p><strong>Obrigatório:</strong> deve ser consumido dentro de {@code @Transactional}
+     * para manter o cursor aberto (autocommit=false é pré-requisito do PostgreSQL cursor).</p>
+     *
+     * @return Stream lazy de todas as ordens.
+     */
+    @QueryHints(@QueryHint(name = HINT_FETCH_SIZE, value = "500"))
+    @Query("SELECT o FROM Order o")
+    Stream<Order> streamAll();
+
+    /**
+     * Stream de ordens criadas ou atualizadas após o instante informado.
+     *
+     * <p>Usado pelo rebuild incremental para processar apenas ordens modificadas
+     * desde o último rebuild, evitando reprocessamento desnecessário.</p>
+     *
+     * @param since Instante de corte (exclusive): retorna ordens com createdAt ou updatedAt posterior.
+     * @return Stream lazy das ordens modificadas.
+     */
+    @QueryHints(@QueryHint(name = HINT_FETCH_SIZE, value = "500"))
+    @Query("SELECT o FROM Order o WHERE o.createdAt > :since OR (o.updatedAt IS NOT NULL AND o.updatedAt > :since)")
+    Stream<Order> streamModifiedAfter(@Param("since") Instant since);
+
+    /**
+     * Conta ordens criadas ou atualizadas após o instante informado.
+     *
+     * @param since Instante de corte.
+     * @return Número de ordens modificadas após o instante.
+     */
+    @Query("SELECT COUNT(o) FROM Order o WHERE o.createdAt > :since OR (o.updatedAt IS NOT NULL AND o.updatedAt > :since)")
+    long countModifiedAfter(@Param("since") Instant since);
 }

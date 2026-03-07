@@ -143,6 +143,17 @@ app:
         pending-timeout-minutes: 5
         cleanup-delay-ms: 60000
 
+    # -----------------------------------------------------------------------
+    # Projection Rebuild — Reconstrução do Read Model MongoDB (AT-08)
+    # timeout-minutes: tempo máximo para o rebuild completo antes de abortar
+    # incremental-cron: expressão cron para rebuild incremental automático
+    #   "-" = desabilitado (padrão). Exemplo: "0 0 * * * *" = a cada hora.
+    # -----------------------------------------------------------------------
+    projection:
+        rebuild:
+            timeout-minutes: 30
+            incremental-cron: '-'
+
     rabbitmq:
         exchanges:
             commands: vibranium.commands

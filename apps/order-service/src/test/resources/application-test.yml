@@ -99,6 +99,10 @@ app:
     saga:
         pending-timeout-minutes: 5
         cleanup-delay-ms: 3600000 # 1h — efetivamente desabilita execução automática em testes
+    projection:
+        rebuild:
+            timeout-minutes: 5
+            incremental-cron: '-'
 
 # -----------------------------------------------------------------------
 # AT-11 — Resilience4j: Circuit Breaker configurado para testes.

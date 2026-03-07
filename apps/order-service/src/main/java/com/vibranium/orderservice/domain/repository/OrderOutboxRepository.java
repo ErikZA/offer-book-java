@@ -76,4 +76,15 @@ public interface OrderOutboxRepository extends JpaRepository<OrderOutboxMessage,
      */
     @Query("SELECT COUNT(m) FROM OrderOutboxMessage m WHERE m.publishedAt IS NULL")
     long countPending();
+
+    /**
+     * Retorna todas as mensagens de outbox de um agregado específico, ordenadas por criação.
+     *
+     * <p>Usado pelo {@link com.vibranium.orderservice.application.query.service.ProjectionRebuildService}
+     * para reconstruir o histórico de eventos de uma ordem durante o rebuild da projeção MongoDB.</p>
+     *
+     * @param aggregateId ID do agregado (orderId).
+     * @return Lista de mensagens ordenadas cronologicamente.
+     */
+    List<OrderOutboxMessage> findByAggregateIdOrderByCreatedAtAsc(UUID aggregateId);
 }
