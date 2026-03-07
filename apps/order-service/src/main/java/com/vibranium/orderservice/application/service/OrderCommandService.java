@@ -17,6 +17,7 @@ import com.vibranium.orderservice.application.dto.PlaceOrderResponse;
 import com.vibranium.orderservice.web.exception.UserNotRegisteredException;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import java.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -60,6 +61,7 @@ public class OrderCommandService {
     private final UserRegistryRepository userRegistryRepository;
     private final OrderRepository        orderRepository;
     private final OrderOutboxRepository  outboxRepository;
+    private final EventStoreService      eventStoreService;
     private final ObjectMapper           objectMapper;
     private final MeterRegistry          meterRegistry;
 
@@ -79,11 +81,13 @@ public class OrderCommandService {
     public OrderCommandService(UserRegistryRepository userRegistryRepository,
                                OrderRepository orderRepository,
                                OrderOutboxRepository outboxRepository,
+                               EventStoreService eventStoreService,
                                ObjectMapper objectMapper,
                                MeterRegistry meterRegistry) {
         this.userRegistryRepository = userRegistryRepository;
         this.orderRepository        = orderRepository;
         this.outboxRepository       = outboxRepository;
+        this.eventStoreService      = eventStoreService;
         this.objectMapper           = objectMapper;
         this.meterRegistry          = meterRegistry;
     }
@@ -151,6 +155,13 @@ public class OrderCommandService {
                     RabbitMQConfig.QUEUE_RESERVE_FUNDS,
                     payloadJson
             ));
+
+            // AT-14: grava o ReserveFundsCommand no Event Store na mesma transação
+            eventStoreService.append(
+                    UUID.randomUUID(), orderId.toString(), "Order",
+                    "ReserveFundsCommand", payloadJson, Instant.now(),
+                    correlationId, cmd.schemaVersion()
+            );
         } catch (JsonProcessingException ex) {
             // Falha de serializacao e um erro de programacao, nao de infraestrutura
             throw new IllegalStateException("Falha ao serializar ReserveFundsCommand: " + ex.getMessage(), ex);
@@ -178,6 +189,13 @@ public class OrderCommandService {
                     RabbitMQConfig.RK_ORDER_RECEIVED,
                     receivedEventJson
             ));
+
+            // AT-14: grava o OrderReceivedEvent no Event Store na mesma transação
+            eventStoreService.append(
+                    receivedEvent.eventId(), orderId.toString(), "Order",
+                    "OrderReceivedEvent", receivedEventJson, receivedEvent.occurredOn(),
+                    correlationId, receivedEvent.schemaVersion()
+            );
         } catch (JsonProcessingException ex) {
             // Falha de serializacao e um erro de programacao, nao de infraestrutura.
             // IllegalStateException provoca rollback do @Transactional, garantindo que

@@ -20,6 +20,7 @@ import com.vibranium.orderservice.domain.model.ProcessedEvent;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
 import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
+import com.vibranium.orderservice.application.service.EventStoreService;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -117,6 +118,8 @@ public class FundsReservedEventConsumer {
     // ocorram na MESMA transação, eliminando o Dual Write.
     private final OrderOutboxRepository    outboxRepository;
     private final ObjectMapper             objectMapper;
+    // AT-14: Event Store imutável — gravação complementar ao outbox na mesma TX.
+    private final EventStoreService        eventStoreService;
     // AT-14.1: Micrometer Tracing — enriquece o span ativo com atributos de domínio.
     // O span é criado automaticamente pelo Spring AMQP (RabbitListenerObservation) ao
     // receber a mensagem. Tracer.currentSpan() retorna null se não houver span ativo
@@ -134,6 +137,7 @@ public class FundsReservedEventConsumer {
                                       RedisMatchEngineAdapter matchEngine,
                                       OrderOutboxRepository outboxRepository,
                                       ObjectMapper objectMapper,
+                                      EventStoreService eventStoreService,
                                       Tracer tracer,
                                       MeterRegistry meterRegistry,
                                       TransactionTemplate txTemplate) {
@@ -142,6 +146,7 @@ public class FundsReservedEventConsumer {
         this.matchEngine              = matchEngine;
         this.outboxRepository         = outboxRepository;
         this.objectMapper             = objectMapper;
+        this.eventStoreService        = eventStoreService;
         this.tracer                   = tracer;
         this.meterRegistry            = meterRegistry;
         this.txTemplate               = txTemplate;
@@ -609,5 +614,26 @@ public class FundsReservedEventConsumer {
                 routingKey,
                 json
         ));
+
+        // AT-14: grava o evento também no Event Store imutável (mesma TX).
+        // Extrai metadados do DomainEvent se disponível; caso contrário, usa defaults.
+        UUID eventId = UUID.randomUUID();
+        UUID correlationId = null;
+        Instant occurredOn = Instant.now();
+        int schemaVersion = 1;
+        if (eventPayload instanceof com.vibranium.contracts.events.DomainEvent de) {
+            eventId = de.eventId();
+            if (de.correlationId() != null) correlationId = de.correlationId();
+            if (de.occurredOn() != null) occurredOn = de.occurredOn();
+            schemaVersion = de.schemaVersion();
+        } else if (eventPayload instanceof com.vibranium.contracts.commands.Command cmd) {
+            if (cmd.correlationId() != null) correlationId = cmd.correlationId();
+            schemaVersion = cmd.schemaVersion();
+        }
+        if (correlationId == null) correlationId = UUID.randomUUID();
+        eventStoreService.append(
+                eventId, aggregateId.toString(), "Order",
+                eventType, json, occurredOn, correlationId, schemaVersion
+        );
     }
 }

@@ -160,6 +160,67 @@ Cada `eventType` no `outbox_message` é mapeado para uma *routing key* na exchan
 
 ---
 
+## 2.2 Event Store PostgreSQL — Auditoria e Compliance (AT-14)
+
+### O problema
+
+O MongoDB Read Model (`OrderDocument.history[]`) é uma projeção **eventual** — ideal para consultas rápidas, mas não garante imutabilidade (documentos podem ser atualizados). O Transactional Outbox garante delivery, mas mensagens são deletadas após publicação. Nenhum dos dois oferece um **registro permanente e inviolável** para auditoria ou replay.
+
+### A solução: Event Store complementar
+
+A tabela `tb_event_store` no PostgreSQL funciona como um **log append-only** de todos os eventos do domínio:
+
+```
+┌──────────────────────────────────────────────────────┐
+│  @Transactional (commit atômico no PG)               │
+│  1. orderRepository.save(order)          → Estado     │
+│  2. outboxRepository.save(outboxMsg)     → Delivery   │
+│  3. eventStoreService.append(entry)      → Auditoria  │
+└──────────────────────────────────────────────────────┘
+```
+
+Os três registros são persistidos **na mesma transação ACID** — se qualquer um falhar, tudo é revertido.
+
+### Imutabilidade via Triggers PostgreSQL
+
+```sql
+CREATE OR REPLACE FUNCTION fn_deny_event_store_mutation()
+    RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'tb_event_store is append-only: % not allowed', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+```
+
+Dois triggers (`BEFORE UPDATE`, `BEFORE DELETE`) garantem que registros **nunca** são alterados ou removidos — a proteção é no nível do banco, independente da aplicação.
+
+### Diferença entre Outbox, Event Store e Read Model
+
+| Aspecto | Outbox (`tb_order_outbox`) | Event Store (`tb_event_store`) | Read Model (`history[]` MongoDB) |
+|---------|---------------------------|-------------------------------|----------------------------------|
+| **Propósito** | Garantir delivery ao RabbitMQ | Registro permanente imutável | Consulta rápida para UI |
+| **Mutabilidade** | DELETE após publicação | Append-only (TRIGGER protegido) | Upsert via projeção |
+| **Ciclo de vida** | Transiente (publicar → remover) | Permanente (nunca removido) | Eventual (re-projetável) |
+| **Consulta** | Polling interno | Replay temporal + por aggregate | Paginação por userId |
+| **Garantia** | At-least-once delivery | Auditoria e compliance | Leitura performática |
+
+### Replay Temporal
+
+O Event Store permite reconstruir o estado de qualquer ordem em qualquer ponto no tempo:
+
+```java
+// Replay até um instante específico
+List<EventStoreEntry> events = eventStoreRepository
+    .findByAggregateIdAndOccurredOnLessThanEqualOrderBySequenceIdAsc(orderId, until);
+```
+
+**Caso de uso prático:** "Prove que a ordem `abc-123` estava no estado `OPEN` às 14:32:45Z":
+1. Query com `aggregateId=abc-123` e `until=2026-03-07T14:32:45Z`
+2. Aplique os eventos em sequência: `PENDING → OPEN`
+3. O último evento antes do cutoff comprova o estado
+
+---
+
 ## 3. CQRS (Command Query Responsibility Segregation) 🔀
 
 ### O que é e para que serve?

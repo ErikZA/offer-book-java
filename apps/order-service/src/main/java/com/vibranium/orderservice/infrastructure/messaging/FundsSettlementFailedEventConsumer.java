@@ -14,6 +14,7 @@ import com.vibranium.orderservice.domain.model.ProcessedEvent;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
 import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
+import com.vibranium.orderservice.application.service.EventStoreService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -72,6 +73,7 @@ public class FundsSettlementFailedEventConsumer {
     private final OrderOutboxRepository      outboxRepository;
     private final ProcessedEventRepository   processedEventRepository;
     private final ObjectMapper               objectMapper;
+    private final EventStoreService          eventStoreService;
 
     /**
      * Cria o consumidor com todas as dependências obrigatórias via injeção por construtor.
@@ -87,11 +89,13 @@ public class FundsSettlementFailedEventConsumer {
     public FundsSettlementFailedEventConsumer(OrderRepository orderRepository,
                                               OrderOutboxRepository outboxRepository,
                                               ProcessedEventRepository processedEventRepository,
-                                              ObjectMapper objectMapper) {
+                                              ObjectMapper objectMapper,
+                                              EventStoreService eventStoreService) {
         this.orderRepository          = orderRepository;
         this.outboxRepository         = outboxRepository;
         this.processedEventRepository = processedEventRepository;
         this.objectMapper             = objectMapper;
+        this.eventStoreService        = eventStoreService;
     }
 
     /**
@@ -258,5 +262,17 @@ public class FundsSettlementFailedEventConsumer {
                 RabbitMQConfig.QUEUE_RELEASE_FUNDS,
                 json
         ));
+
+        // AT-14: grava o comando também no Event Store imutável (mesma TX)
+        eventStoreService.append(
+                java.util.UUID.randomUUID(),
+                aggregateId.toString(),
+                "Order",
+                "ReleaseFundsCommand",
+                json,
+                java.time.Instant.now(),
+                releaseCmd.correlationId(),
+                releaseCmd.schemaVersion()
+        );
     }
 }

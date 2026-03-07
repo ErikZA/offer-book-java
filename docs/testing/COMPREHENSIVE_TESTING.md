@@ -40,7 +40,8 @@
 36. [Rotas GET Orders no Kong — Query Side CQRS via Gateway (Atividade 2)](#rotas-get-orders-no-kong--query-side-cqrs-via-gateway-atividade-2)
 37. [Deduplicação de Ordens no Redis via Lua — HEXISTS Guard (AT-16)](#deduplicação-de-ordens-no-redis-via-lua--hexists-guard-at-16)
 38. [Atomicidade Redis+PostgreSQL com Lua Compensatório — undo_match.lua (AT-17)](#atomicidade-redispostgresql-com-lua-compensatório--undo_matchlua-at-17)
-39. [Referências](#referências)
+39. [Event Store Imutável — Auditoria e Replay de Eventos (AT-14)](#event-store-imutável--auditoria-e-replay-de-eventos-at-14)
+40. [Referências](#referências)
 
 ---
 
@@ -3302,6 +3303,110 @@ bash tests/AT-kong-routes-validation.sh
 | `infra/kong/kong-setup.sh` | Alterado | STEP 3b/3c adicionados (rotas GET); STEP 4a/4a2 com plugins por rota (jwt, rate-limiting 200/s, cors) |
 | `infra/kong/kong-config.md` | Alterado | Documentação completa reescrita: tabela de rotas, plugins, consumer JWT, mapeamento controller→rota |
 | `tests/AT-kong-routes-validation.sh` | Criado | Script de validação: Admin API (rotas + plugins + rate-limits) + Proxy (401 sem JWT) |
+
+---
+
+## Event Store Imutável — Auditoria e Replay de Eventos (AT-14)
+
+### Propósito
+
+Persistir todos os eventos de domínio de forma **imutável** em PostgreSQL (`tb_event_store`) para auditoria regulatória, compliance e replay temporal. Complementa o Transactional Outbox (que garante delivery ao RabbitMQ) com um registro permanente e inviolável.
+
+### Implementação
+
+| Classe | Pacote | Responsabilidade |
+|--------|--------|------------------|
+| `EventStoreEntry` | `domain.model` | Entidade JPA imutável (`updatable=false` em todas as colunas) |
+| `EventStoreRepository` | `domain.repository` | Queries: `findByAggregateIdOrderBySequenceIdAsc`, `findByAggregateIdAndOccurredOnLessThanEqual...` |
+| `EventStoreService` | `application.service` | `append()` — sem `@Transactional` próprio, participa da TX do chamador |
+| `AdminEventStoreController` | `web.controller` | `GET /admin/events?aggregateId=&until=` — protegido por `ROLE_ADMIN` |
+| `EventStoreEntryResponse` | `application.dto` | Record DTO para serialização REST |
+| `V7__create_event_store.sql` | `db/migration` | DDL + triggers append-only + índices |
+
+### Proteção de Imutabilidade (Triggers PostgreSQL)
+
+```sql
+-- Rejeita UPDATE
+CREATE TRIGGER trg_event_store_deny_update
+    BEFORE UPDATE ON tb_event_store
+    FOR EACH ROW EXECUTE FUNCTION fn_deny_event_store_mutation();
+
+-- Rejeita DELETE
+CREATE TRIGGER trg_event_store_deny_delete
+    BEFORE DELETE ON tb_event_store
+    FOR EACH ROW EXECUTE FUNCTION fn_deny_event_store_mutation();
+
+-- Função que RAISE EXCEPTION 'tb_event_store is append-only...'
+```
+
+### Testes de Integração
+
+#### 1. `EventStoreAppendOnlyTest` — Integridade Append-Only
+
+| ID | Cenário | Asserção |
+|----|---------|----------|
+| TC-ES-1 | Inserir 10 eventos | `sequenceId` crescente, ordering preservado |
+| TC-ES-2 | Tentar UPDATE | `PersistenceException` com mensagem `append-only` |
+| TC-ES-3 | Tentar DELETE | `PersistenceException` com mensagem `append-only` |
+| TC-ES-4 | Inserir eventId duplicado | `DataIntegrityViolationException` (UNIQUE) |
+
+#### 2. `EventStoreReplayTest` — Replay Temporal
+
+| ID | Cenário | Asserção |
+|----|---------|----------|
+| TC-REPLAY-1 | Replay até T2 | 2 eventos (PENDING→OPEN) |
+| TC-REPLAY-2 | Replay até T4 | 4 eventos (inclui FILLED) |
+| TC-REPLAY-3 | Replay completo | Todos os eventos do aggregate |
+| TC-REPLAY-4 | Aggregate inexistente | Lista vazia |
+
+#### 3. `EventStoreAuditEndpointTest` — Endpoint REST + Security
+
+| ID | Cenário | Asserção |
+|----|---------|----------|
+| TC-AUDIT-1 | `ROLE_ADMIN` + aggregateId | 200 com lista completa |
+| TC-AUDIT-2 | Sem autenticação | 401 Unauthorized |
+| TC-AUDIT-3 | `ROLE_USER` (sem ADMIN) | 403 Forbidden |
+| TC-AUDIT-4 | `ROLE_ADMIN` + `until` param | Subset temporal |
+| TC-AUDIT-5 | Aggregate inexistente | 200 com lista vazia |
+
+### Execução
+
+```bash
+# Todos os testes do Event Store
+mvn test -pl apps/order-service -Dtest="EventStoreAppendOnlyTest,EventStoreReplayTest,EventStoreAuditEndpointTest"
+```
+
+### Critérios de Aceite
+
+| # | Critério | Status |
+|---|----------|--------|
+| 1 | Tabela `tb_event_store` criada via Flyway V7 com TRIGGER append-only | ✅ |
+| 2 | `EventStoreEntry` persiste `eventId`, `aggregateId`, `eventType`, `payload` JSONB, `occurredOn` | ✅ |
+| 3 | `EventStoreService.append()` chamado na mesma TX do Outbox (garante atomicidade) | ✅ |
+| 4 | UPDATE rejeitado pelo trigger → `PersistenceException` | ✅ |
+| 5 | DELETE rejeitado pelo trigger → `PersistenceException` | ✅ |
+| 6 | Replay temporal via `until` retorna subset correto | ✅ |
+| 7 | Endpoint `GET /admin/events` protegido por `ROLE_ADMIN` | ✅ |
+| 8 | `eventId` UNIQUE — duplicata rejeitada | ✅ |
+
+### Artefatos criados/alterados pela Atividade 14
+
+| Artefato | Tipo | Descrição |
+|---|---|---|
+| `V7__create_event_store.sql` | Criado | DDL + triggers + índices |
+| `EventStoreEntry.java` | Criado | Entidade JPA imutável |
+| `EventStoreRepository.java` | Criado | Spring Data JPA queries |
+| `EventStoreService.java` | Criado | Append + query sem TX própria |
+| `EventStoreEntryResponse.java` | Criado | DTO record |
+| `AdminEventStoreController.java` | Criado | REST endpoint ADMIN-only |
+| `SecurityConfig.java` | Alterado | +`/admin/**` com `ROLE_ADMIN`; `KeycloakRealmRoleConverter` |
+| `OrderCommandService.java` | Alterado | +`eventStoreService.append()` após outbox save |
+| `FundsReservedEventConsumer.java` | Alterado | +`eventStoreService.append()` em `saveToOutbox()` |
+| `FundsSettlementFailedEventConsumer.java` | Alterado | +`eventStoreService.append()` em `saveToOutbox()` |
+| `FundsReleaseFailedEventConsumer.java` | Alterado | +`eventStoreService.append()` após outbox save |
+| `EventStoreAppendOnlyTest.java` | Criado | Testes de integridade append-only |
+| `EventStoreReplayTest.java` | Criado | Testes de replay temporal |
+| `EventStoreAuditEndpointTest.java` | Criado | Testes REST + segurança |
 
 ---
 
