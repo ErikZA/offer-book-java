@@ -14,6 +14,7 @@ import com.vibranium.orderservice.domain.model.ProcessedEvent;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
 import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
+import com.vibranium.orderservice.application.service.EventStoreService;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
@@ -67,6 +68,7 @@ public class FundsReleaseFailedEventConsumer {
     private final ProcessedEventRepository   processedEventRepository;
     private final ObjectMapper               objectMapper;
     private final MeterRegistry              meterRegistry;
+    private final EventStoreService          eventStoreService;
 
     /**
      * Cria o consumidor com todas as dependências obrigatórias via injeção por construtor.
@@ -84,12 +86,14 @@ public class FundsReleaseFailedEventConsumer {
                                            OrderOutboxRepository outboxRepository,
                                            ProcessedEventRepository processedEventRepository,
                                            ObjectMapper objectMapper,
-                                           MeterRegistry meterRegistry) {
+                                           MeterRegistry meterRegistry,
+                                           EventStoreService eventStoreService) {
         this.orderRepository          = orderRepository;
         this.outboxRepository         = outboxRepository;
         this.processedEventRepository = processedEventRepository;
         this.objectMapper             = objectMapper;
         this.meterRegistry            = meterRegistry;
+        this.eventStoreService        = eventStoreService;
     }
 
     /**
@@ -221,5 +225,17 @@ public class FundsReleaseFailedEventConsumer {
                 RabbitMQConfig.RK_ORDER_CANCELLED,
                 json
         ));
+
+        // AT-14: grava o evento também no Event Store imutável (mesma TX)
+        eventStoreService.append(
+                cancelledEvent.eventId(),
+                order.getId().toString(),
+                "Order",
+                "OrderCancelledEvent",
+                json,
+                cancelledEvent.occurredOn(),
+                order.getCorrelationId(),
+                cancelledEvent.schemaVersion()
+        );
     }
 }

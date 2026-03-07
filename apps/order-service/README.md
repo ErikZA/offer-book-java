@@ -13,12 +13,17 @@ Implementa CQRS com PostgreSQL no Command Side (escrita) e MongoDB no Query Side
 - ✅ `OrderOutboxPublisherService` (scheduler) faz o relay atômico para o RabbitMQ de forma eventual
   com `SELECT FOR UPDATE SKIP LOCKED` (batch configurável, `@Retryable` + `@Recover`, delay 500 ms)
 - ✅ Consumir eventos `FundsReservedEvent` / `FundsReservationFailedEvent` do wallet-service
+- ✅ Deduplicação de ordens no Redis via HEXISTS guard no Lua — impede double-booking em re-entrega
+  rápida; retorna `ALREADY_IN_BOOK` e ACK idempotente no consumer (AT-16)
 - ✅ Consumir `FundsReleaseFailedEvent` — compensação terminal da Saga: cancela a ordem e grava
   `OrderCancelledEvent` no outbox com idempotência, métricas Micrometer e DLQ dedicada (Ativ.5)
 - ✅ Executar o Motor de Match atômico via Script Lua no Redis Sorted Set com **Saga TCC**:
   `FundsReservedEventConsumer` separa a operação Redis do escopo JPA em 3 fases via
   `TransactionTemplate` (Fase 1: JPA TX; Fase 2: `tryMatch` sem TX; Fase 3: JPA TX + Outbox).
   Compensação automática (`removeFromBook` + `cancelOrder`) em falha da Fase 3 (AT-2.1.1)
+- ✅ Compensação Redis avançada via `undo_match.lua`: quando a Fase 3 falha após match bem-sucedido,
+  reverte atomicamente contrapartes consumidas/modificadas (FULL/PARTIAL) — restaura o livro ao estado
+  anterior ao match com idempotência. Métrica `vibranium.redis.compensation` (AT-17)
 - ✅ Consumir eventos `REGISTER` do Keycloak (plugin aznamier) via `amq.topic` e popular `tb_user_registry`
 - ✅ Rotear mensagens falhas para Dead Letter Queue (`order.dead-letter`) após retry esgotado
 - ✅ Propagação W3C TraceContext em mensagens AMQP (`traceparent` header) e enriquecimento de spans com `saga.correlation_id` e `order.id` (AT-14.1)
@@ -38,11 +43,13 @@ src/main/java/com/vibranium/orderservice/
 ├── OrderServiceApplication.java
 ├── domain/
 │   ├── model/
+│   │   ├── EventStoreEntry.java                      # ⭐ Entrada imutável do Event Store (AT-14)
 │   │   ├── Order.java                                # Entidade com @Version (optimistic lock)
 │   │   ├── OrderOutboxMessage.java                   # Outbox Pattern — relay para RabbitMQ
 │   │   ├── ProcessedEvent.java                       # Idempotência por eventId
 │   │   └── UserRegistry.java                        # Registro local de usuários Keycloak
 │   └── repository/
+│       ├── EventStoreRepository.java                 # ⭐ Replay por aggregate + temporal (AT-14)
 │       ├── OrderOutboxRepository.java
 │       ├── OrderRepository.java                      # ⭐ +findByStatusAndCreatedAtBefore (AT-09.1)
 │       ├── ProcessedEventRepository.java
@@ -50,10 +57,12 @@ src/main/java/com/vibranium/orderservice/
 ├── application/
 │   ├── service/
 │   │   ├── IdempotencyKeyCleanupJob.java             # Cleanup de tb_processed_events (7d retention)
+│   │   ├── EventStoreService.java                    # ⭐ Event Store imutável — append + query (AT-14)
 │   │   ├── OrderCommandService.java                  # Orquestração do fluxo de ordem
 │   │   ├── OrderOutboxPublisherService.java          # Relay outbox → RabbitMQ (scheduler)
 │   │   └── SagaTimeoutCleanupJob.java                # ⭐ Cancela PENDING expirados (AT-09.1)
 │   ├── dto/
+│   │   ├── EventStoreEntryResponse.java              # ⭐ DTO do Event Store (AT-14)
 │   │   ├── PlaceOrderRequest.java                    # @Valid + Bean Validation
 │   │   └── PlaceOrderResponse.java
 │   └── query/                                        # ← Query Side (Read Model — US-003)
@@ -76,6 +85,7 @@ src/main/java/com/vibranium/orderservice/
 │       └── RedisMatchEngineAdapter.java              # Script Lua atômico no Sorted Set
 ├── web/
 │   ├── controller/
+│   │   ├── AdminEventStoreController.java            # ⭐ GET /admin/events (ROLE_ADMIN — AT-14)
 │   │   ├── OrderCommandController.java               # POST /api/v1/orders
 │   │   └── OrderQueryController.java                 # GET /api/v1/orders, GET /{orderId}
 │   └── exception/
@@ -310,6 +320,15 @@ mvn test -pl apps/order-service -Dtest="OrderOutboxSkipLockedConcurrencyTest,Ord
 
 # Apenas os testes do FundsReleaseFailedEventConsumer (Ativ.5)
 mvn test -pl apps/order-service -Dtest="FundsReleaseFailedEventConsumerTest,FundsReleaseFailedEventConsumerIT,FundsReleaseFailedDlqTest"
+
+# Apenas os testes de deduplicação Redis Lua (AT-16)
+mvn test -pl apps/order-service -Dtest="RedisDeduplicationLuaTest,RedisDeduplicationConsumerTest"
+
+# Apenas os testes de compensação undo_match.lua (AT-17)
+mvn test -pl apps/order-service -Dtest="UndoMatchLuaTest,CompensationOnJpaFailureTest,CompensationMetricsTest"
+
+# Apenas os testes do Event Store imutável (AT-14)
+mvn test -pl apps/order-service -Dtest="EventStoreAppendOnlyTest,EventStoreReplayTest,EventStoreAuditEndpointTest"
 ```
 
 ## 🧪 Cobertura de Testes de Integração
@@ -338,6 +357,14 @@ mvn test -pl apps/order-service -Dtest="FundsReleaseFailedEventConsumerTest,Fund
 | **`FundsReleaseFailedEventConsumerTest`** | **Unitário** | **6 cenários: cancel+outbox+metric, duplicata, CANCELLED/FILLED/not found → WARN+ACK** | **Ativ.5** |
 | **`FundsReleaseFailedEventConsumerIT`** | **Integração** | **End-to-end cancel + outbox + ProcessedEvent; idempotência 2x → 1 cancel** | **Ativ.5** |
 | **`FundsReleaseFailedDlqTest`** | **Integração (DLQ)** | **Payload tóxico roteado para DLQ; smoke test da fila DLQ dedicada** | **Ativ.5** |
+| **`RedisDeduplicationLuaTest`** | **Integração (Redis Lua)** | **TC-DEDUP-1..4: HEXISTS guard — BUY/SELL duplicata retorna ALREADY_IN_BOOK; orderIds distintos OK; ordem consumida pode ser reinserida** | **AT-16** |
+| **`RedisDeduplicationConsumerTest`** | **Integração (Consumer)** | **TC-DEDUP-CONSUMER-1/2: re-entrega de BUY/SELL após match — ACK idempotente sem re-inserção no livro** | **AT-16** |
+| **`UndoMatchLuaTest`** | **Integração (Redis Lua)** | **TC-UNDO-1..6: FULL/PARTIAL match reversal, idempotência 2×, multi-match, SELL→BID** | **AT-17** |
+| **`CompensationOnJpaFailureTest`** | **Integração (End-to-End)** | **TC-COMP-1/2: match+undoMatch direto, no-match+removeFromBook** | **AT-17** |
+| **`CompensationMetricsTest`** | **Integração (Métricas)** | **TC-METRICS-1/2: `vibranium.redis.compensation` counter incrementado por undoMatch** | **AT-17** |
+| **`EventStoreAppendOnlyTest`** | **Integração (DB Trigger)** | **Insert + ordering; UPDATE/DELETE rejeitados por trigger append-only; UNIQUE eventId** | **AT-14** |
+| **`EventStoreReplayTest`** | **Integração (Temporal)** | **Replay até timestamp T2/T4; replay completo; aggregate inexistente → vazio** | **AT-14** |
+| **`EventStoreAuditEndpointTest`** | **Integração REST (Security)** | **ADMIN → 200; sem auth → 401; USER → 403; filtro temporal; aggregate vazio** | **AT-14** |
 
 ### AT-11.1 — Hash Tags Redis para Redis Cluster
 
@@ -427,6 +454,68 @@ CREATE INDEX IF NOT EXISTS idx_order_outbox_unpublished
 ```
 Garante leitura O(log n) na query de pendentes; sem este índice, cada ciclo seria full-scan.
 
+### AT-14 — Event Store Imutável (Auditoria e Replay)
+
+O Event Store complementa o Transactional Outbox com uma **cópia imutável** de cada evento em PostgreSQL para auditoria, compliance e replay temporal.
+
+#### Migração Flyway (`V7__create_event_store.sql`)
+```sql
+CREATE TABLE tb_event_store (
+    sequence_id    BIGSERIAL    PRIMARY KEY,
+    event_id       UUID         NOT NULL UNIQUE,
+    aggregate_id   UUID         NOT NULL,
+    aggregate_type VARCHAR(100) NOT NULL,
+    event_type     VARCHAR(100) NOT NULL,
+    payload        JSONB        NOT NULL,
+    occurred_on    TIMESTAMPTZ  NOT NULL,
+    correlation_id UUID,
+    schema_version INTEGER      NOT NULL DEFAULT 1
+);
+```
+
+**Triggers de proteção** — garantem append-only via `RAISE EXCEPTION`:
+- `trg_event_store_deny_update` — rejeita qualquer `UPDATE` com mensagem `append-only`
+- `trg_event_store_deny_delete` — rejeita qualquer `DELETE` com mensagem `append-only`
+
+**Índices:**
+- `idx_event_store_aggregate_replay` (`aggregate_id`, `sequence_id`) — replay por ordem serial
+- `idx_event_store_event_type` — filtro por tipo de evento
+- `idx_event_store_correlation` — rastreamento cross-service por correlationId
+
+#### Integração com o fluxo existente
+
+O `EventStoreService.append()` é chamado **na mesma transação** que o `outboxRepository.save()`:
+
+```
+@Transactional
+1. orderRepository.save(order)
+2. outboxRepository.save(outboxMessage)        → relay para RabbitMQ
+3. eventStoreService.append(eventStoreEntry)   → auditoria imutável
+```
+
+**Classes que persistem no Event Store:**
+- `OrderCommandService` — `ReserveFundsCommand` e `OrderReceivedEvent`
+- `FundsReservedEventConsumer` — `MatchExecutedEvent`
+- `FundsSettlementFailedEventConsumer` — `ReleaseFundsCommand`
+- `FundsReleaseFailedEventConsumer` — `OrderCancelledEvent`
+
+#### Endpoint de consulta
+
+`GET /admin/events?aggregateId={uuid}&until={instant}` — protegido por `ROLE_ADMIN` (Keycloak `realm_access.roles`).
+
+Retorna eventos ordenados por `sequence_id ASC`, com filtro temporal opcional via `until`.
+
+#### Testes TDD
+
+| Teste | Cenário |
+|-------|---------|
+| `EventStoreAppendOnlyTest` | INSERT + ordering; UPDATE/DELETE rejeitados via trigger; UNIQUE eventId |
+| `EventStoreReplayTest` | Replay temporal até T2/T4; replay completo; aggregate inexistente |
+| `EventStoreAuditEndpointTest` | ADMIN→200; sem auth→401; USER→403; filtro temporal; vazio |
+
+```bash
+mvn test -pl apps/order-service -Dtest="EventStoreAppendOnlyTest,EventStoreReplayTest,EventStoreAuditEndpointTest"
+
 ## 🔗 Endpoints
 
 | Método | Path                     | Auth       | Descrição                                      |
@@ -434,6 +523,7 @@ Garante leitura O(log n) na query de pendentes; sem este índice, cada ciclo ser
 | POST   | `/api/v1/orders`         | JWT (USER) | Aceitar ordem de compra ou venda (202 Accepted)|
 | GET    | `/api/v1/orders`         | JWT (USER) | Listar ordens paginadas do usuário (Read Model)|
 | GET    | `/api/v1/orders/{id}`    | JWT (USER) | Detalhe de ordem com history[] completo        |
+| GET    | `/admin/events`          | JWT (ADMIN)| ⭐ Consulta Event Store por aggregateId + until (AT-14) |
 
 ### Paginação (GET /api/v1/orders)
 
@@ -466,7 +556,7 @@ O `GlobalExceptionHandler` retorna `ResponseEntity<Map<String, Object>>` com cam
 | Spring AMQP                       | RabbitMQ (producers + consumers + projection)   |
 | Spring Data Redis                 | StringRedisTemplate para script Lua             |
 | Spring Security OAuth2            | JWT Resource Server                             |
-| Flyway                            | Migrations (`V1`–`V5` tabelas, `V6__add_index_orders_saga_timeout`) |
+| Flyway                            | Migrations (`V1`–`V7` tabelas; `V7__create_event_store` — AT-14) |
 | spring-retry                      | `@Retryable`/`@Recover` no `OrderOutboxPublisherService`            |
 | Resilience4j Circuit Breaker      | Proteção do `RedisMatchEngineAdapter` contra falhas Redis (AT-11)   |
 | Resilience4j Micrometer           | Métricas de circuit breaker exportadas para Prometheus              |

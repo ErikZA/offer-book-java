@@ -79,6 +79,9 @@ class OrderCommandServiceTest {
     private OrderOutboxRepository outboxRepository;
 
     @Mock
+    private EventStoreService eventStoreService;
+
+    @Mock
     private ObjectMapper objectMapper;
 
     // =========================================================================
@@ -119,6 +122,7 @@ class OrderCommandServiceTest {
                 userRegistryRepository,
                 orderRepository,
                 outboxRepository,
+                eventStoreService,
                 objectMapper,
                 new SimpleMeterRegistry()
                 // RabbitTemplate foi removido intencionalmente
@@ -270,15 +274,15 @@ class OrderCommandServiceTest {
         assertThat(response.status()).isEqualTo("PENDING");
 
         /*
-         * Prova formal: o serviço possui 5 dependências (sem RabbitTemplate).
-         * Verificado implicitamente no @BeforeEach onde new OrderCommandService(5 args) compila.
+         * Prova formal: o serviço possui 6 dependências (sem RabbitTemplate).
+         * Verificado implicitamente no @BeforeEach onde new OrderCommandService(6 args) compila.
          * Reforçado aqui via reflexão para documentar a invariante.
          */
         var constructors = service.getClass().getDeclaredConstructors();
         assertThat(constructors).hasSize(1);
         assertThat(constructors[0].getParameterCount())
-                .as("OrderCommandService deve ter exatamente 5 dependências (sem RabbitTemplate)")
-                .isEqualTo(5);
+                .as("OrderCommandService deve ter exatamente 6 depend\u00eancias (sem RabbitTemplate)")
+                .isEqualTo(6);
     }
 
     // =========================================================================

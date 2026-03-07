@@ -14,6 +14,7 @@ import com.vibranium.orderservice.domain.model.ProcessedEvent;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
 import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
+import com.vibranium.orderservice.application.service.EventStoreService;
 import com.vibranium.utils.jackson.VibraniumJacksonConfig;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -68,6 +69,7 @@ class FundsSettlementFailedHandlerTest {
     @Mock private OrderRepository          orderRepository;
     @Mock private OrderOutboxRepository    outboxRepository;
     @Mock private ProcessedEventRepository processedEventRepository;
+    @Mock private EventStoreService        eventStoreService;
     @Mock private Channel                  channel;
 
     /**
@@ -99,7 +101,7 @@ class FundsSettlementFailedHandlerTest {
     @BeforeEach
     void setUp() {
         consumer = new FundsSettlementFailedEventConsumer(
-                orderRepository, outboxRepository, processedEventRepository, objectMapper
+                orderRepository, outboxRepository, processedEventRepository, objectMapper, eventStoreService
         );
 
         correlationId    = UUID.randomUUID();

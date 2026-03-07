@@ -109,3 +109,76 @@ stateDiagram-v2
 3. Em *background*, um evento avisa o nosso serviço: *"Ei, a ordem do usuário entrou no Livro!"*.
 4. Nosso código escuta esse evento e salva um `OrderDocument` com status `OPEN` no **MongoDB**.
 5. Segundos depois, o usuário abre o aplicativo e puxa a tela (GET `/orders`). O sistema **NÃO** vai perguntar para o Redis e nem para o Postgres. Ele vai fazer uma busca simples no **MongoDB**, que é desenhado especificamente para cuspir esses dados de leitura quase instantaneamente!
+
+---
+
+## 🗂️ PostgreSQL — Event Store (Auditoria e Compliance — AT-14)
+
+### Tabela `tb_event_store` — Log Imutável de Eventos
+
+Enquanto o MongoDB projeta eventos de forma eventual (Read Model), o PostgreSQL mantém uma **cópia imutável** de cada evento para auditoria, compliance e replay temporal.
+
+### Schema
+
+```sql
+CREATE TABLE tb_event_store (
+    sequence_id    BIGSERIAL       PRIMARY KEY,
+    event_id       UUID            NOT NULL UNIQUE,
+    aggregate_id   UUID            NOT NULL,
+    aggregate_type VARCHAR(100)    NOT NULL,
+    event_type     VARCHAR(100)    NOT NULL,
+    payload        JSONB           NOT NULL,
+    occurred_on    TIMESTAMPTZ     NOT NULL,
+    correlation_id UUID,
+    schema_version INTEGER         NOT NULL DEFAULT 1
+);
+```
+
+### Dicionário de Campos
+
+| Campo | Tipo | Propósito |
+|-------|------|-----------|
+| `sequence_id` | BIGSERIAL | Sequência global de eventos — garante ordering total |
+| `event_id` | UUID (UNIQUE) | Deduplicação — mesmo evento nunca é inserido 2× |
+| `aggregate_id` | UUID | ID da ordem (`tb_orders.id`) — agrupa eventos por entidade |
+| `aggregate_type` | VARCHAR(100) | Tipo do agregado (ex: `Order`) |
+| `event_type` | VARCHAR(100) | `ReserveFundsCommand`, `OrderReceivedEvent`, `MatchExecutedEvent`, `OrderCancelledEvent`, etc. |
+| `payload` | JSONB | Serialização JSON completa do evento — permite replay |
+| `occurred_on` | TIMESTAMPTZ | Quando o evento ocorreu (UTC) — base para replay temporal |
+| `correlation_id` | UUID | Saga correlation ID — rastreamento entre order-service e wallet-service |
+| `schema_version` | INTEGER | Versão do schema do evento (compatibilidade futura) |
+
+### Índices
+
+| Índice | Colunas | Propósito |
+|--------|---------|-----------|
+| `idx_event_store_aggregate_replay` | `(aggregate_id, sequence_id)` | Replay por ordem serial de uma entidade |
+| `idx_event_store_event_type` | `(event_type)` | Filtro por tipo de evento |
+| `idx_event_store_correlation` | `(correlation_id)` | Rastreamento cross-service |
+
+### Proteção Append-Only (Triggers)
+
+```sql
+-- Função que rejeita mutações
+CREATE OR REPLACE FUNCTION fn_deny_event_store_mutation()
+    RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'tb_event_store is append-only: % not allowed on sequence_id=%', TG_OP, OLD.sequence_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- BEFORE UPDATE → RAISE EXCEPTION
+CREATE TRIGGER trg_event_store_deny_update ...
+-- BEFORE DELETE → RAISE EXCEPTION
+CREATE TRIGGER trg_event_store_deny_delete ...
+```
+
+### Comparação: MongoDB Read Model vs PostgreSQL Event Store
+
+| Aspecto | MongoDB `history[]` | PostgreSQL `tb_event_store` |
+|---------|--------------------|-----------------------------|
+| Propósito | Leitura rápida para UI | Auditoria e compliance |
+| Imutabilidade | Não garantida (upsert) | Garantida (TRIGGER) |
+| Consulta | Por `userId` (paginação) | Por `aggregateId` + `occurredOn` (temporal) |
+| Replay | Não suportado | Nativo via query temporal |
+| Persistência | Eventual (projeção) | Atômica (mesma TX do outbox) |

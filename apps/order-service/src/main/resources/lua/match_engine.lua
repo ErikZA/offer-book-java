@@ -64,6 +64,18 @@ local function splitPipe(str)
     return parts
 end
 
+-- =========================================================================
+-- AT-16: Deduplicação — rejeita inserção duplicada via HEXISTS no order_index.
+-- Se o orderId já existe no hash de índice reverso (KEYS[3]), a ordem já está
+-- no book. Retorna ALREADY_IN_BOOK imediatamente sem alterar o livro.
+-- Isso previne double-booking em cenários de re-entrega rápida onde o consumer
+-- processa a Fase 2 (Redis) antes que o ACK alcance o broker.
+-- =========================================================================
+local incomingOrderId = splitPipe(orderValue)[1]
+if redis.call('HEXISTS', KEYS[3], incomingOrderId) == 1 then
+    return {'ALREADY_IN_BOOK'}
+end
+
 -- Array flat que acumula cada match: {c1val, c1qty, c1fill, c1rem, c2val, ...}
 -- Cada match ocupa exatamente 4 posições.
 local matches    = {}

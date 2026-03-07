@@ -219,3 +219,43 @@ Para manter a integridade sob pressão de milhares de acessos:
 * **Requeue Atômico no Lua:** A `Wallet` deve ser esperta. Se ela receber o mesmo aviso de "Match" duas vezes por erro de rede, ela deve processar apenas a primeira e ignorar a segunda.
 * **Transactional Outbox:** Na `Wallet`, o registro do débito no banco e a mensagem de aviso para o resto do sistema devem ser salvos na **mesma transação**. Se um falhar, o outro não acontece.
 * **Virtual Threads (Java 21):** Como teremos milhares de robôs enviando ordens, usaremos as threads virtuais para que o servidor não fique "travado" esperando o Redis ou o RabbitMQ responder.
+
+---
+
+## 7. AT-16 — Deduplicação de Ordens no Redis via Lua (HEXISTS Guard)
+
+### O problema
+
+Com entrega **at-least-once** do RabbitMQ, o broker pode re-entregar um `FundsReservedEvent` antes que o ACK da primeira entrega chegue. Se ambas as execuções passarem pela Fase 2 (Redis) simultaneamente, a mesma ordem seria inserida **duas vezes** no Sorted Set — quebrando o invariante de unicidade do livro.
+
+A idempotência por `eventId` no PostgreSQL (seção 6) protege contra re-processamento na Fase 1, mas **não impede** que a Fase 2 execute duas vezes: a janela entre `tryMatch()` e `channel.basicAck()` é suficiente para uma re-entrega alcançar o Redis antes do ACK.
+
+### A solução — HEXISTS no order_index
+
+O `match_engine.lua` agora verifica se o `orderId` da ordem ingressante já existe no hash `{vibranium}:order_index` (KEYS[3]) **antes** de qualquer lógica de BUY/SELL:
+
+```lua
+-- AT-16: Deduplicação via HEXISTS no order_index
+local incomingOrderId = splitPipe(orderValue)[1]
+if redis.call('HEXISTS', KEYS[3], incomingOrderId) == 1 then
+    return {'ALREADY_IN_BOOK'}
+end
+```
+
+O retorno `ALREADY_IN_BOOK` é tratado em duas camadas:
+
+1. **`RedisMatchEngineAdapter.parseResult()`** — retorna `List.of(MatchResult.alreadyInBook())` com `isAlreadyInBook() = true`.
+2. **`FundsReservedEventConsumer`** — entre a Fase 2 e a Fase 3, verifica `result.get(0).isAlreadyInBook()`. Se verdadeiro, emite log `DEBUG` e executa `channel.basicAck()` imediatamente (ACK idempotente), sem entrar na Fase 3.
+
+### Duas camadas de idempotência
+
+| Camada | Mecanismo | Escopo | Proteção |
+|---|---|---|---|
+| PostgreSQL | `tb_processed_events` (PK `eventId`) | Fase 1 — JPA TX | Re-entrega do mesmo evento (mesmo `eventId`) |
+| Redis Lua | `HEXISTS` no `order_index` | Fase 2 — match engine | Re-inserção da mesma ordem no livro (mesmo `orderId`) |
+
+A guarda Redis é necessária porque a Fase 1 pode completar com sucesso (novo `eventId`), mas a Fase 2 pode executar com um `orderId` que já está no livro — cenário possível em re-entrega rápida ou retry de saga.
+
+### Atomicidade
+
+O `HEXISTS` executa dentro do mesmo `EVAL` que o `ZADD`/`HSET`. Não há janela entre a verificação e a inserção — impossível double-booking por race condition.

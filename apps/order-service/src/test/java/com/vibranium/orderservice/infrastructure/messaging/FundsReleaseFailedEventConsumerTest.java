@@ -12,6 +12,7 @@ import com.vibranium.orderservice.domain.model.OrderOutboxMessage;
 import com.vibranium.orderservice.domain.model.ProcessedEvent;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
+import com.vibranium.orderservice.application.service.EventStoreService;
 import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
 import com.vibranium.utils.jackson.VibraniumJacksonConfig;
 import io.micrometer.core.instrument.Counter;
@@ -67,6 +68,7 @@ class FundsReleaseFailedEventConsumerTest {
     @Mock private OrderRepository          orderRepository;
     @Mock private OrderOutboxRepository    outboxRepository;
     @Mock private ProcessedEventRepository processedEventRepository;
+    @Mock private EventStoreService        eventStoreService;
     @Mock private Channel                  channel;
 
     private final ObjectMapper objectMapper = VibraniumJacksonConfig.configure(new ObjectMapper());
@@ -92,7 +94,7 @@ class FundsReleaseFailedEventConsumerTest {
     void setUp() {
         consumer = new FundsReleaseFailedEventConsumer(
                 orderRepository, outboxRepository, processedEventRepository,
-                objectMapper, meterRegistry
+                objectMapper, meterRegistry, eventStoreService
         );
 
         orderId       = UUID.randomUUID();

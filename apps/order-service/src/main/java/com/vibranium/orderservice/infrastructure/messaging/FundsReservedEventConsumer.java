@@ -20,6 +20,7 @@ import com.vibranium.orderservice.domain.model.ProcessedEvent;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
 import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
+import com.vibranium.orderservice.application.service.EventStoreService;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -117,6 +118,8 @@ public class FundsReservedEventConsumer {
     // ocorram na MESMA transação, eliminando o Dual Write.
     private final OrderOutboxRepository    outboxRepository;
     private final ObjectMapper             objectMapper;
+    // AT-14: Event Store imutável — gravação complementar ao outbox na mesma TX.
+    private final EventStoreService        eventStoreService;
     // AT-14.1: Micrometer Tracing — enriquece o span ativo com atributos de domínio.
     // O span é criado automaticamente pelo Spring AMQP (RabbitListenerObservation) ao
     // receber a mensagem. Tracer.currentSpan() retorna null se não houver span ativo
@@ -134,6 +137,7 @@ public class FundsReservedEventConsumer {
                                       RedisMatchEngineAdapter matchEngine,
                                       OrderOutboxRepository outboxRepository,
                                       ObjectMapper objectMapper,
+                                      EventStoreService eventStoreService,
                                       Tracer tracer,
                                       MeterRegistry meterRegistry,
                                       TransactionTemplate txTemplate) {
@@ -142,6 +146,7 @@ public class FundsReservedEventConsumer {
         this.matchEngine              = matchEngine;
         this.outboxRepository         = outboxRepository;
         this.objectMapper             = objectMapper;
+        this.eventStoreService        = eventStoreService;
         this.tracer                   = tracer;
         this.meterRegistry            = meterRegistry;
         this.txTemplate               = txTemplate;
@@ -291,6 +296,18 @@ public class FundsReservedEventConsumer {
                 }
 
                 // ================================================================
+                // AT-16: Deduplicação Redis — orderId já existe no book.
+                // ALREADY_IN_BOOK é resultado válido (não erro): a ordem já foi
+                // inserida no book por uma execução anterior. ACK idempotente.
+                // ================================================================
+                if (result.size() == 1 && result.get(0).isAlreadyInBook()) {
+                    logger.debug("Ordem {} já existe no book (ALREADY_IN_BOOK) — ACK idempotente",
+                            order.getId());
+                    channel.basicAck(deliveryTag, false);
+                    return;
+                }
+
+                // ================================================================
                 // FASE 3 — TX JPA: persiste resultado do match no Outbox
                 // ================================================================
                 try {
@@ -308,17 +325,38 @@ public class FundsReservedEventConsumer {
                     logger.error("Fase 3 falhou — falha ao persistir resultado: orderId={} matched={} error={}",
                             order.getId(), !result.isEmpty(), phase3Ex.getMessage(), phase3Ex);
 
-                    // Compensação Redis: se no-match, a ordem foi inserida no livro pelo Lua
-                    // porém a persistência JPA falhou. Remove do livro para manter consistência.
-                    // Para match: o Lua já consumiu a contraparte atomicamente — impossível
-                    // desfazer no Redis; apenas cancelamos a ordem no banco.
+                    // AT-17: Compensação Redis diferenciada por resultado do match.
                     if (result.isEmpty()) {
+                        // Sem match: a ordem foi inserida no livro pelo Lua. Remove do livro.
                         try {
                             matchEngine.removeFromBook(order.getId(), order.getOrderType());
                             logger.info("Compensação Redis removeFromBook executada: orderId={}", order.getId());
                         } catch (Exception removeEx) {
                             logger.error("Compensação removeFromBook falhou (Redis indisponível): orderId={} error={}",
                                     order.getId(), removeEx.getMessage());
+                        }
+                    } else {
+                        // COM match: o Lua consumiu/modificou contrapartes. Executar undo_match.lua
+                        // para restaurar o estado anterior no Redis.
+                        // Obter preços das contrapartes do PostgreSQL para calcular os scores.
+                        try {
+                            java.util.Map<UUID, java.math.BigDecimal> counterpartPrices = new java.util.HashMap<>();
+                            for (MatchResult mr : result) {
+                                orderRepository.findById(mr.counterpartId())
+                                        .ifPresent(cp -> counterpartPrices.put(
+                                                cp.getId(), cp.getPrice()));
+                            }
+                            int restored = matchEngine.undoMatch(
+                                    order.getOrderType(), order.getId(),
+                                    result, counterpartPrices);
+                            logger.info("Compensação Redis undoMatch executada: orderId={} restored={}",
+                                    order.getId(), restored);
+                        } catch (Exception undoEx) {
+                            // CRITICAL: compensação falhou — inconsistência residual.
+                            // NÃO faz retry (regra AT-17). Alertar para resolução manual.
+                            logger.error("CRITICAL: undoMatch falhou — inconsistência residual " +
+                                            "inevitável. orderId={} error={}",
+                                    order.getId(), undoEx.getMessage(), undoEx);
                         }
                     }
 
@@ -576,5 +614,26 @@ public class FundsReservedEventConsumer {
                 routingKey,
                 json
         ));
+
+        // AT-14: grava o evento também no Event Store imutável (mesma TX).
+        // Extrai metadados do DomainEvent se disponível; caso contrário, usa defaults.
+        UUID eventId = UUID.randomUUID();
+        UUID correlationId = null;
+        Instant occurredOn = Instant.now();
+        int schemaVersion = 1;
+        if (eventPayload instanceof com.vibranium.contracts.events.DomainEvent de) {
+            eventId = de.eventId();
+            if (de.correlationId() != null) correlationId = de.correlationId();
+            if (de.occurredOn() != null) occurredOn = de.occurredOn();
+            schemaVersion = de.schemaVersion();
+        } else if (eventPayload instanceof com.vibranium.contracts.commands.Command cmd) {
+            if (cmd.correlationId() != null) correlationId = cmd.correlationId();
+            schemaVersion = cmd.schemaVersion();
+        }
+        if (correlationId == null) correlationId = UUID.randomUUID();
+        eventStoreService.append(
+                eventId, aggregateId.toString(), "Order",
+                eventType, json, occurredOn, correlationId, schemaVersion
+        );
     }
 }

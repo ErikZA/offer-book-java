@@ -206,6 +206,11 @@ Cada microsserviço é uma aplicação Spring Boot independente que aplica **Arq
 │   ├── outbox/             # Transactional Outbox publisher (wallet-service)
 │   └── redis/              # Redis adapters — match engine (order-service)
 │
+├── eventstore/             # ⭐ Event Store imutável — auditoria e replay (AT-14)
+│   ├── model/              # EventStoreEntry (append-only, TRIGGER protegido)
+│   ├── repository/         # EventStoreRepository (JPA — replay por aggregate + temporal)
+│   └── service/            # EventStoreService (append na mesma TX do Outbox)
+│
 ├── web/                    # Adapter HTTP — driving side
 │   ├── controller/         # REST controllers (OrderCommandController, WalletController, etc.)
 │   └── exception/          # GlobalExceptionHandler + exceções de domínio customizadas

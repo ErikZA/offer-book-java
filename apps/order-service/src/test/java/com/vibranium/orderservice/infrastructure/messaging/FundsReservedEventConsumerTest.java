@@ -15,6 +15,7 @@ import com.vibranium.orderservice.domain.model.ProcessedEvent;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
 import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
+import com.vibranium.orderservice.application.service.EventStoreService;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.tracing.Tracer;
@@ -112,6 +113,9 @@ class FundsReservedEventConsumerTest {
     private ObjectMapper objectMapper;
 
     @Mock
+    private EventStoreService eventStoreService;
+
+    @Mock
     private Channel channel;
 
     // AT-14.1: Tracer mock necessário após adição da dependência no construtor.
@@ -169,6 +173,7 @@ class FundsReservedEventConsumerTest {
                 matchEngine,
                 outboxRepository,
                 objectMapper,
+                eventStoreService,
                 tracer,    // AT-14.1: tracer injetado para enriquecimento de spans
                 new SimpleMeterRegistry(), // AT-15.2: MeterRegistry para métricas de negócio
                 txTemplate // AT-2.1.1: transactionTemplate para separação de fases Saga
