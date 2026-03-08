@@ -53,6 +53,9 @@ public class SecurityConfig {
                         // (Kong, Kubernetes health checks, Prometheus)
                         .requestMatchers("/actuator/**").permitAll()
 
+                        // OpenAPI / Swagger UI — documentação pública
+                        .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
+
                         // AT-14: Endpoint de auditoria do Event Store — requer role ADMIN
                         .requestMatchers("/admin/**").hasAuthority("ROLE_ADMIN")
 

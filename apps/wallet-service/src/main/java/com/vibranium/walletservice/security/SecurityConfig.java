@@ -84,6 +84,9 @@ public class SecurityConfig {
                         // (Kong health check, Kubernetes liveness/readiness, Prometheus scrape)
                         .requestMatchers("/actuator/health", "/actuator/info").permitAll()
 
+                        // OpenAPI / Swagger UI — documentação pública
+                        .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
+
                         // Todas as demais rotas exigem usuário autenticado via JWT
                         .anyRequest().authenticated())
 
