@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.vibranium</groupId>
+        <artifactId>vibranium-orderbook</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>performance-tests</artifactId>
+    <packaging>jar</packaging>
+
+    <name>Vibranium Performance Tests</name>
+    <description>
+        Gatling benchmark suite para validação do SLA de 5.000 trades/s.
+        Cenários: Smoke, Load, Stress e Soak.
+        Executar: mvn gatling:test -pl tests/performance
+    </description>
+
+    <properties>
+        <gatling.version>3.11.5</gatling.version>
+        <gatling-maven-plugin.version>4.9.6</gatling-maven-plugin.version>
+        <!-- Diretório de resultados dos relatórios HTML -->
+        <gatling.resultsFolder>${project.basedir}/results</gatling.resultsFolder>
+        <!-- Surefire/Failsafe não executam — Gatling tem plugin próprio.
+             Usamos skipTests (não maven.test.skip) para manter a compilação. -->
+        <skipTests>true</skipTests>
+    </properties>
+
+    <dependencies>
+        <!-- Gatling Java DSL -->
+        <dependency>
+            <groupId>io.gatling.highcharts</groupId>
+            <artifactId>gatling-charts-highcharts</artifactId>
+            <version>${gatling.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.gatling</groupId>
+            <artifactId>gatling-app</artifactId>
+            <version>${gatling.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Jackson para parsing de resposta JSON do Keycloak token endpoint -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Gatling Maven Plugin -->
+            <plugin>
+                <groupId>io.gatling</groupId>
+                <artifactId>gatling-maven-plugin</artifactId>
+                <version>${gatling-maven-plugin.version}</version>
+                <configuration>
+                    <resultsFolder>${gatling.resultsFolder}</resultsFolder>
+                    <!-- Pacote base das simulações -->
+                    <simulationsFolder>src/test/java</simulationsFolder>
+                </configuration>
+            </plugin>
+
+            <!-- Desabilita Surefire — Gatling não usa JUnit runner -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <skip>true</skip>
+                </configuration>
+            </plugin>
+
+            <!-- Desabilita Jacoco — sem cobertura para testes de performance -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <configuration>
+                    <skip>true</skip>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- Perfil para executar cenário específico -->
+        <profile>
+            <id>smoke</id>
+            <properties>
+                <gatling.simulationClass>com.vibranium.performance.SmokeSimulation</gatling.simulationClass>
+            </properties>
+        </profile>
+        <profile>
+            <id>load</id>
+            <properties>
+                <gatling.simulationClass>com.vibranium.performance.LoadSimulation</gatling.simulationClass>
+            </properties>
+        </profile>
+        <profile>
+            <id>stress</id>
+            <properties>
+                <gatling.simulationClass>com.vibranium.performance.StressSimulation</gatling.simulationClass>
+            </properties>
+        </profile>
+        <profile>
+            <id>soak</id>
+            <properties>
+                <gatling.simulationClass>com.vibranium.performance.SoakSimulation</gatling.simulationClass>
+            </properties>
+        </profile>
+        <profile>
+            <id>validation</id>
+            <properties>
+                <gatling.simulationClass>com.vibranium.performance.OrderMatchingValidationSimulation</gatling.simulationClass>
+            </properties>
+        </profile>
+    </profiles>
+
+</project>

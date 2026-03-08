@@ -1,0 +1,976 @@
+# ================================================================================
+# AMBIENTE DE PERFORMANCE — Vibranium Platform
+# ================================================================================
+# Réplica exata do ambiente de staging, adequada para testes de performance.
+# Topologia: 3 MongoDB RS + PG Primary/2 Replicas + 3 Redis Cluster +
+#            3 RabbitMQ Cluster + 3 Order Service + 3 Wallet Service +
+#            Keycloak + Prometheus + Grafana + Gatling
+#
+# NOTA: Kong API Gateway REMOVIDO do ambiente de performance.
+# O tráfego é direcionado diretamente aos serviços para medir a performance
+# real sem o gargalo do Gateway. Autenticação real via Keycloak mantida.
+#
+# Subir infraestrutura:
+#   docker compose -f tests/performance/docker-compose.perf.yml up -d --build
+#
+# Executar benchmark (smoke):
+#   docker compose -f tests/performance/docker-compose.perf.yml run --rm -e GATLING_SIMULATION=com.vibranium.performance.SmokeSimulation gatling
+#
+# Executar benchmark (load):
+#   docker compose -f tests/performance/docker-compose.perf.yml run --rm -e GATLING_SIMULATION=com.vibranium.performance.LoadSimulation gatling
+#
+# Parar tudo:
+#   docker compose -f tests/performance/docker-compose.perf.yml down -v
+# ================================================================================
+
+services:
+    # ================== MongoDB (3 Replicas) ==================
+    mongodb-1:
+        image: mongo:7.0
+        container_name: vibranium-mongodb-1-perf
+        entrypoint: ['bash', '/scripts/docker-entrypoint-override.sh']
+        command: ['mongod', '--replSet', 'rs0', '--bind_ip_all', '--keyFile', '/etc/mongod-keyfile']
+        ports:
+            - '27017:27017'
+        environment:
+            MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
+            MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-admin123}
+            MONGO_INITDB_DATABASE: vibranium_orders
+            MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:-vibraniumReplicaKeyDev2026}
+        volumes:
+            - mongodb_1_perf_data:/data/db
+            - ../../infra/mongo/docker-entrypoint-override-staging.sh:/scripts/docker-entrypoint-override.sh:ro
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        healthcheck:
+            test: ['CMD-SHELL', 'mongosh "mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@localhost:27017/test?authSource=admin" --eval "db.runCommand(''ping'').ok" --quiet | grep -q "^1"']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    mongodb-2:
+        image: mongo:7.0
+        container_name: vibranium-mongodb-2-perf
+        entrypoint: ['bash', '/scripts/docker-entrypoint-override.sh']
+        command: ['mongod', '--replSet', 'rs0', '--bind_ip_all', '--keyFile', '/etc/mongod-keyfile']
+        ports:
+            - '27018:27017'
+        environment:
+            MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
+            MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-admin123}
+            MONGO_INITDB_DATABASE: vibranium_orders
+            MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:-vibraniumReplicaKeyDev2026}
+        volumes:
+            - mongodb_2_perf_data:/data/db
+            - ../../infra/mongo/docker-entrypoint-override-staging.sh:/scripts/docker-entrypoint-override.sh:ro
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        healthcheck:
+            test: ['CMD-SHELL', 'mongosh "mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@localhost:27017/test?authSource=admin" --eval "db.runCommand(''ping'').ok" --quiet | grep -q "^1"']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    mongodb-3:
+        image: mongo:7.0
+        container_name: vibranium-mongodb-3-perf
+        entrypoint: ['bash', '/scripts/docker-entrypoint-override.sh']
+        command: ['mongod', '--replSet', 'rs0', '--bind_ip_all', '--keyFile', '/etc/mongod-keyfile']
+        ports:
+            - '27019:27017'
+        environment:
+            MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
+            MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-admin123}
+            MONGO_INITDB_DATABASE: vibranium_orders
+            MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:-vibraniumReplicaKeyDev2026}
+        volumes:
+            - mongodb_3_perf_data:/data/db
+            - ../../infra/mongo/docker-entrypoint-override-staging.sh:/scripts/docker-entrypoint-override.sh:ro
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        healthcheck:
+            test: ['CMD-SHELL', 'mongosh "mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@localhost:27017/test?authSource=admin" --eval "db.runCommand(''ping'').ok" --quiet | grep -q "^1"']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    # ================== MongoDB Replica Set Init ==================
+    mongo-rs-init:
+        image: mongo:7.0
+        container_name: vibranium-mongo-rs-init-perf
+        environment:
+            MONGO_ROOT_USER: ${MONGO_ROOT_USER:-admin}
+            MONGO_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-admin123}
+        volumes:
+            - ../../infra/mongo/init-replica-set-staging.sh:/scripts/init-replica-set.sh:ro
+        command: ['bash', '/scripts/init-replica-set.sh']
+        depends_on:
+            mongodb-1:
+                condition: service_healthy
+            mongodb-2:
+                condition: service_healthy
+            mongodb-3:
+                condition: service_healthy
+        networks:
+            - vibranium-perf-network
+        restart: 'no'
+
+    # ================== PostgreSQL (1 Primary + 2 Hot Standbys) ==================
+    postgres-primary:
+        image: postgres:16-alpine
+        container_name: vibranium-postgres-primary-perf
+        # Flags de replicação + tuning para benchmark de alta concorrência
+        # max_connections não é sobrescrito aqui — o default 100 é replicado via
+        # pg_basebackup para os standbys. Se aumentar aqui, os standbys também
+        # precisam do mesmo valor (o PG aborta recovery se replica < primary).
+        command: >
+            postgres
+            -c wal_level=replica
+            -c max_wal_senders=10
+            -c max_replication_slots=4
+            -c wal_keep_size=64
+            -c hot_standby=on
+            -c max_connections=300
+            -c shared_buffers=256MB
+            -c work_mem=8MB
+            -c effective_cache_size=512MB
+            -c synchronous_commit=off
+        ports:
+            - '5432:5432'
+        environment:
+            POSTGRES_USER: ${POSTGRES_USER:-postgres}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+            POSTGRES_DB: vibranium_wallet
+            POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD:-repl_secret_2026}
+        volumes:
+            - postgres_primary_perf_data:/var/lib/postgresql/data
+            - ../../infra/postgres/init-app-databases.sh:/docker-entrypoint-initdb.d/00-init-app-databases.sh:ro
+            - ../../infra/postgres/pg-primary-init.sh:/docker-entrypoint-initdb.d/01-init-replication.sh:ro
+            - ../../infra/postgres/init-postgres.sql:/docker-entrypoint-initdb.d/02-init-schema.sql:ro
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U postgres']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    postgres-replica-1:
+        image: postgres:16-alpine
+        container_name: vibranium-postgres-replica-1-perf
+        # Wrapper: copia o script read-only, injeta max_connections=300 e executa
+        entrypoint:
+            - /bin/bash
+            - -c
+            - |
+                sed 's/exec postgres$$/exec postgres -c max_connections=300/' /scripts/pg-replica-entrypoint.sh > /tmp/replica-entrypoint.sh
+                chmod +x /tmp/replica-entrypoint.sh
+                exec /bin/bash /tmp/replica-entrypoint.sh
+        ports:
+            - '5433:5432'
+        environment:
+            PGDATA: /var/lib/postgresql/data
+            POSTGRES_PRIMARY_HOST: postgres-primary
+            POSTGRES_PRIMARY_PORT: '5432'
+            POSTGRES_REPLICATION_USER: replicator
+            POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD:-repl_secret_2026}
+        volumes:
+            - postgres_replica_1_perf_data:/var/lib/postgresql/data
+            - ../../infra/postgres/pg-replica-entrypoint.sh:/scripts/pg-replica-entrypoint.sh:ro
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        depends_on:
+            postgres-primary:
+                condition: service_healthy
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U postgres']
+            interval: 10s
+            timeout: 5s
+            retries: 10
+            start_period: 60s
+
+    postgres-replica-2:
+        image: postgres:16-alpine
+        container_name: vibranium-postgres-replica-2-perf
+        # Wrapper: copia o script read-only, injeta max_connections=300 e executa
+        entrypoint:
+            - /bin/bash
+            - -c
+            - |
+                sed 's/exec postgres$$/exec postgres -c max_connections=300/' /scripts/pg-replica-entrypoint.sh > /tmp/replica-entrypoint.sh
+                chmod +x /tmp/replica-entrypoint.sh
+                exec /bin/bash /tmp/replica-entrypoint.sh
+        ports:
+            - '5434:5432'
+        environment:
+            PGDATA: /var/lib/postgresql/data
+            POSTGRES_PRIMARY_HOST: postgres-primary
+            POSTGRES_PRIMARY_PORT: '5432'
+            POSTGRES_REPLICATION_USER: replicator
+            POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD:-repl_secret_2026}
+        volumes:
+            - postgres_replica_2_perf_data:/var/lib/postgresql/data
+            - ../../infra/postgres/pg-replica-entrypoint.sh:/scripts/pg-replica-entrypoint.sh:ro
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        depends_on:
+            postgres-primary:
+                condition: service_healthy
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U postgres']
+            interval: 10s
+            timeout: 5s
+            retries: 10
+            start_period: 60s
+
+    # ================== Redis (3-node Cluster) ==================
+    redis-1:
+        image: redis:7-alpine
+        container_name: vibranium-redis-1-perf
+        ports:
+            - '6379:6379'
+        entrypoint: ['sh', '-c', 'redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379 --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass "$$REDIS_PASSWORD"']
+        environment:
+            REDIS_PASSWORD: ${REDIS_PASSWORD:-redis123}
+        volumes:
+            - redis_1_perf_data:/data
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        healthcheck:
+            test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD:-redis123}', '-p', '6379', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 10
+
+    redis-2:
+        image: redis:7-alpine
+        container_name: vibranium-redis-2-perf
+        ports:
+            - '6380:6379'
+        entrypoint: ['sh', '-c', 'redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379 --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass "$$REDIS_PASSWORD"']
+        environment:
+            REDIS_PASSWORD: ${REDIS_PASSWORD:-redis123}
+        volumes:
+            - redis_2_perf_data:/data
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        healthcheck:
+            test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD:-redis123}', '-p', '6379', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 10
+        depends_on:
+            redis-1:
+                condition: service_healthy
+
+    redis-3:
+        image: redis:7-alpine
+        container_name: vibranium-redis-3-perf
+        ports:
+            - '6381:6379'
+        entrypoint: ['sh', '-c', 'redis-server --appendonly yes --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --port 6379 --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass "$$REDIS_PASSWORD"']
+        environment:
+            REDIS_PASSWORD: ${REDIS_PASSWORD:-redis123}
+        volumes:
+            - redis_3_perf_data:/data
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        healthcheck:
+            test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD:-redis123}', '-p', '6379', 'ping']
+            interval: 5s
+            timeout: 3s
+            retries: 10
+        depends_on:
+            redis-1:
+                condition: service_healthy
+
+    # ================== Redis Cluster Init ==================
+    redis-cluster-init:
+        image: redis:7-alpine
+        container_name: vibranium-redis-cluster-init-perf
+        environment:
+            REDIS_PASSWORD: ${REDIS_PASSWORD:-redis123}
+        command:
+            - sh
+            - -c
+            - |
+                echo "Aguardando nós Redis estarem prontos..."
+                redis-cli --cluster create redis-1:6379 redis-2:6379 redis-3:6379 --cluster-replicas 0 --cluster-yes -a $$REDIS_PASSWORD
+                echo "Cluster criado! Verificando estado:"
+                redis-cli -h redis-1 -p 6379 -a $$REDIS_PASSWORD cluster info | grep cluster_state
+        networks:
+            - vibranium-perf-network
+        depends_on:
+            redis-1:
+                condition: service_healthy
+            redis-2:
+                condition: service_healthy
+            redis-3:
+                condition: service_healthy
+        deploy:
+            resources:
+                limits:
+                    memory: 64M
+                reservations:
+                    cpus: '0.1'
+        restart: 'no'
+
+    # ================== RabbitMQ (3-node Cluster) ==================
+    rabbitmq-1:
+        image: rabbitmq:3.13-management-alpine
+        container_name: vibranium-rabbitmq-1-perf
+        entrypoint: ['/bin/sh', '-c', 'echo "$$RABBITMQ_ERLANG_COOKIE" > /var/lib/rabbitmq/.erlang.cookie && chmod 400 /var/lib/rabbitmq/.erlang.cookie && chown rabbitmq:rabbitmq /var/lib/rabbitmq/.erlang.cookie && exec docker-entrypoint.sh rabbitmq-server']
+        ports:
+            - '5672:5672'
+            - '15672:15672'
+        environment:
+            RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
+            RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-guest}
+            RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:-vibranium_erlang_cookie_dev}
+            RABBITMQ_NODENAME: rabbit@rabbitmq-1
+        volumes:
+            - rabbitmq_1_perf_data:/var/lib/rabbitmq
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        healthcheck:
+            test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+            interval: 10s
+            timeout: 5s
+            retries: 10
+            start_period: 20s
+
+    rabbitmq-2:
+        image: rabbitmq:3.13-management-alpine
+        container_name: vibranium-rabbitmq-2-perf
+        entrypoint: ['/bin/sh', '-c', 'echo "$$RABBITMQ_ERLANG_COOKIE" > /var/lib/rabbitmq/.erlang.cookie && chmod 400 /var/lib/rabbitmq/.erlang.cookie && chown rabbitmq:rabbitmq /var/lib/rabbitmq/.erlang.cookie && exec /bin/sh /scripts/join-cluster.sh']
+        ports:
+            - '5673:5672'
+            - '15673:15672'
+        environment:
+            RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
+            RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-guest}
+            RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:-vibranium_erlang_cookie_dev}
+            RABBITMQ_NODENAME: rabbit@rabbitmq-2
+        volumes:
+            - rabbitmq_2_perf_data:/var/lib/rabbitmq
+            - ../../infra/rabbitmq/join-cluster.sh:/scripts/join-cluster.sh:ro
+        networks:
+            - vibranium-perf-network
+        depends_on:
+            rabbitmq-1:
+                condition: service_healthy
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        healthcheck:
+            test: ['CMD-SHELL', 'rabbitmq-diagnostics -q ping && rabbitmqctl cluster_status | grep -q "rabbit@rabbitmq-1"']
+            interval: 10s
+            timeout: 10s
+            retries: 15
+            start_period: 30s
+
+    rabbitmq-3:
+        image: rabbitmq:3.13-management-alpine
+        container_name: vibranium-rabbitmq-3-perf
+        entrypoint: ['/bin/sh', '-c', 'echo "$$RABBITMQ_ERLANG_COOKIE" > /var/lib/rabbitmq/.erlang.cookie && chmod 400 /var/lib/rabbitmq/.erlang.cookie && chown rabbitmq:rabbitmq /var/lib/rabbitmq/.erlang.cookie && exec /bin/sh /scripts/join-cluster.sh']
+        ports:
+            - '5674:5672'
+            - '15674:15672'
+        environment:
+            RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
+            RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-guest}
+            RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:-vibranium_erlang_cookie_dev}
+            RABBITMQ_NODENAME: rabbit@rabbitmq-3
+        volumes:
+            - rabbitmq_3_perf_data:/var/lib/rabbitmq
+            - ../../infra/rabbitmq/join-cluster.sh:/scripts/join-cluster.sh:ro
+        networks:
+            - vibranium-perf-network
+        depends_on:
+            rabbitmq-1:
+                condition: service_healthy
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        healthcheck:
+            test: ['CMD-SHELL', 'rabbitmq-diagnostics -q ping && rabbitmqctl cluster_status | grep -q "rabbit@rabbitmq-1"']
+            interval: 10s
+            timeout: 10s
+            retries: 15
+            start_period: 30s
+
+    # ================== RabbitMQ Cluster Init ==================
+    rabbitmq-cluster-init:
+        image: rabbitmq:3.13-management-alpine
+        container_name: vibranium-rabbitmq-cluster-init-perf
+        restart: 'no'
+        entrypoint: ['/bin/sh']
+        environment:
+            RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:-vibranium_erlang_cookie_dev}
+        command:
+            - -c
+            - |
+                echo "$$RABBITMQ_ERLANG_COOKIE" > /root/.erlang.cookie
+                chmod 400 /root/.erlang.cookie
+
+                echo '[cluster-init] Verificando status do cluster...'
+                rabbitmqctl -n rabbit@rabbitmq-1 cluster_status --formatter=compact
+
+                echo '[cluster-init] Aplicando policy ha-all em todas as filas...'
+                rabbitmqctl -n rabbit@rabbitmq-1 set_policy ha-all '.*' \
+                    '{"ha-mode":"all","ha-sync-mode":"automatic"}' \
+                    --apply-to queues
+
+                echo '[cluster-init] Policy aplicada com sucesso.'
+                rabbitmqctl -n rabbit@rabbitmq-1 list_policies
+
+                echo '[cluster-init] Cluster RabbitMQ formado e HA configurado.'
+        depends_on:
+            rabbitmq-1:
+                condition: service_healthy
+            rabbitmq-2:
+                condition: service_healthy
+            rabbitmq-3:
+                condition: service_healthy
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 64M
+                    cpus: '0.1'
+
+    # ================== Order Service (3 Replicas) ==================
+    order-service-1:
+        build:
+            context: ../..
+            dockerfile: apps/order-service/docker/Dockerfile
+        image: order-service:perf
+        container_name: vibranium-order-service-1-perf
+        ports:
+            - '8080:8080'
+        environment:
+            SPRING_PROFILES_ACTIVE: perf
+            SPRING_APPLICATION_NAME: order-service
+            SPRING_DATA_REDIS_CLUSTER_NODES: redis-1:6379,redis-2:6379,redis-3:6379
+            SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-primary:5432/vibranium_orders
+            SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-postgres}
+            SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+            SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
+            SPRING_REDIS_HOST: redis-1
+            SPRING_REDIS_PORT: 6379
+            SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-redis123}
+            SPRING_RABBITMQ_HOST: rabbitmq-1
+            SPRING_RABBITMQ_PORT: 5672
+            SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:-guest}
+            SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://keycloak:8080/realms/orderbook-realm/protocol/openid-connect/certs
+            SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://keycloak:8080/realms/orderbook-realm
+            APP_GATEWAY_ENABLED: 'false'
+            TRACING_ENABLED: 'false'
+            JAVA_OPTS: '-Xms256m -Xmx384m -XX:+UseZGC -XX:MaxRAMPercentage=75.0'
+        depends_on:
+            postgres-primary:
+                condition: service_healthy
+            mongo-rs-init:
+                condition: service_completed_successfully
+            redis-cluster-init:
+                condition: service_completed_successfully
+            rabbitmq-cluster-init:
+                condition: service_completed_successfully
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                    cpus: '0.5'
+                reservations:
+                    cpus: '0.25'
+        healthcheck:
+            test: ['CMD-SHELL', 'wget --quiet --tries=1 --spider http://localhost:8080/actuator/health || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 10
+            start_period: 30s
+
+    order-service-2:
+        image: order-service:perf
+        container_name: vibranium-order-service-2-perf
+        ports:
+            - '8081:8080'
+        environment:
+            SPRING_PROFILES_ACTIVE: perf
+            SPRING_APPLICATION_NAME: order-service
+            SPRING_DATA_REDIS_CLUSTER_NODES: redis-1:6379,redis-2:6379,redis-3:6379
+            SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-primary:5432/vibranium_orders
+            SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-postgres}
+            SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+            SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
+            SPRING_REDIS_HOST: redis-2
+            SPRING_REDIS_PORT: 6379
+            SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-redis123}
+            SPRING_RABBITMQ_HOST: rabbitmq-2
+            SPRING_RABBITMQ_PORT: 5672
+            SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:-guest}
+            SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://keycloak:8080/realms/orderbook-realm/protocol/openid-connect/certs
+            SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://keycloak:8080/realms/orderbook-realm
+            APP_GATEWAY_ENABLED: 'false'
+            TRACING_ENABLED: 'false'
+            JAVA_OPTS: '-Xms256m -Xmx384m -XX:+UseZGC -XX:MaxRAMPercentage=75.0'
+        depends_on:
+            - order-service-1
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                    cpus: '0.5'
+                reservations:
+                    cpus: '0.25'
+        healthcheck:
+            test: ['CMD-SHELL', 'wget --quiet --tries=1 --spider http://localhost:8080/actuator/health || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 10
+            start_period: 30s
+
+    order-service-3:
+        image: order-service:perf
+        container_name: vibranium-order-service-3-perf
+        ports:
+            - '8082:8080'
+        environment:
+            SPRING_PROFILES_ACTIVE: perf
+            SPRING_APPLICATION_NAME: order-service
+            SPRING_DATA_REDIS_CLUSTER_NODES: redis-1:6379,redis-2:6379,redis-3:6379
+            SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-primary:5432/vibranium_orders
+            SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-postgres}
+            SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+            SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/vibranium_orders?authSource=admin&replicaSet=rs0
+            SPRING_REDIS_HOST: redis-3
+            SPRING_REDIS_PORT: 6379
+            SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:-redis123}
+            SPRING_RABBITMQ_HOST: rabbitmq-3
+            SPRING_RABBITMQ_PORT: 5672
+            SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:-guest}
+            SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://keycloak:8080/realms/orderbook-realm/protocol/openid-connect/certs
+            SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://keycloak:8080/realms/orderbook-realm
+            APP_GATEWAY_ENABLED: 'false'
+            TRACING_ENABLED: 'false'
+            JAVA_OPTS: '-Xms256m -Xmx384m -XX:+UseZGC -XX:MaxRAMPercentage=75.0'
+        depends_on:
+            - order-service-1
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                    cpus: '0.5'
+                reservations:
+                    cpus: '0.25'
+        healthcheck:
+            test: ['CMD-SHELL', 'wget --quiet --tries=1 --spider http://localhost:8080/actuator/health || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 10
+            start_period: 30s
+
+    # ================== Wallet Service (3 Replicas) ==================
+    wallet-service-1:
+        build:
+            context: ../..
+            dockerfile: apps/wallet-service/docker/Dockerfile
+        image: wallet-service:perf
+        container_name: vibranium-wallet-service-1-perf
+        ports:
+            - '8083:8081'
+        environment:
+            SPRING_PROFILES_ACTIVE: perf
+            SPRING_APPLICATION_NAME: wallet-service
+            SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-primary:5432/vibranium_wallet
+            SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-postgres}
+            SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+            SPRING_RABBITMQ_HOST: rabbitmq-1
+            SPRING_RABBITMQ_PORT: 5672
+            SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:-guest}
+            SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://keycloak:8080/realms/orderbook-realm/protocol/openid-connect/certs
+            SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://keycloak:8080/realms/orderbook-realm
+            APP_GATEWAY_ENABLED: 'false'
+            TRACING_ENABLED: 'false'
+            JAVA_OPTS: '-Xms256m -Xmx384m -XX:+UseZGC -XX:MaxRAMPercentage=75.0'
+        depends_on:
+            postgres-primary:
+                condition: service_healthy
+            rabbitmq-cluster-init:
+                condition: service_completed_successfully
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                    cpus: '0.5'
+                reservations:
+                    cpus: '0.25'
+        healthcheck:
+            test: ['CMD-SHELL', 'wget --quiet --tries=1 --spider http://localhost:8081/actuator/health || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 10
+            start_period: 30s
+
+    wallet-service-2:
+        image: wallet-service:perf
+        container_name: vibranium-wallet-service-2-perf
+        ports:
+            - '8084:8081'
+        environment:
+            SPRING_PROFILES_ACTIVE: perf
+            SPRING_APPLICATION_NAME: wallet-service
+            SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-primary:5432/vibranium_wallet
+            SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-postgres}
+            SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+            SPRING_RABBITMQ_HOST: rabbitmq-2
+            SPRING_RABBITMQ_PORT: 5672
+            SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:-guest}
+            SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://keycloak:8080/realms/orderbook-realm/protocol/openid-connect/certs
+            SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://keycloak:8080/realms/orderbook-realm
+            APP_GATEWAY_ENABLED: 'false'
+            TRACING_ENABLED: 'false'
+            JAVA_OPTS: '-Xms256m -Xmx384m -XX:+UseZGC -XX:MaxRAMPercentage=75.0'
+        depends_on:
+            - wallet-service-1
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                    cpus: '0.5'
+                reservations:
+                    cpus: '0.25'
+        healthcheck:
+            test: ['CMD-SHELL', 'wget --quiet --tries=1 --spider http://localhost:8081/actuator/health || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 10
+            start_period: 30s
+
+    wallet-service-3:
+        image: wallet-service:perf
+        container_name: vibranium-wallet-service-3-perf
+        ports:
+            - '8085:8081'
+        environment:
+            SPRING_PROFILES_ACTIVE: perf
+            SPRING_APPLICATION_NAME: wallet-service
+            SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-primary:5432/vibranium_wallet
+            SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-postgres}
+            SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+            SPRING_RABBITMQ_HOST: rabbitmq-3
+            SPRING_RABBITMQ_PORT: 5672
+            SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:-guest}
+            SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://keycloak:8080/realms/orderbook-realm/protocol/openid-connect/certs
+            SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://keycloak:8080/realms/orderbook-realm
+            APP_GATEWAY_ENABLED: 'false'
+            TRACING_ENABLED: 'false'
+            JAVA_OPTS: '-Xms256m -Xmx384m -XX:+UseZGC -XX:MaxRAMPercentage=75.0'
+        depends_on:
+            - wallet-service-1
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                    cpus: '0.5'
+                reservations:
+                    cpus: '0.25'
+        healthcheck:
+            test: ['CMD-SHELL', 'wget --quiet --tries=1 --spider http://localhost:8081/actuator/health || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 10
+            start_period: 30s
+
+    # ================== Keycloak DB ==================
+    keycloak-db:
+        image: postgres:16-alpine
+        container_name: vibranium-keycloak-db-perf
+        environment:
+            POSTGRES_USER: ${KEYCLOAK_DB_USER:-keycloak}
+            POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-keycloak}
+            POSTGRES_DB: keycloak_db
+        volumes:
+            - keycloak_db_perf_data:/var/lib/postgresql/data
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    memory: 512M
+                reservations:
+                    cpus: '0.5'
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U keycloak -d keycloak_db']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    # ================== Keycloak 22 ==================
+    keycloak:
+        build:
+            context: ../../infra
+            dockerfile: docker/Dockerfile.keycloak
+        image: vibranium-keycloak:22.0.5
+        container_name: vibranium-keycloak-perf
+        ports:
+            - '8180:8080'
+        command:
+            - start
+            - --optimized
+            - --import-realm
+        environment:
+            KC_DB: postgres
+            KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak_db
+            KC_DB_USERNAME: ${KEYCLOAK_DB_USER:-keycloak}
+            KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-keycloak}
+            KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+            KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin123}
+            KC_HTTP_ENABLED: 'true'
+            KC_HTTP_PORT: 8080
+            KC_HOSTNAME_STRICT: 'false'
+            KC_HOSTNAME: keycloak
+            KC_HOSTNAME_PORT: 8080
+            KC_HOSTNAME_STRICT_HTTPS: 'false'
+            KC_PROXY: none
+            KC_PROXY_HEADERS: xforwarded
+            KC_HEALTH_ENABLED: 'true'
+            KC_METRICS_ENABLED: 'true'
+            KC_LOG_LEVEL: WARN
+            KC_CACHE: local
+            KK_TO_RMQ_URL: rabbitmq-1
+            KK_TO_RMQ_PORT: 5672
+            KK_TO_RMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
+            KK_TO_RMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS:-guest}
+            KK_TO_RMQ_VHOST: /
+            KK_TO_RMQ_EXCHANGE: amq.topic
+            KK_TO_RMQ_USE_TLS: 'false'
+        volumes:
+            - keycloak_perf_data:/opt/keycloak/data
+            - ../../infra/keycloak/realm-export.json:/opt/keycloak/data/import/realm.json:ro
+        depends_on:
+            keycloak-db:
+                condition: service_healthy
+            rabbitmq-1:
+                condition: service_healthy
+        networks:
+            - vibranium-perf-network
+        deploy:
+            resources:
+                limits:
+                    cpus: '1.0'
+                    memory: 1024M
+                reservations:
+                    cpus: '0.5'
+                    memory: 512M
+        healthcheck:
+            test: ['CMD-SHELL', 'exec 3<>/dev/tcp/localhost/8080 && echo -e "GET /health/live HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3 && grep -q "200 OK" <&3']
+            interval: 15s
+            timeout: 10s
+            retries: 10
+            start_period: 90s
+
+    # ================== Prometheus ==================
+    prometheus:
+        image: prom/prometheus:v2.53.0
+        container_name: vibranium-prometheus-perf
+        ports:
+            - '9090:9090'
+        volumes:
+            - ../../infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+        command:
+            - '--config.file=/etc/prometheus/prometheus.yml'
+            - '--storage.tsdb.path=/prometheus'
+            - '--storage.tsdb.retention.time=1d'
+        networks:
+            - vibranium-perf-network
+        healthcheck:
+            test: ['CMD-SHELL', 'wget --quiet --tries=1 --spider http://localhost:9090/-/healthy || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    # ================== Grafana ==================
+    grafana:
+        image: grafana/grafana:11.1.0
+        container_name: vibranium-grafana-perf
+        ports:
+            - '3000:3000'
+        environment:
+            GF_SECURITY_ADMIN_USER: admin
+            GF_SECURITY_ADMIN_PASSWORD: admin
+        volumes:
+            - ../../infra/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+            - ../../infra/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+            - ../../infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+        depends_on:
+            prometheus:
+                condition: service_healthy
+        networks:
+            - vibranium-perf-network
+
+    # ================== Gatling Runner ==================
+    # Tráfego direcionado diretamente ao order-service (sem Kong Gateway).
+    # O Gatling envia requisições para order-service-1:8080 e consulta
+    # wallets via wallet-service-1:8081. Autenticação real via Keycloak mantida.
+    gatling:
+        image: maven:3.9-eclipse-temurin-21
+        container_name: vibranium-gatling-runner
+        working_dir: /app
+        environment:
+            TARGET_BASE_URL: http://order-service-1:8080
+            ORDER_SERVICE_URLS: http://order-service-1:8080,http://order-service-2:8080,http://order-service-3:8080
+            KEYCLOAK_BASE_URL: http://keycloak:8080
+            KEYCLOAK_REALM: orderbook-realm
+            KEYCLOAK_CLIENT_ID: order-client
+            KEYCLOAK_USERNAME: tester
+            KEYCLOAK_PASSWORD: test-password
+            KEYCLOAK_ADMIN_USER: ${KEYCLOAK_ADMIN:-admin}
+            KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin123}
+            WALLET_SERVICE_URL: http://wallet-service-1:8081
+            GATLING_SIMULATION: ${GATLING_SIMULATION:-}
+            MAVEN_OPTS: '-Xms512m -Xmx1g'
+        volumes:
+            - ../..:/app
+            - m2_perf_cache:/root/.m2
+            - ./results:/app/tests/performance/results
+        command:
+            - bash
+            - -c
+            - |
+                if [ -n "$$GATLING_SIMULATION" ]; then
+                  mvn gatling:test -pl tests/performance \
+                    -Dgatling.simulationClass=$$GATLING_SIMULATION \
+                    -Dgatling.resultsFolder=/app/tests/performance/results \
+                    --no-transfer-progress
+                else
+                  mvn gatling:test -pl tests/performance \
+                    -Dgatling.resultsFolder=/app/tests/performance/results \
+                    --no-transfer-progress
+                fi
+        depends_on:
+            order-service-1:
+                condition: service_started
+            order-service-2:
+                condition: service_started
+            order-service-3:
+                condition: service_started
+            wallet-service-1:
+                condition: service_started
+            wallet-service-2:
+                condition: service_started
+            wallet-service-3:
+                condition: service_started
+            keycloak:
+                condition: service_healthy
+        networks:
+            - vibranium-perf-network
+        profiles:
+            - run
+
+volumes:
+    mongodb_1_perf_data:
+    mongodb_2_perf_data:
+    mongodb_3_perf_data:
+    postgres_primary_perf_data:
+    postgres_replica_1_perf_data:
+    postgres_replica_2_perf_data:
+    redis_1_perf_data:
+    redis_2_perf_data:
+    redis_3_perf_data:
+    rabbitmq_1_perf_data:
+    rabbitmq_2_perf_data:
+    rabbitmq_3_perf_data:
+    keycloak_db_perf_data:
+    keycloak_perf_data:
+    m2_perf_cache:
+
+networks:
+    vibranium-perf-network:
+        driver: bridge
+        name: vibranium-perf-network
