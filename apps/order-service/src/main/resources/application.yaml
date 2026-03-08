@@ -24,10 +24,12 @@ spring:
         password: postgres
         driver-class-name: org.postgresql.Driver
         hikari:
-            maximum-pool-size: 20
-            minimum-idle: 5
-            connection-timeout: 3000
+            maximum-pool-size: 30
+            minimum-idle: 10
+            connection-timeout: 5000
             idle-timeout: 600000
+            # BUG-04: Detecta conexões não devolvidas ao pool após 30s — indica leak no código.
+            leak-detection-threshold: 30000
 
     # -----------------------------------------------------------------------
     # JPA — Hibernate 6 com PostgreSQL dialect
@@ -124,6 +126,15 @@ spring:
 # Application Queue/Exchange config (injetado via @ConfigurationProperties)
 # -----------------------------------------------------------------------
 app:
+    # ---------------------------------------------------------------------------
+    # Feature Flag: dependência do API Gateway (Kong)
+    # ---------------------------------------------------------------------------
+    # true  = ambiente de produção/staging: APIs esperam tráfego via Kong
+    # false = testes de performance/dev: APIs aceitam chamadas diretas sem Gateway
+    # Quando false, validações específicas do Gateway são ignoradas.
+    gateway:
+        enabled: ${APP_GATEWAY_ENABLED:true}
+
     # -----------------------------------------------------------------------
     # Outbox Publisher — Polling SKIP LOCKED (AT-01.1)
     # delay-ms: fixedDelay do @Scheduled (500ms = latência ~1s end-to-end por hop)
@@ -204,7 +215,7 @@ resilience4j:
                 # Tempo que o circuito permanece OPEN antes de transitar para HALF_OPEN.
                 wait-duration-in-open-state: 30s
                 # Número de chamadas permitidas em HALF_OPEN para testar recuperação.
-                permitted-number-of-calls-in-half-open-state: 1
+                permitted-number-of-calls-in-half-open-state: 3
                 # Transição automática de OPEN → HALF_OPEN após waitDuration.
                 automatic-transition-from-open-to-half-open-enabled: true
                 # Apenas exceções de infraestrutura Redis disparam o circuit breaker.
@@ -215,6 +226,61 @@ resilience4j:
                     - io.lettuce.core.RedisConnectionException
                     - io.lettuce.core.RedisCommandTimeoutException
                     - org.springframework.dao.QueryTimeoutException
+            # BUG-03: Circuit Breaker para PostgreSQL (HikariCP)
+            postgresPool:
+                failure-rate-threshold: 50
+                sliding-window-size: 20
+                sliding-window-type: count_based
+                minimum-number-of-calls: 10
+                wait-duration-in-open-state: 15s
+                permitted-number-of-calls-in-half-open-state: 5
+                automatic-transition-from-open-to-half-open-enabled: true
+                record-exceptions:
+                    - java.sql.SQLTransientConnectionException
+                    - org.springframework.jdbc.CannotGetJdbcConnectionException
+                    - org.springframework.dao.DataAccessResourceFailureException
+            # BUG-03: Circuit Breaker para MongoDB
+            mongoEventStore:
+                failure-rate-threshold: 50
+                sliding-window-size: 10
+                sliding-window-type: count_based
+                minimum-number-of-calls: 5
+                wait-duration-in-open-state: 20s
+                permitted-number-of-calls-in-half-open-state: 3
+                automatic-transition-from-open-to-half-open-enabled: true
+                record-exceptions:
+                    - com.mongodb.MongoSocketException
+                    - com.mongodb.MongoTimeoutException
+                    - com.mongodb.MongoExecutionTimeoutException
+                    - org.springframework.dao.DataAccessResourceFailureException
+            # BUG-03: Circuit Breaker para RabbitMQ
+            rabbitmqPublisher:
+                failure-rate-threshold: 50
+                sliding-window-size: 10
+                sliding-window-type: count_based
+                minimum-number-of-calls: 5
+                wait-duration-in-open-state: 20s
+                permitted-number-of-calls-in-half-open-state: 3
+                automatic-transition-from-open-to-half-open-enabled: true
+                record-exceptions:
+                    - org.springframework.amqp.AmqpConnectException
+                    - org.springframework.amqp.AmqpIOException
+                    - org.springframework.amqp.AmqpResourceNotAvailableException
+    # BUG-03: Bulkhead — isolamento de threads por recurso para evitar cascading failure.
+    bulkhead:
+        instances:
+            redisMatchEngine:
+                max-concurrent-calls: 50
+                max-wait-duration: 200ms
+            postgresPool:
+                max-concurrent-calls: 30
+                max-wait-duration: 500ms
+            mongoEventStore:
+                max-concurrent-calls: 20
+                max-wait-duration: 300ms
+            rabbitmqPublisher:
+                max-concurrent-calls: 30
+                max-wait-duration: 300ms
     ratelimiter:
         instances:
             redisMatchEngine:
@@ -248,17 +314,31 @@ management:
     endpoints:
         web:
             exposure:
-                include: health,info,metrics,prometheus,circuitbreakers,circuitbreakerevents,ratelimiters
+                include: health,info,metrics,prometheus,circuitbreakers,circuitbreakerevents,ratelimiters,bulkheads
     endpoint:
         health:
             show-details: always
+            # BUG-03: Liveness vs Readiness — Health Groups
+            # Liveness: JVM está viva (ping, diskSpace) — se falhar, container deve ser reiniciado.
+            # Readiness: aceita tráfego (db, redis, rabbit, mongo) — se falhar, não recebe tráfego.
+            group:
+                liveness:
+                    include: ping,diskSpace
+                readiness:
+                    include: db,redis,rabbit,mongo
+            probes:
+                enabled: true
     # AT-14.1: Micrometer Tracing + OpenTelemetry
-    # sampling.probability: 1.0 = exporta 100% dos spans em dev.
-    # Em producão, reduzir para 0.1 (10%) ou usar tail-based sampling
-    # no OpenTelemetry Collector para evitar overhead de I/O excessivo.
+    # TRACING_ENABLED: controle global de tracing (default: true).
+    # Em ambientes sem Jaeger/OTLP collector (ex: staging), setar TRACING_ENABLED=false
+    # para evitar erros de conexão recusada no exporter.
     tracing:
+        enabled: ${TRACING_ENABLED:true}
         sampling:
-            probability: 1.0
+            # sampling.probability: 1.0 = exporta 100% dos spans em dev.
+            # Em producão, reduzir para 0.1 (10%) ou usar tail-based sampling
+            # no OpenTelemetry Collector para evitar overhead de I/O excessivo.
+            probability: ${TRACING_SAMPLING_PROBABILITY:1.0}
     # AT-14.1: Exportação OTLP para Jaeger.
     # OTEL_EXPORTER_OTLP_ENDPOINT: variável de ambiente injetada pelo docker-compose.dev.yml
     # Fallback: localhost:4318 para desenvolvimento local sem Docker.

@@ -6,6 +6,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -119,7 +120,7 @@ public class RedisMatchEngineAdapter {
 
     public RedisMatchEngineAdapter(StringRedisTemplate redisTemplate,
                                    MeterRegistry meterRegistry,
-                                   CircuitBreaker circuitBreaker) {
+                                   @Qualifier("redisMatchEngineCircuitBreaker") CircuitBreaker circuitBreaker) {
         this.redisTemplate = redisTemplate;
         this.circuitBreaker = circuitBreaker;
         this.redisMatchLatencyTimer = Timer.builder("vibranium.redis.match.latency")
