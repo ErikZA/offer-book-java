@@ -70,6 +70,7 @@ docker compose -f infra/docker-compose.yml up
 - **[infra/README.md](infra/README.md)** - Como usar cada ambiente Docker
 - **[tests/README.md](tests/README.md)** - Ambientes de testes isolados
 - **[docs/architecture/order-book-mvp.md](docs/architecture/order-book-mvp.md)** - Arquitetura
+- **[docs/PERFORMANCE_REPORT.md](docs/PERFORMANCE_REPORT.md)** - Relatório de performance (Gatling)
 - **[docs/README.md](docs/README.md)** - Índice completo de documentação
 - **[docs/SECRETS_MANAGEMENT.md](docs/SECRETS_MANAGEMENT.md)** - Gestão de credenciais com Docker Secrets
 - **[scripts/README.md](scripts/README.md)** - Scripts disponíveis
@@ -85,6 +86,7 @@ docker compose -f infra/docker-compose.yml up
 | AssertJ | 3.x | Container |
 | REST Assured | 5.x | Container |
 | Docker | Compose | Máquina Host |
+| Gatling | 3.11.5 | Container |
 
 ### Infraestrutura de Segurança e Mensageria
 

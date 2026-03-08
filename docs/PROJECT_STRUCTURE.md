@@ -22,8 +22,10 @@ vibranium-orderbook/
 │
 ├── 📁 docs/                        # 📚 Documentação Detalhada
 │   ├── README.md                   # 📖 Índice de documentação (comece aqui!)
-│   ├── SETUP_COMPLETE.md           # Resumo do que foi implementado
-│   │
+│   ├── SETUP_COMPLETE.md           # Resumo do que foi implementado│   ├─ PERFORMANCE_REPORT.md       # 🚀 Relatório de performance (Gatling)
+│   ├─ PERFORMANCE_PROMPTS.md      # Prompts de engenharia para fixes
+│   ├─ JWT_ENV_MAPPING.md          # Mapeamento JWT por ambiente
+│   ├─ SECRETS_MANAGEMENT.md       # Gestão de secrets Docker│   │
 │   ├── 🧪 testing/                 # Tudo sobre testes e setup
 │   │   ├── SETUP_MAVEN.md          # ⭐ Como instalar Java/Maven
 │   │   ├── TESTING_GUIDE.md        # Guia completo de testes (300+ linhas)
@@ -49,8 +51,15 @@ vibranium-orderbook/
 ├── 🔧 scripts/                     # 🛠️ Scripts Utilitários
 │   ├── README.md                   # Como usar cada script
 │   └── build.ps1                   # Build tasks (PowerShell/Windows)
-│
-├── 🚀 apps/                        # Microsserviços Executáveis (Spring Boot)
+│├─ 🧪 tests/                       # Testes Automatizados
+│   ├─ README.md                   # Como usar os testes
+│   ├─ performance/                # 🚀 Testes de performance (Gatling)
+│   │   ├─ docker-compose.perf.yml # Ambiente de performance
+│   │   ├─ pom.xml                 # Config Gatling Maven
+│   │   └─ src/test/java/          # Simulações (Smoke, Load, Stress, Soak)
+│   ├─ e2e/                        # Testes end-to-end
+│   └─ *.sh                        # Scripts de validação de infra
+│├── 🚀 apps/                        # Microsserviços Executáveis (Spring Boot)
 │   ├── order-service/              # O Motor do Livro de Ofertas
 │   └── wallet-service/             # O Guardião de Saldos e Carteiras
 │

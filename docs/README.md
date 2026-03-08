@@ -49,6 +49,17 @@ Gestão de credenciais com Docker Secrets.
 
 - **[SECRETS_MANAGEMENT.md](./SECRETS_MANAGEMENT.md)** - Guia completo de gestão de secrets (Docker Secrets, rotação, troubleshooting)
 
+### 🚀 [Performance Testing](./PERFORMANCE_REPORT.md)
+Testes de carga e análise de capacidade.
+
+- **[PERFORMANCE_REPORT.md](./PERFORMANCE_REPORT.md)** - Relatório completo de performance (Smoke, Load, Stress, Soak)
+  - Métricas detalhadas por cenário
+  - Análise de causas raiz
+  - Recomendações de tuning e escala
+  - Projeção de capacidade
+- **[PERFORMANCE_PROMPTS.md](./PERFORMANCE_PROMPTS.md)** - Prompts de engenharia para correção de bugs e escalabilidade
+- **[JWT_ENV_MAPPING.md](./JWT_ENV_MAPPING.md)** - Mapeamento de variáveis JWT por ambiente
+
 ### 📋 Referência
 - **[SETUP_COMPLETE.md](./SETUP_COMPLETE.md)** - Resumo do que foi implementado
 - **[PROJECT_STRUCTURE.md](./PROJECT_STRUCTURE.md)** - Estrutura visual do projeto
@@ -59,6 +70,7 @@ Gestão de credenciais com Docker Secrets.
 |----------|-----------|
 | **Configurar e usar Docker** | [../docker/README.md](../docker/README.md) |
 | **Entender & escrever testes** | [testing/COMPREHENSIVE_TESTING.md](./testing/COMPREHENSIVE_TESTING.md) ⭐ |
+| **Testes de performance** | [PERFORMANCE_REPORT.md](./PERFORMANCE_REPORT.md) 🚀 |
 | **Gestão de secrets** | [SECRETS_MANAGEMENT.md](./SECRETS_MANAGEMENT.md) 🔐 |
 | **Entender arquitetura** | [architecture/order-book-mvp.md](./architecture/order-book-mvp.md) |
 | **Ver fluxos** | [architecture/order-book-mvp-flow.md](./architecture/order-book-mvp-flow.md) |
