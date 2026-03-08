@@ -37,7 +37,12 @@ echo "$LOG_PREFIX Aguardando nó local ficar pronto..."
 until rabbitmq-diagnostics -q ping 2>/dev/null; do
     sleep 3
 done
-echo "$LOG_PREFIX Nó local pronto."
+echo "$LOG_PREFIX Ping OK. Aguardando boot completo (await_startup)..."
+# await_startup espera TODOS os boot steps do RabbitMQ finalizarem.
+# Sem isso, stop_app chamado durante o boot causa crash da VM Erlang
+# com "Runtime terminating during boot ({20281,normal})" — exit code 69.
+rabbitmqctl await_startup 2>/dev/null || sleep 10
+echo "$LOG_PREFIX Nó local completamente iniciado."
 
 echo "$LOG_PREFIX Ingressando no cluster (rabbit@rabbitmq-1)..."
 # stop_app para the application layer (mantém a VM Erlang rodando).
@@ -52,7 +57,7 @@ rabbitmqctl join_cluster rabbit@rabbitmq-1
 rabbitmqctl start_app
 
 echo "$LOG_PREFIX Associado ao cluster com sucesso."
-rabbitmqctl cluster_status --formatter=compact
+rabbitmqctl cluster_status || true
 
 echo "$LOG_PREFIX Entregando controle ao processo RabbitMQ (PID=$RABBIT_PID)..."
 # wait garante que o container só encerra quando rabbitmq-server terminar,

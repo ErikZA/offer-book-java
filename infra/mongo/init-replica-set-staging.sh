@@ -59,7 +59,10 @@ fi
 echo "[mongo-rs-init] Verificando eleição do PRIMARY..."
 ATTEMPTS=0
 MAX_ATTEMPTS=30  # 30 * 3s = 90s máximo
-until mongosh "$MONGO_URI" --quiet --eval \
+# Verifica se QUALQUER membro atingiu estado PRIMARY (não apenas mongodb-1).
+# Após uma re-eleição, qualquer nó pode se tornar PRIMARY.
+RS_URI="mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb-1:27017,mongodb-2:27017,mongodb-3:27017/admin?authSource=admin&replicaSet=rs0&readPreference=primaryPreferred"
+until mongosh "$RS_URI" --quiet --eval \
     'db.adminCommand({isMaster:1}).ismaster' 2>/dev/null | grep -q "true"; do
     ATTEMPTS=$((ATTEMPTS + 1))
     if [ "$ATTEMPTS" -ge "$MAX_ATTEMPTS" ]; then

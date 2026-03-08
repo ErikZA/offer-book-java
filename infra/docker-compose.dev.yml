@@ -163,6 +163,8 @@ services:
             # Credenciais via .env (veja .env.example na raiz do projeto)
             RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
             RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is required — copie .env.example para .env}
+            # RabbitMQ 3.13 exige cookie explícito — sem ele o node falha com eacces ao tentar ler .erlang.cookie
+            RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:-vibranium_erlang_cookie_dev}
         volumes:
             - rabbitmq_data:/var/lib/rabbitmq
         networks:
@@ -344,6 +346,10 @@ services:
             KC_HTTP_ENABLED: 'true'
             KC_HTTP_PORT: 8080
             KC_HOSTNAME_STRICT: 'false'
+            # Força o issuer-uri para URL interna Docker — tokens emitidos terão
+            # iss=http://keycloak:8080/realms/... independente da porta do host.
+            # Isso garante que o order-service (dentro do Docker) consiga validar o JWT.
+            KC_HOSTNAME_URL: http://keycloak:8080
             KC_HEALTH_ENABLED: 'true'
             KC_METRICS_ENABLED: 'true'
             KC_LOG_LEVEL: INFO
@@ -463,6 +469,9 @@ services:
             SPRING_RABBITMQ_PORT: '5672'
             SPRING_RABBITMQ_USERNAME: ${RABBITMQ_DEFAULT_USER:-guest}
             SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS}
+            # JWT: usa jwk-set-uri direto para evitar mismatch de issuer (localhost:8180 no host vs keycloak:8080 no Docker)
+            SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://keycloak:8080/realms/orderbook-realm/protocol/openid-connect/certs
+            SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://keycloak:8080/realms/orderbook-realm
             # AT-14.1: OpenTelemetry — envia spans ao Jaeger via OTLP HTTP
             # OTEL_EXPORTER_OTLP_ENDPOINT sobrescreve o fallback 'localhost:4318' do application.yaml
             # O path /v1/traces é concatenado no application.yaml (management.otlp.tracing.endpoint)
@@ -472,10 +481,14 @@ services:
         volumes:
             - ../apps/order-service:/app/apps/order-service
             - ../libs:/app/libs
+            - ../tests:/app/tests
             - ../pom.xml:/app/pom.xml
             - m2_cache:/root/.m2
         working_dir: /app
-        command: mvn spring-boot:run -pl apps/order-service -Dspring-boot.run.fork=false
+        command: >-
+            bash -c "mvn install -N -DskipTests -q
+            && mvn install -pl libs/common-contracts,libs/common-utils -DskipTests -q
+            && mvn spring-boot:run -pl apps/order-service -Dspring-boot.run.fork=false"
         depends_on:
             # postgres healthy = vibranium_orders E vibranium_wallet existem e respondem
             postgres:
@@ -531,10 +544,14 @@ services:
         volumes:
             - ../apps/wallet-service:/app/apps/wallet-service
             - ../libs:/app/libs
+            - ../tests:/app/tests
             - ../pom.xml:/app/pom.xml
             - m2_cache:/root/.m2
         working_dir: /app
-        command: mvn spring-boot:run -pl apps/wallet-service -Dspring-boot.run.fork=false
+        command: >-
+            bash -c "mvn install -N -DskipTests -q
+            && mvn install -pl libs/common-contracts,libs/common-utils -DskipTests -q
+            && mvn spring-boot:run -pl apps/wallet-service -Dspring-boot.run.fork=false"
         depends_on:
             postgres:
                 condition: service_healthy
