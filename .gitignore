@@ -70,3 +70,6 @@ yarn-error.log
 # OS
 Thumbs.db
 .DS_Store
+
+# Gatling performance test results (HTML reports)
+tests/performance/results/

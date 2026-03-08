@@ -10,6 +10,8 @@ COPY pom.xml .
 COPY libs/ libs/
 COPY apps/wallet-service apps/wallet-service
 COPY apps/order-service apps/order-service
+COPY tests/e2e/pom.xml tests/e2e/pom.xml
+COPY tests/performance/pom.xml tests/performance/pom.xml
 
 # Build
 RUN mvn clean package -DskipTests -am -pl apps/wallet-service

@@ -13,6 +13,9 @@ COPY apps/wallet-service/pom.xml ./apps/wallet-service/
 COPY libs/common-contracts/pom.xml ./libs/common-contracts/
 # common-utils: utilitários transversais (US-007 — VibraniumJacksonConfig, CorrelationIdGenerator, AmqpHeaderExtractor)
 COPY libs/common-utils/pom.xml ./libs/common-utils/
+# Módulos de teste: apenas pom.xml para o reactor resolver (sem copiar fontes de teste)
+COPY tests/e2e/pom.xml ./tests/e2e/
+COPY tests/performance/pom.xml ./tests/performance/
 
 # Copiar código-fonte
 COPY libs/common-contracts/src ./libs/common-contracts/src

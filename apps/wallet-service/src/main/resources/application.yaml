@@ -13,6 +13,12 @@ spring:
         username: ${SPRING_DATASOURCE_USERNAME:postgres}
         password: ${SPRING_DATASOURCE_PASSWORD:postgres123}
         driver-class-name: org.postgresql.Driver
+        # BUG-04: Pool tuning — previne pool exhaustion sob carga
+        hikari:
+            maximum-pool-size: 30
+            minimum-idle: 10
+            connection-timeout: 5000
+            leak-detection-threshold: 30000
 
     jpa:
         hibernate:
@@ -94,6 +100,15 @@ server:
 # ---------------------------------------------------------------------------
 app:
     # ---------------------------------------------------------------------------
+    # Feature Flag: dependência do API Gateway (Kong)
+    # ---------------------------------------------------------------------------
+    # true  = ambiente de produção/staging: APIs esperam tráfego via Kong
+    # false = testes de performance/dev: APIs aceitam chamadas diretas sem Gateway
+    # Quando false, validações específicas do Gateway são ignoradas.
+    gateway:
+        enabled: ${APP_GATEWAY_ENABLED:true}
+
+    # ---------------------------------------------------------------------------
     # AT-2.3.1: Jobs de limpeza de tabelas de suporte
     # ---------------------------------------------------------------------------
     # OutboxCleanupJob  — domingos às 03:00 UTC: remove outbox_message processados > 7 dias
@@ -136,12 +151,16 @@ management:
     endpoint:
         health:
             show-details: always
-    # AT-14.1: Configure Micrometer Tracing com sampling 100% no ambiente dev.
-    # Garante que todos os spans da Saga (placeOrder → FundsReserved → Match → Settlement)
-    # sejam exportados para o Jaeger sem amostragem.
+    # AT-14.1: Micrometer Tracing + OpenTelemetry
+    # TRACING_ENABLED: controle global de tracing (default: true).
+    # Em ambientes sem Jaeger/OTLP collector (ex: staging), setar TRACING_ENABLED=false
+    # para evitar erros de conexão recusada no exporter.
     tracing:
+        enabled: ${TRACING_ENABLED:true}
         sampling:
-            probability: 1.0
+            # Garante que todos os spans da Saga (placeOrder → FundsReserved → Match → Settlement)
+            # sejam exportados para o Jaeger sem amostragem.
+            probability: ${TRACING_SAMPLING_PROBABILITY:1.0}
     # AT-14.1: OTLP exporter aponta para o Jaeger do docker-compose.dev.yml.
     # OTEL_EXPORTER_OTLP_ENDPOINT: variável injetada pelo compose (http://jaeger:4318).
     # Fallback: localhost:4318 para IDs rodando fora do Docker.

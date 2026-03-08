@@ -23,6 +23,10 @@
              Não faz parte do build padrão (mvn clean package) — apenas mvn verify.
              Requer Docker Engine acessível. -->
         <module>tests/e2e</module>
+        <!-- Benchmark Gatling: smoke, load, stress, soak.
+             Executar: mvn gatling:test -pl tests/performance
+             Não faz parte do build padrão (testes desabilitados via maven.test.skip). -->
+        <module>tests/performance</module>
     </modules>
 
     <properties>
