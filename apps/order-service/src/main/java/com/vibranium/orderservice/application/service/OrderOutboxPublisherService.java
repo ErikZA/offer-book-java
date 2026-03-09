@@ -21,6 +21,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Serviço de relay do Outbox Pattern para o order-service.
@@ -63,6 +64,17 @@ import java.util.List;
  */
 @Service
 public class OrderOutboxPublisherService extends AbstractOutboxPublisher<OrderOutboxMessage> {
+
+    /**
+     * Mapa de resolução: nome simples do eventType armazenado no outbox → FQN esperado
+     * pelo listener do wallet-service para roteamento via header AMQP {@code type}.
+     * Comandos/eventos não mapeados são enviados com o eventType original (nome simples).
+     */
+    private static final Map<String, String> EVENT_TYPE_FQN_MAP = Map.of(
+            "ReserveFundsCommand",  "com.vibranium.contracts.commands.wallet.ReserveFundsCommand",
+            "ReleaseFundsCommand",  "com.vibranium.contracts.commands.wallet.ReleaseFundsCommand",
+            "SettleFundsCommand",   "com.vibranium.contracts.commands.wallet.SettleFundsCommand"
+    );
 
     private final OrderOutboxRepository        outboxRepository;
     private final TransactionTemplate          transactionTemplate;
@@ -142,6 +154,12 @@ public class OrderOutboxPublisherService extends AbstractOutboxPublisher<OrderOu
                 .andProperties(new MessageProperties())
                 .build();
         amqpMessage.getMessageProperties().setContentType(MessageProperties.CONTENT_TYPE_JSON);
+        amqpMessage.getMessageProperties().setMessageId(msg.getId().toString());
+        // BUG-FIX: seta o header AMQP 'type' com o FQN da classe do comando/evento.
+        // O listener do wallet-service usa este header para roteamento tipado.
+        // Resolve nome simples (armazenado no outbox) → FQN via mapa estático.
+        String resolvedType = EVENT_TYPE_FQN_MAP.getOrDefault(msg.getEventType(), msg.getEventType());
+        amqpMessage.getMessageProperties().setType(resolvedType);
         return amqpMessage;
     }
 

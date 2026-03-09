@@ -276,20 +276,19 @@ class FundsReservedEventConsumerTest {
             consumer.onFundsReserved(event, channel, DELIVERY_TAG);
 
             /*
-             * [FASE GREEN — AT-15.1]
-             * Após a implementação, handleMatch() grava 2 mensagens no outbox:
-             *  1. MatchExecutedEvent  — informacional/infra para projeção MongoDB
-             *  2. OrderFilledEvent    — Domain Event explícito para sistemas downstream
-             *
-             * Em FASE RED: apenas 1 save → teste falha em times(2).
+             * [FASE GREEN — AT-15.1 + Bug 3 fix]
+             * Após a implementação, handleMatch() grava 3 mensagens no outbox:
+             *  1. MatchExecutedEvent    — informacional/infra para projeção MongoDB
+             *  2. SettleFundsCommand    — comando de liquidação para wallet-service
+             *  3. OrderFilledEvent      — Domain Event explícito para sistemas downstream
              */
-            then(outboxRepository).should(times(2)).save(outboxCaptor.capture());
+            then(outboxRepository).should(times(3)).save(outboxCaptor.capture());
             List<OrderOutboxMessage> saved = outboxCaptor.getAllValues();
 
             assertThat(saved)
                     .extracting(OrderOutboxMessage::getEventType)
-                    .as("Outbox deve conter MatchExecutedEvent e OrderFilledEvent")
-                    .containsExactlyInAnyOrder("MatchExecutedEvent", "OrderFilledEvent");
+                    .as("Outbox deve conter MatchExecutedEvent, SettleFundsCommand e OrderFilledEvent")
+                    .containsExactlyInAnyOrder("MatchExecutedEvent", "SettleFundsCommand", "OrderFilledEvent");
 
             OrderOutboxMessage matchMsg = saved.stream()
                     .filter(m -> "MatchExecutedEvent".equals(m.getEventType()))
@@ -335,6 +334,62 @@ class FundsReservedEventConsumerTest {
             ).isInstanceOf(RuntimeException.class);
 
             then(outboxRepository).should(never()).save(any(OrderOutboxMessage.class));
+        }
+
+        /**
+         * [RED — Bug 3] Após match, o outbox deve conter um {@code SettleFundsCommand}
+         * roteado para a exchange {@code wallet.commands} com routing key
+         * {@code wallet.command.settle-funds}, contendo todos os campos necessários
+         * para liquidação pelo wallet-service.
+         *
+         * <p><strong>FASE RED:</strong> falha porque {@code handleMatches()} ainda não
+         * cria {@code SettleFundsCommand} no outbox — apenas grava
+         * {@code MatchExecutedEvent} e fill events.</p>
+         */
+        @Test
+        @DisplayName("RED-05: handleMatch() deve persistir SettleFundsCommand no outbox para cada match")
+        void handleMatch_shouldPersist_settleFundsCommand() throws Exception {
+            Order order = buildOrder(OrderType.BUY);
+            FundsReservedEvent event = buildFundsReservedEvent();
+
+            given(processedEventRepository.saveAndFlush(any(ProcessedEvent.class)))
+                    .willAnswer(inv -> inv.getArgument(0));
+            given(orderRepository.findByCorrelationId(CORRELATION_ID))
+                    .willReturn(Optional.of(order));
+            given(matchEngine.tryMatch(any(), any(), any(), any(), any(), any(), any()))
+                    .willReturn(List.of(buildMatchResult()));
+            given(orderRepository.save(any(Order.class))).willAnswer(inv -> inv.getArgument(0));
+            given(objectMapper.writeValueAsString(any())).willReturn("{\"ok\":true}");
+            given(outboxRepository.save(any(OrderOutboxMessage.class)))
+                    .willAnswer(inv -> inv.getArgument(0));
+
+            consumer.onFundsReserved(event, channel, DELIVERY_TAG);
+
+            // Espera 3 saves: MatchExecutedEvent + SettleFundsCommand + OrderFilledEvent
+            then(outboxRepository).should(times(3)).save(outboxCaptor.capture());
+            List<OrderOutboxMessage> allMessages = outboxCaptor.getAllValues();
+
+            assertThat(allMessages)
+                    .extracting(OrderOutboxMessage::getEventType)
+                    .as("Outbox deve conter MatchExecutedEvent, SettleFundsCommand e OrderFilledEvent")
+                    .containsExactlyInAnyOrder(
+                            "MatchExecutedEvent", "SettleFundsCommand", "OrderFilledEvent");
+
+            OrderOutboxMessage settleMsg = allMessages.stream()
+                    .filter(m -> "SettleFundsCommand".equals(m.getEventType()))
+                    .findFirst().orElseThrow();
+
+            assertThat(settleMsg.getExchange())
+                    .as("Exchange deve ser wallet.commands (TopicExchange do wallet-service)")
+                    .isEqualTo(RabbitMQConfig.WALLET_COMMANDS_EXCHANGE);
+            assertThat(settleMsg.getRoutingKey())
+                    .as("Routing key deve ser wallet.command.settle-funds")
+                    .isEqualTo(RabbitMQConfig.RK_SETTLE_FUNDS);
+            assertThat(settleMsg.getPublishedAt())
+                    .as("publishedAt deve ser null — aguarda relay assíncrono")
+                    .isNull();
+            assertThat(settleMsg.getAggregateId()).isEqualTo(ORDER_ID);
+            assertThat(settleMsg.getPayload()).isNotBlank();
         }
     }
 
@@ -428,14 +483,14 @@ class FundsReservedEventConsumerTest {
 
             consumer.onFundsReserved(event, channel, DELIVERY_TAG);
 
-            // Espera 2 saves: MatchExecutedEvent + OrderPartiallyFilledEvent
-            then(outboxRepository).should(times(2)).save(outboxCaptor.capture());
+            // Espera 3 saves: MatchExecutedEvent + SettleFundsCommand + OrderPartiallyFilledEvent
+            then(outboxRepository).should(times(3)).save(outboxCaptor.capture());
             List<OrderOutboxMessage> allMessages = outboxCaptor.getAllValues();
 
             assertThat(allMessages)
                     .extracting(OrderOutboxMessage::getEventType)
-                    .as("Outbox deve conter MatchExecutedEvent e OrderPartiallyFilledEvent")
-                    .containsExactlyInAnyOrder("MatchExecutedEvent", "OrderPartiallyFilledEvent");
+                    .as("Outbox deve conter MatchExecutedEvent, SettleFundsCommand e OrderPartiallyFilledEvent")
+                    .containsExactlyInAnyOrder("MatchExecutedEvent", "SettleFundsCommand", "OrderPartiallyFilledEvent");
 
             OrderOutboxMessage partialMsg = allMessages.stream()
                     .filter(m -> "OrderPartiallyFilledEvent".equals(m.getEventType()))
@@ -496,14 +551,14 @@ class FundsReservedEventConsumerTest {
 
             consumer.onFundsReserved(event, channel, DELIVERY_TAG);
 
-            // Espera 2 saves: MatchExecutedEvent + OrderFilledEvent
-            then(outboxRepository).should(times(2)).save(outboxCaptor.capture());
+            // Espera 3 saves: MatchExecutedEvent + SettleFundsCommand + OrderFilledEvent
+            then(outboxRepository).should(times(3)).save(outboxCaptor.capture());
             List<OrderOutboxMessage> allMessages = outboxCaptor.getAllValues();
 
             assertThat(allMessages)
                     .extracting(OrderOutboxMessage::getEventType)
-                    .as("Outbox deve conter MatchExecutedEvent e OrderFilledEvent")
-                    .containsExactlyInAnyOrder("MatchExecutedEvent", "OrderFilledEvent");
+                    .as("Outbox deve conter MatchExecutedEvent, SettleFundsCommand e OrderFilledEvent")
+                    .containsExactlyInAnyOrder("MatchExecutedEvent", "SettleFundsCommand", "OrderFilledEvent");
 
             OrderOutboxMessage fillMsg = allMessages.stream()
                     .filter(m -> "OrderFilledEvent".equals(m.getEventType()))

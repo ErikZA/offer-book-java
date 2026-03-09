@@ -242,6 +242,49 @@ public class Order {
     // -------------------------------------------------------------------------
 
     /**
+     * Reverte um match que falhou na liquidação. Restaura a quantidade executada de volta
+     * para {@code remainingAmount} e ajusta o status da ordem.
+     *
+     * <p>Regras de transição de status:</p>
+     * <ul>
+     *   <li>FILLED → PARTIAL (se remainingAmount &lt; amount original após revert)</li>
+     *   <li>FILLED → OPEN (se remainingAmount == amount — todos os matches revertidos)</li>
+     *   <li>PARTIAL → PARTIAL (permanece parcial com mais remainingAmount)</li>
+     *   <li>PARTIAL → OPEN (se remainingAmount == amount)</li>
+     * </ul>
+     *
+     * <p>Não é chamado para ordens CANCELLED — a compensação já foi emitida pelo cleanup.</p>
+     *
+     * @param revertedQty quantidade a restaurar (tipicamente {@code matchAmount} do match revertido)
+     * @throws IllegalStateException se a ordem estiver PENDING ou CANCELLED (estados que não admitem revert)
+     * @throws IllegalArgumentException se {@code revertedQty} resultar em remainingAmount &gt; amount
+     */
+    public void revertMatch(BigDecimal revertedQty) {
+        if (this.status == OrderStatus.PENDING || this.status == OrderStatus.CANCELLED) {
+            throw new IllegalStateException(
+                    "Cannot revert match on order %s in status %s".formatted(this.id, this.status));
+        }
+
+        BigDecimal newRemaining = this.remainingAmount.add(revertedQty);
+        if (newRemaining.compareTo(this.amount) > 0) {
+            throw new IllegalArgumentException(
+                    "Revert would exceed original amount: remaining=%s + revert=%s > amount=%s"
+                            .formatted(this.remainingAmount, revertedQty, this.amount));
+        }
+
+        this.remainingAmount = newRemaining;
+
+        // Ajusta status: se remainingAmount voltou ao total, a ordem está OPEN (sem fills)
+        if (this.remainingAmount.compareTo(this.amount) == 0) {
+            this.status = OrderStatus.OPEN;
+        } else {
+            this.status = OrderStatus.PARTIAL;
+        }
+
+        this.updatedAt = Instant.now();
+    }
+
+    /**
      * Força uma transição de estado sem validação da máquina de estados.
      *
      * <p><strong>Uso exclusivo em testes</strong> do mesmo pacote que precisam

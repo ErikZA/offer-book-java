@@ -23,7 +23,6 @@ services:
     # ============================================================================
     postgres-orders-e2e:
         image: postgres:16-alpine
-        container_name: vibranium-postgres-orders-e2e
         environment:
             POSTGRES_USER: postgres
             POSTGRES_PASSWORD: postgres123
@@ -47,7 +46,6 @@ services:
     # ============================================================================
     postgres-wallet-e2e:
         image: postgres:16-alpine
-        container_name: vibranium-postgres-wallet-e2e
         environment:
             POSTGRES_USER: postgres
             POSTGRES_PASSWORD: postgres123
@@ -73,7 +71,6 @@ services:
     # ============================================================================
     mongodb-e2e:
         image: mongo:7.0
-        container_name: vibranium-mongodb-e2e
         command: ['mongod', '--replSet', 'rs0', '--bind_ip_all']
         networks:
             - vibranium-e2e
@@ -100,7 +97,6 @@ services:
     # ============================================================================
     mongo-rs-init-e2e:
         image: mongo:7.0
-        container_name: vibranium-mongo-rs-init-e2e
         command:
             - 'bash'
             - '-c'
@@ -128,7 +124,6 @@ services:
     # ============================================================================
     redis-e2e:
         image: redis:7-alpine
-        container_name: vibranium-redis-e2e
         # requirepass habilitado para simular produção com autenticação
         command: ['redis-server', '--appendonly', 'yes', '--requirepass', 'e2e_redis_pass']
         networks:
@@ -149,7 +144,6 @@ services:
     # ============================================================================
     rabbitmq-e2e:
         image: rabbitmq:3.13-management-alpine
-        container_name: vibranium-rabbitmq-e2e
         environment:
             RABBITMQ_DEFAULT_USER: guest
             RABBITMQ_DEFAULT_PASS: guest
@@ -182,7 +176,8 @@ services:
             context: ../..
             dockerfile: apps/order-service/docker/Dockerfile.e2e
         image: vibranium-order-service:e2e
-        container_name: vibranium-order-service-e2e
+        ports:
+            - '18080:8080'
         environment:
             SERVER_PORT: '8080'
             SPRING_APPLICATION_NAME: order-service
@@ -244,7 +239,8 @@ services:
             context: ../..
             dockerfile: apps/wallet-service/docker/Dockerfile.e2e
         image: vibranium-wallet-service:e2e
-        container_name: vibranium-wallet-service-e2e
+        ports:
+            - '18081:8081'
         environment:
             SERVER_PORT: '8081'
             SPRING_APPLICATION_NAME: wallet-service

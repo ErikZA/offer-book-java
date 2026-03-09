@@ -139,20 +139,20 @@ class SagaTimeoutCleanupJobTest extends AbstractIntegrationTest {
                 .as("Motivo deve ser SAGA_TIMEOUT")
                 .isEqualTo("SAGA_TIMEOUT");
 
-        // Assert — outbox deve conter OrderCancelledEvent
+        // Assert — outbox deve conter OrderCancelledEvent + ReleaseFundsCommand
+        // (emissão incondicional de ReleaseFundsCommand cobre janela de corrida PENDING→OPEN)
         var outboxMessages = outboxRepository.findAll();
         assertThat(outboxMessages)
-                .as("Outbox deve ter exatamente 1 mensagem de cancelamento")
-                .hasSize(1);
-        assertThat(outboxMessages.get(0).getEventType())
-                .as("Tipo do evento no outbox deve ser OrderCancelledEvent")
-                .isEqualTo("OrderCancelledEvent");
-        assertThat(outboxMessages.get(0).getAggregateId())
-                .as("O aggregateId no outbox deve corresponder ao orderId")
-                .isEqualTo(orderId);
-        assertThat(outboxMessages.get(0).getPublishedAt())
-                .as("Mensagem no outbox ainda não deve ter sido publicada")
-                .isNull();
+                .as("Outbox deve ter 2 mensagens: OrderCancelledEvent + ReleaseFundsCommand")
+                .hasSize(2);
+        assertThat(outboxMessages.stream().map(OrderOutboxMessage::getEventType))
+                .containsExactlyInAnyOrder("OrderCancelledEvent", "ReleaseFundsCommand");
+        assertThat(outboxMessages.stream().allMatch(m -> orderId.equals(m.getAggregateId())))
+                .as("Todos aggregateIds no outbox devem corresponder ao orderId")
+                .isTrue();
+        assertThat(outboxMessages.stream().allMatch(m -> m.getPublishedAt() == null))
+                .as("Mensagens no outbox ainda não devem ter sido publicadas")
+                .isTrue();
     }
 
     @Test
@@ -242,9 +242,10 @@ class SagaTimeoutCleanupJobTest extends AbstractIntegrationTest {
     }
 
     @Test
-    @DisplayName("[AT-1.1.4 RED] Timeout de ordem PENDING NÃO deve gerar ReleaseFundsCommand (fundos não reservados)")
-    void testTimeout_orderPending_doesNotEmitRelease() {
-        // Arrange — ordem PENDING: fundos ainda NÃO foram reservados (Saga em andamento)
+    @DisplayName("[AT-1.1.4] Timeout de ordem PENDING DEVE gerar ReleaseFundsCommand (cobertura da janela de corrida)")
+    void testTimeout_orderPending_emitsReleaseFundsCommand() {
+        // Arrange — ordem PENDING: pode ter fundos reservados no wallet-service
+        // devido à janela de corrida entre reserva efetiva e atualização de status.
         Order pendingOrder = buildPendingOrder();
         orderRepository.save(pendingOrder);
         UUID orderId = pendingOrder.getId();
@@ -252,17 +253,15 @@ class SagaTimeoutCleanupJobTest extends AbstractIntegrationTest {
         // Act
         sagaTimeoutCleanupJob.cancelStalePendingOrders();
 
-        // Assert — apenas OrderCancelledEvent (sem ReleaseFundsCommand)
+        // Assert — OrderCancelledEvent + ReleaseFundsCommand (emissão incondicional)
+        // O wallet-service trata InsufficientLockedFundsException como no-op idempotente
+        // caso os fundos nunca tenham sido reservados.
         List<OrderOutboxMessage> messages = outboxRepository.findAll();
         assertThat(messages)
-                .as("[AT-1.1.4] Ordem PENDING deve gerar apenas OrderCancelledEvent (sem release)")
-                .hasSize(1);
-        assertThat(messages.get(0).getEventType())
-                .as("Único evento deve ser OrderCancelledEvent")
-                .isEqualTo("OrderCancelledEvent");
+                .as("[AT-1.1.4] Ordem PENDING deve gerar OrderCancelledEvent + ReleaseFundsCommand")
+                .hasSize(2);
         assertThat(messages.stream().map(OrderOutboxMessage::getEventType))
-                .as("Não deve haver ReleaseFundsCommand para ordem PENDING")
-                .doesNotContain("ReleaseFundsCommand");
+                .containsExactlyInAnyOrder("OrderCancelledEvent", "ReleaseFundsCommand");
     }
 
     @Test
@@ -278,11 +277,13 @@ class SagaTimeoutCleanupJobTest extends AbstractIntegrationTest {
         sagaTimeoutCleanupJob.cancelStalePendingOrders(); // segunda execução → noop (já CANCELLED)
 
         // Assert — ainda CANCELLED, sem duplicata no outbox
+        // Primeira execução gera 2 mensagens (OrderCancelledEvent + ReleaseFundsCommand);
+        // segunda execução não deve adicionar mais nenhuma.
         assertThat(orderRepository.findById(orderId).orElseThrow().getStatus())
                 .isEqualTo(OrderStatus.CANCELLED);
         assertThat(outboxRepository.findAll())
                 .as("Segunda execução não deve duplicar mensagem no outbox")
-                .hasSize(1);
+                .hasSize(2);
     }
 
     @Test

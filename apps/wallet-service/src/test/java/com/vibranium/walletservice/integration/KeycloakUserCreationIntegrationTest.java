@@ -30,8 +30,8 @@ import static org.awaitility.Awaitility.await;
 @DisplayName("[RED] KeycloakUserCreation - Integração completa com RabbitMQ e PostgreSQL")
 class KeycloakUserCreationIntegrationTest extends AbstractIntegrationTest {
 
-    /** Exchange configurada para receber eventos do Keycloak (plugin aznamier). */
-    private static final String KEYCLOAK_EXCHANGE = "keycloak.events";
+    /** Exchange built-in do RabbitMQ usada pelo plugin aznamier do Keycloak. */
+    private static final String KEYCLOAK_EXCHANGE = "amq.topic";
     private static final String KEYCLOAK_ROUTING_KEY = "KK.EVENT.CLIENT.vibranium-realm.SUCCESS.CLIENT.REGISTER";
 
     @Autowired
@@ -151,6 +151,65 @@ class KeycloakUserCreationIntegrationTest extends AbstractIntegrationTest {
         rabbitTemplate.send(KEYCLOAK_EXCHANGE, KEYCLOAK_ROUTING_KEY, message);
 
         // Assert — Nenhuma carteira deve ser criada para este userId
+        await()
+                .during(3, TimeUnit.SECONDS)
+                .atMost(4, TimeUnit.SECONDS)
+                .pollInterval(500, TimeUnit.MILLISECONDS)
+                .untilAsserted(() ->
+                        assertThat(walletRepository.findByUserId(userId)).isEmpty()
+                );
+    }
+
+    // -------------------------------------------------------------------------
+    // __TypeId__ header — Plugin aznamier envia este header em todas as mensagens
+    // -------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("Deve criar carteira mesmo quando mensagem tem header __TypeId__ do plugin Keycloak")
+    void shouldCreateWalletWhenMessageHasTypeIdHeader() throws Exception {
+        // Arrange — mensagem com __TypeId__ como o plugin aznamier envia
+        UUID userId = UUID.randomUUID();
+        String payload = buildKeycloakRegisterPayload(userId, "REGISTER");
+
+        MessageProperties props = new MessageProperties();
+        props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
+        props.setMessageId(UUID.randomUUID().toString());
+        // O plugin aznamier seta este header em todas as mensagens publicadas
+        props.setHeader("__TypeId__",
+                "com.github.aznamier.keycloak.event.provider.EventClientNotificationMqMsg");
+        Message message = new Message(payload.getBytes(StandardCharsets.UTF_8), props);
+
+        // Act
+        rabbitTemplate.send(KEYCLOAK_EXCHANGE, KEYCLOAK_ROUTING_KEY, message);
+
+        // Assert — wallet deve ser criada mesmo com __TypeId__ desconhecido
+        await()
+                .atMost(10, TimeUnit.SECONDS)
+                .pollInterval(500, TimeUnit.MILLISECONDS)
+                .untilAsserted(() -> {
+                    var wallet = walletRepository.findByUserId(userId);
+                    assertThat(wallet).isPresent();
+                });
+    }
+
+    @Test
+    @DisplayName("Deve ignorar LOGIN com __TypeId__ sem erro fatal no converter")
+    void shouldIgnoreLoginWithTypeIdHeaderGracefully() throws Exception {
+        // Arrange — LOGIN com __TypeId__ (cenário real do Keycloak)
+        UUID userId = UUID.randomUUID();
+        String payload = buildKeycloakRegisterPayload(userId, "LOGIN");
+
+        MessageProperties props = new MessageProperties();
+        props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
+        props.setMessageId(UUID.randomUUID().toString());
+        props.setHeader("__TypeId__",
+                "com.github.aznamier.keycloak.event.provider.EventClientNotificationMqMsg");
+        Message message = new Message(payload.getBytes(StandardCharsets.UTF_8), props);
+
+        // Act
+        rabbitTemplate.send(KEYCLOAK_EXCHANGE, KEYCLOAK_ROUTING_KEY, message);
+
+        // Assert — nenhuma carteira criada Y evento ignorado gracefully
         await()
                 .during(3, TimeUnit.SECONDS)
                 .atMost(4, TimeUnit.SECONDS)

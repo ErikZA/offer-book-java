@@ -163,6 +163,20 @@ public class RabbitMQConfig {
     /** Routing key do {@code OrderPartiallyFilledEvent} — publicado em {@code FundsReservedEventConsumer} quando match parcial. */
     public static final String RK_ORDER_PARTIALLY_FILLED    = "order.events.order-partially-filled";
 
+    /**
+     * Exchange dedicada do wallet-service para comandos de liquidação.
+     * Re-declarada aqui idempotentemente para garantir existência no broker
+     * mesmo se o order-service inicializar antes do wallet-service.
+     */
+    public static final String WALLET_COMMANDS_EXCHANGE = "wallet.commands";
+
+    /**
+     * Routing key para {@code SettleFundsCommand} — publicado pelo order-service
+     * após o Motor de Match confirmar o cruzamento. Consumido pelo wallet-service
+     * na fila {@code wallet.commands}.
+     */
+    public static final String RK_SETTLE_FUNDS = "wallet.command.settle-funds";
+
     // -------------------------------------------------------------------------
     // Exchanges
     // -------------------------------------------------------------------------
@@ -180,6 +194,16 @@ public class RabbitMQConfig {
     @Bean
     DirectExchange dlqExchange() {
         return new DirectExchange(DLQ_EXCHANGE, true, false);
+    }
+
+    /**
+     * Re-declara a exchange do wallet-service para comandos de liquidação.
+     * Idempotente — garante que o order-service possa publicar {@code SettleFundsCommand}
+     * mesmo se inicializar antes do wallet-service.
+     */
+    @Bean
+    TopicExchange walletCommandsExchange() {
+        return new TopicExchange(WALLET_COMMANDS_EXCHANGE, true, false);
     }
 
     // -------------------------------------------------------------------------

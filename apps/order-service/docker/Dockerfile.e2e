@@ -21,6 +21,9 @@ COPY libs/ libs/
 COPY apps/order-service apps/order-service
 COPY apps/wallet-service apps/wallet-service
 
+# Remove módulos tests/ do POM raiz (não copiados para o build context)
+RUN sed -i '/<module>tests\//d' pom.xml
+
 # -DskipTests: pula execução dos testes, mas COMPILA test classes (target/test-classes/)
 RUN mvn clean package -DskipTests -am -pl apps/order-service
 

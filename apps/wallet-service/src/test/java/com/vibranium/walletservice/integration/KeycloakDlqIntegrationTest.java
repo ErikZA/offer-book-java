@@ -88,7 +88,7 @@ class KeycloakDlqIntegrationTest extends AbstractIntegrationTest {
     private static final String QUEUE_KEYCLOAK_EVENTS     = "wallet.keycloak.events";
     private static final String QUEUE_KEYCLOAK_EVENTS_DLQ = "wallet.keycloak.events.dlq";
     private static final String DLQ_EXCHANGE              = "vibranium.dlq";
-    private static final String KEYCLOAK_EXCHANGE         = "keycloak.events";
+    private static final String KEYCLOAK_EXCHANGE         = "amq.topic";
     private static final String KEYCLOAK_ROUTING_KEY      =
             "KK.EVENT.CLIENT.vibranium-realm.SUCCESS.CLIENT.REGISTER";
 

@@ -9,11 +9,15 @@ import io.micrometer.tracing.propagation.Propagator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.core.*;
+import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
+import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.connection.RabbitAccessor;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.amqp.rabbit.listener.api.ChannelAwareMessageListener;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
+import org.springframework.amqp.support.converter.SimpleMessageConverter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -24,7 +28,7 @@ import java.lang.reflect.Field;
  *
  * <p>Topologia:</p>
  * <pre>
- *   Exchange: keycloak.events (topic)
+ *   Exchange: amq.topic (built-in topic — Keycloak plugin aznamier)
  *     └─ Binding: KK.EVENT.CLIENT.# → Queue: wallet.keycloak.events
  *          └─ DLX: vibranium.dlq → wallet.keycloak.events.dlq
  *
@@ -115,6 +119,32 @@ public class RabbitMQConfig {
      */
     public static final String QUEUE_RESERVE_FUNDS_DLQ = "wallet.commands.reserve-funds.dlq";
 
+    /**
+     * Fila de retry com delay para {@link com.vibranium.contracts.commands.wallet.SettleFundsCommand}.
+     * Mensagens expiram após {@link #SETTLE_RETRY_TTL_MS} e retornam para a exchange
+     * {@code wallet.commands} via dead-letter, criando um delay natural sem plugins.
+     */
+    public static final String QUEUE_SETTLE_RETRY = "wallet.commands.settle-retry";
+
+    /**
+     * TTL da fila de retry para SettleFundsCommand (3 segundos).
+     * Tempo suficiente para o ReserveFundsCommand pendente ser processado.
+     */
+    public static final long SETTLE_RETRY_TTL_MS = 3000;
+
+    /**
+     * Constante para o nome da exchange wallet.commands (topic).
+     * Usada como DLX da retry queue para reenviar mensagens após o delay.
+     */
+    public static final String WALLET_COMMANDS_EXCHANGE = "wallet.commands";
+
+    /**
+     * Dead Letter Queue para a fila {@code wallet.commands} (SettleFundsCommand).
+     * Recebe mensagens que falharam permanentemente após esgotar retries (S2B),
+     * garantindo rastreabilidade de poison pills que antes eram descartados.
+     */
+    public static final String QUEUE_WALLET_COMMANDS_DLQ = "wallet.commands.dlq";
+
     // -------------------------------------------------------------------------
     // Exchanges
     // -------------------------------------------------------------------------
@@ -138,13 +168,16 @@ public class RabbitMQConfig {
     }
 
     /**
-     * Exchange topic do Keycloak. O plugin {@code aznamier/keycloak-event-listener-rabbitmq}
-     * publica nesta exchange com routing keys no formato:
-     * {@code KK.EVENT.CLIENT.<realm>.SUCCESS.CLIENT.<eventType>}.
+     * Exchange topic built-in do RabbitMQ usada pelo plugin {@code aznamier/keycloak-event-listener-rabbitmq}.
+     * O plugin publica nesta exchange com routing keys no formato:
+     * {@code KK.EVENT.CLIENT.<realm>.<eventType>}.
+     *
+     * <p>Usa {@code amq.topic} (built-in) conforme configuração {@code KK_TO_RMQ_EXCHANGE}
+     * do plugin Keycloak. Não é um exchange customizado — o RabbitMQ já o mantém.</p>
      */
     @Bean
     public TopicExchange keycloakEventsExchange() {
-        return new TopicExchange("keycloak.events", true, false);
+        return new TopicExchange("amq.topic", true, false);
     }
 
     /**
@@ -226,10 +259,33 @@ public class RabbitMQConfig {
         return QueueBuilder.durable(QUEUE_KEYCLOAK_EVENTS_DLQ).build();
     }
 
-    /** Fila que recebe comandos de liquidação de fundos (SettleFundsCommand). */
+    /**
+     * Fila que recebe comandos de liquidação de fundos (SettleFundsCommand).
+     *
+     * <p>Configurada com DLX (S4) para que mensagens rejeitadas permanentemente
+     * (após esgotar retries do S2B ou por poison pill) sejam encaminhadas para
+     * {@value QUEUE_WALLET_COMMANDS_DLQ} em vez de descartadas silenciosamente.</p>
+     *
+     * <p><b>Importante:</b> Se a fila já existir no broker sem estes argumentos,
+     * será necessário deletá-la antes de reiniciar o serviço
+     * ({@code docker-compose down -v} ou {@code rabbitmqctl delete_queue wallet.commands}).</p>
+     */
     @Bean
     public Queue walletCommandsQueue() {
-        return QueueBuilder.durable("wallet.commands").build();
+        return QueueBuilder.durable("wallet.commands")
+                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-routing-key", QUEUE_WALLET_COMMANDS_DLQ)
+                .build();
+    }
+
+    /**
+     * Dead Letter Queue para {@code wallet.commands} (SettleFundsCommand).
+     * Mensagens aqui representam settlements que falharam permanentemente —
+     * requer análise operacional e possível reconciliação manual.
+     */
+    @Bean
+    Queue walletCommandsDlqQueue() {
+        return QueueBuilder.durable(QUEUE_WALLET_COMMANDS_DLQ).build();
     }
 
     /**
@@ -299,6 +355,32 @@ public class RabbitMQConfig {
     @Bean
     public Queue releaseFundsDlQueue() {
         return QueueBuilder.durable(QUEUE_RELEASE_FUNDS_DLQ).build();
+    }
+
+    /**
+     * Fila de retry com TTL para SettleFundsCommand (RC-3 / S2B).
+     *
+     * <p>Mensagens publicadas aqui expiram após {@link #SETTLE_RETRY_TTL_MS} e são
+     * redirecionadas via DLX para a exchange {@code wallet.commands} com routing key
+     * {@code wallet.command.settle-funds}, retornando à fila principal {@code wallet.commands}.
+     * Isso cria um delay nativamente sem plugins adicionais do RabbitMQ.</p>
+     *
+     * <p>Fluxo:</p>
+     * <pre>
+     * SettleFundsCommand falha (locked=0) → publish to vibranium.dlq, RK=wallet.commands.settle-retry
+     *   → wallet.commands.settle-retry (TTL=3s)
+     *   → [3s delay]
+     *   → DLX: wallet.commands exchange, RK=wallet.command.settle-funds
+     *   → wallet.commands (fila principal) → consumer (retry)
+     * </pre>
+     */
+    @Bean
+    Queue settleRetryQueue() {
+        return QueueBuilder.durable(QUEUE_SETTLE_RETRY)
+                .withArgument("x-dead-letter-exchange", WALLET_COMMANDS_EXCHANGE)
+                .withArgument("x-dead-letter-routing-key", "wallet.command.settle-funds")
+                .withArgument("x-message-ttl", SETTLE_RETRY_TTL_MS)
+                .build();
     }
 
     // -------------------------------------------------------------------------
@@ -423,6 +505,39 @@ public class RabbitMQConfig {
                 .with(QUEUE_RESERVE_FUNDS_DLQ);
     }
 
+    /**
+     * Liga a exchange DLQ à fila de retry do SettleFundsCommand (RC-3 / S2B).
+     *
+     * <p>O listener publica na exchange {@value DLQ_EXCHANGE} com routing key
+     * {@value QUEUE_SETTLE_RETRY}. Este binding direciona a mensagem para a
+     * fila de retry com TTL. Após expirar, o DLX da retry queue reenvia
+     * para {@code wallet.commands}.</p>
+     */
+    @Bean
+    Binding settleRetryBinding(
+            @Qualifier("settleRetryQueue") Queue settleRetryQueue,
+            @Qualifier("dlqExchange")      DirectExchange dlqExchange) {
+        return BindingBuilder
+                .bind(settleRetryQueue)
+                .to(dlqExchange)
+                .with(QUEUE_SETTLE_RETRY);
+    }
+
+    /**
+     * Liga o exchange DLX à Dead Letter Queue de comandos wallet (SettleFundsCommand).
+     * Mensagens NACKed permanentemente da fila {@code wallet.commands} são roteadas
+     * para cá via routing key {@value QUEUE_WALLET_COMMANDS_DLQ}.
+     */
+    @Bean
+    Binding walletCommandsDlqBinding(
+            @Qualifier("walletCommandsDlqQueue") Queue walletCommandsDlqQueue,
+            @Qualifier("dlqExchange")            DirectExchange dlqExchange) {
+        return BindingBuilder
+                .bind(walletCommandsDlqQueue)
+                .to(dlqExchange)
+                .with(QUEUE_WALLET_COMMANDS_DLQ);
+    }
+
     // -------------------------------------------------------------------------
     // Infraestrutura de mensagens
     // -------------------------------------------------------------------------
@@ -439,6 +554,46 @@ public class RabbitMQConfig {
     @Bean
     public Jackson2JsonMessageConverter messageConverter(ObjectMapper objectMapper) {
         return new Jackson2JsonMessageConverter(objectMapper);
+    }
+
+    // -------------------------------------------------------------------------
+    // Container Factory — Raw Message (sem conversão Jackson)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Container factory que utiliza {@link SimpleMessageConverter} em vez de
+     * {@link Jackson2JsonMessageConverter}, entregando a mensagem AMQP crua
+     * ao listener sem tentar desserializar o payload.
+     *
+     * <p><b>Motivação:</b> o plugin {@code aznamier/keycloak-event-listener-rabbitmq}
+     * seta o header {@code __TypeId__} com a classe
+     * {@code com.github.aznamier.keycloak.event.provider.EventClientNotificationMqMsg},
+     * que não existe no classpath do wallet-service. O {@link Jackson2JsonMessageConverter}
+     * global tenta resolver essa classe e lança {@code MessageConversionException}
+     * ("Class not found") <b>antes</b> do handler method ser invocado — mesmo que o
+     * handler receba {@code org.springframework.amqp.core.Message} diretamente.</p>
+     *
+     * <p>O {@link SimpleMessageConverter} ignora completamente o {@code __TypeId__}
+     * e entrega os bytes brutos, permitindo que o
+     * {@link com.vibranium.walletservice.infrastructure.messaging.KeycloakRabbitListener}
+     * faça o parse manual com {@code ObjectMapper}.</p>
+     *
+     * @param connectionFactory Conexão AMQP gerenciada pelo Spring Boot.
+     */
+    @Bean
+    SimpleRabbitListenerContainerFactory rawMessageContainerFactory(
+            ConnectionFactory connectionFactory) {
+        SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
+        factory.setConnectionFactory(connectionFactory);
+        // SimpleMessageConverter: não tenta resolver __TypeId__ nem desserializar JSON
+        factory.setMessageConverter(new SimpleMessageConverter());
+        // MANUAL: alinhado com acknowledge-mode global e com o ACK/NACK explícito
+        // em KeycloakRabbitListener.handleKeycloakEvent()
+        factory.setAcknowledgeMode(AcknowledgeMode.MANUAL);
+        factory.setPrefetchCount(10);
+        factory.setConcurrentConsumers(1);
+        factory.setMaxConcurrentConsumers(5);
+        return factory;
     }
 
     // -------------------------------------------------------------------------

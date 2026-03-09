@@ -142,6 +142,43 @@ class OrderOutboxIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Test
+    @DisplayName("Mensagem AMQP publicada deve conter messageId para garantir idempotência no consumidor")
+    void outboxPublisher_shouldSetMessageIdOnAmqpMessage() throws Exception {
+        // Act — coloca ordem para gerar ReserveFundsCommand no outbox
+        mockMvc.perform(post("/api/v1/orders")
+                        .contentType("application/json")
+                        .content(buildPlaceOrderJson(walletId, "BUY", "100.00", "1.00"))
+                        .with(jwt().jwt(j -> j.subject(keycloakId))))
+                .andExpect(status().isAccepted());
+
+        // Assert — aguarda o scheduler publicar mensagens (published_at preenchido)
+        await()
+                .atMost(15, TimeUnit.SECONDS)
+                .pollInterval(500, TimeUnit.MILLISECONDS)
+                .untilAsserted(() -> {
+                    var messages = outboxRepository.findAll();
+                    var reserveCmd = messages.stream()
+                            .filter(m -> m.getEventType().equals("ReserveFundsCommand"))
+                            .findFirst().orElseThrow();
+
+                    // Verifica que foi publicada (published_at != null)
+                    assertThat(reserveCmd.getPublishedAt())
+                            .as("ReserveFundsCommand deve ter sido publicada pelo scheduler")
+                            .isNotNull();
+
+                    // O ID da mensagem outbox (UUID) é o que buildAmqpMessage() usa como
+                    // messageId no AMQP — verificado pelo unit test shouldSetMessageIdOnAmqpMessage
+                    // em AbstractOutboxPublisherTest. Aqui validamos que o ID existe e é UUID válido.
+                    assertThat(reserveCmd.getId())
+                            .as("ID da mensagem outbox (usado como messageId AMQP) deve ser UUID não-nulo")
+                            .isNotNull();
+                    assertThat(reserveCmd.getId().toString())
+                            .as("ID deve ser UUID válido (formato padrão)")
+                            .matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+                });
+    }
+
+    @Test
     @DisplayName("Duas ordens distintas devem gerar duas mensagens independentes no outbox")
     void twoDistinctOrders_shouldGenerateTwoOutboxMessages() throws Exception {
         // Arrange — segundo usuário

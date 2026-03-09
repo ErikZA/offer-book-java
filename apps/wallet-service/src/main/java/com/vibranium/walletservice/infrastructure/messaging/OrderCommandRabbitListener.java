@@ -6,6 +6,7 @@ import com.vibranium.contracts.commands.wallet.ReleaseFundsCommand;
 import com.vibranium.contracts.commands.wallet.ReserveFundsCommand;
 import com.vibranium.contracts.commands.wallet.SettleFundsCommand;
 import com.vibranium.walletservice.application.service.WalletService;
+import com.vibranium.walletservice.config.RabbitMQConfig;
 import com.vibranium.walletservice.domain.repository.IdempotencyKeyRepository;
 import io.micrometer.tracing.Tracer;
 import org.slf4j.Logger;
@@ -13,6 +14,7 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
@@ -58,15 +60,18 @@ public class OrderCommandRabbitListener {
     // Adicionamos saga.correlation_id e order.id para que o trace no Jaeger mostre:
     //   order-service:placeOrder → wallet-service:ReserveFundsCommand (saga.correlation_id=...)
     private final Tracer tracer;
+    private final RabbitTemplate rabbitTemplate;
 
     public OrderCommandRabbitListener(WalletService walletService,
                                        IdempotencyKeyRepository idempotencyKeyRepository,
                                        ObjectMapper objectMapper,
-                                       Tracer tracer) {
+                                       Tracer tracer,
+                                       RabbitTemplate rabbitTemplate) {
         this.walletService = walletService;
         this.idempotencyKeyRepository = idempotencyKeyRepository;
         this.objectMapper = objectMapper;
         this.tracer = tracer;
+        this.rabbitTemplate = rabbitTemplate;
     }
 
     /**
@@ -151,24 +156,44 @@ public class OrderCommandRabbitListener {
                 try (var ignoredCorr = MDC.putCloseable("correlationId", cmd.correlationId().toString())) {
                     MDC.put("orderId", cmd.matchId().toString());
                     try {
-                        // AT-14.1: SettleFundsCommand também carrega correlationId da Saga
-                        // (via matchId); mapeamos matchId como order.id para visível no Jaeger.
                         enrichSpanSettle(cmd.correlationId(), cmd.matchId());
                         walletService.settleFunds(cmd, messageId);
                         logger.info("SettleFundsCommand processed: matchId={}, messageId={}",
                                 cmd.matchId(), messageId);
+                        channel.basicAck(deliveryTag, false);
+                    } catch (Exception e) {
+                        // RC-3 / S2B: Verifica se é race condition transiente (locked=0 antes do reserve chegar)
+                        int retryCount = getRetryCount(message);
+                        if (retryCount < 3 && isTransientLockFailure(e)) {
+                            logger.warn("SettleFundsCommand retry {}/3: matchId={} — {}",
+                                    retryCount + 1, cmd.matchId(), e.getMessage());
+                            publishToRetryQueue(message, retryCount + 1);
+                            channel.basicAck(deliveryTag, false); // ACK original, retry via nova mensagem
+                        } else {
+                            logger.error("SettleFundsCommand failed permanently: matchId={} retries={} — {}",
+                                    cmd.matchId(), retryCount, e.getMessage());
+                            channel.basicNack(deliveryTag, false, false); // DLQ
+                        }
                     } finally {
                         MDC.remove("orderId");
                     }
                 }
+                return; // Já fez ACK/NACK — não cair no basicAck geral
 
             } else {
-                // Tipo não reconhecido: tenta inferir pelo conteúdo do JSON
+                // Tipo não reconhecido: tenta inferir pelo conteúdo do JSON e fila de origem
                 logger.warn("Unknown command type header: '{}' — attempting JSON inference for messageId={}",
                         commandType, messageId);
 
-                if (body.contains("\"walletId\"") && body.contains("\"asset\"")) {
-                    // Heurística: ReserveFundsCommand contém walletId e asset
+                // BUG-FIX: Usa a fila de origem para distinguir ReleaseFundsCommand de
+                // ReserveFundsCommand, pois ambos têm campos JSON idênticos (walletId, asset, amount).
+                String consumerQueue = message.getMessageProperties().getConsumerQueue();
+
+                if ("wallet.commands.release-funds".equals(consumerQueue)) {
+                    ReleaseFundsCommand cmd = objectMapper.readValue(body, ReleaseFundsCommand.class);
+                    walletService.releaseFunds(cmd, messageId);
+                } else if ("wallet.commands.reserve-funds".equals(consumerQueue)
+                        || (body.contains("\"walletId\"") && body.contains("\"asset\""))) {
                     ReserveFundsCommand cmd = objectMapper.readValue(body, ReserveFundsCommand.class);
                     walletService.reserveFunds(cmd, messageId);
                 } else if (body.contains("\"matchId\"") && body.contains("\"buyerWalletId\"")) {
@@ -227,5 +252,41 @@ public class OrderCommandRabbitListener {
                 currentSpan.tag("order.id", matchId.toString());
             }
         }
+    }
+
+    // =========================================================================
+    // RC-3 / S2B — Settle retry helpers
+    // =========================================================================
+
+    /**
+     * Extrai o contador de retries do header customizado.
+     * Headers sobrevivem ao ciclo de dead-lettering do RabbitMQ.
+     */
+    private int getRetryCount(Message message) {
+        Object header = message.getMessageProperties().getHeader("x-settle-retry-count");
+        return (header instanceof Number n) ? n.intValue() : 0;
+    }
+
+    /**
+     * Detecta se a exceção indica um race condition transiente onde o
+     * ReserveFundsCommand ainda não foi processado (locked=0).
+     */
+    private boolean isTransientLockFailure(Exception e) {
+        String msg = e.getMessage();
+        return msg != null && msg.contains("locked=0");
+    }
+
+    /**
+     * Publica a mensagem na retry queue com delay. A retry queue tem TTL=3s e
+     * DLX apontando de volta para wallet.commands exchange, criando um delay
+     * nativamente sem plugins adicionais.
+     */
+    private void publishToRetryQueue(Message message, int retryCount) {
+        message.getMessageProperties().setHeader("x-settle-retry-count", retryCount);
+        rabbitTemplate.send(
+                RabbitMQConfig.DLQ_EXCHANGE,
+                RabbitMQConfig.QUEUE_SETTLE_RETRY,
+                message
+        );
     }
 }

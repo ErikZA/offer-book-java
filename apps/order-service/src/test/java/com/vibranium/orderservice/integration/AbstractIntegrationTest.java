@@ -67,7 +67,10 @@ import org.testcontainers.utility.DockerImageName;
             "org.springframework.boot.autoconfigure.data.mongo.MongoRepositoriesAutoConfiguration",
             // Desabilita beans do Query Side (OrderEventProjectionConsumer, OrderQueryController,
             // MongoIndexConfig.mongoOrdersIndexInitializer) para evitar falha de injecão.
-            "app.mongodb.enabled=false"
+            "app.mongodb.enabled=false",
+            // Sobrescreve o readiness group para remover 'mongo', que não existe
+            // quando MongoAutoConfiguration é excluído — impede NoSuchHealthContributorException.
+            "management.endpoint.health.group.readiness.include=db,redis,rabbit"
         }
 )
 @AutoConfigureMockMvc

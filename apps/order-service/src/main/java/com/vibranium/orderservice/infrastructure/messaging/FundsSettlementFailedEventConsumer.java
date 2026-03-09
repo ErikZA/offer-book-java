@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rabbitmq.client.Channel;
 import com.vibranium.contracts.commands.wallet.ReleaseFundsCommand;
 import com.vibranium.contracts.enums.AssetType;
+import com.vibranium.contracts.enums.OrderStatus;
 import com.vibranium.contracts.events.order.MatchExecutedEvent;
 import com.vibranium.contracts.events.wallet.FundsSettlementFailedEvent;
 import com.vibranium.orderservice.config.RabbitMQConfig;
@@ -177,7 +178,38 @@ public class FundsSettlementFailedEventConsumer {
                     return;
                 }
 
-                // 5. Grava 2 ReleaseFundsCommand no outbox (mesma transação JPA):
+                // 5. RC-2 / S3: Reverte o match que falhou na liquidação — restaura remainingAmount
+                //    e ajusta status para ambos os lados do trade.
+                java.math.BigDecimal matchAmount = matchEvent.matchAmount();
+
+                // Revert na ordem ingressante (a que disparou o match via FundsReservedEventConsumer)
+                if (triggeringOrder.getStatus() != OrderStatus.CANCELLED) {
+                    triggeringOrder.revertMatch(matchAmount);
+                    orderRepository.save(triggeringOrder);
+                    logger.info("Match revertido na ordem ingressante {}: remainingAmount={}, status={}",
+                            triggeringOrder.getId(), triggeringOrder.getRemainingAmount(), triggeringOrder.getStatus());
+                }
+
+                // Revert na ordem contraparte (o outro lado do trade)
+                java.util.UUID counterpartOrderId = triggeringOrder.getId().equals(matchEvent.buyOrderId())
+                        ? matchEvent.sellOrderId()
+                        : matchEvent.buyOrderId();
+
+                Optional<Order> counterpartOpt = orderRepository.findById(counterpartOrderId);
+                if (counterpartOpt.isPresent()) {
+                    Order counterpart = counterpartOpt.get();
+                    if (counterpart.getStatus() != OrderStatus.CANCELLED) {
+                        counterpart.revertMatch(matchAmount);
+                        orderRepository.save(counterpart);
+                        logger.info("Match revertido na ordem contraparte {}: remainingAmount={}, status={}",
+                                counterpart.getId(), counterpart.getRemainingAmount(), counterpart.getStatus());
+                    }
+                } else {
+                    logger.warn("Ordem contraparte {} não encontrada para revert de match",
+                            counterpartOrderId);
+                }
+
+                // 6. Grava 2 ReleaseFundsCommand no outbox (mesma transação JPA):
                 //    — Comprador: libera matchPrice × matchAmount BRL (locked no reserve)
                 //    — Vendedor: libera matchAmount VIBRANIUM (locked no reserve)
                 emitReleaseFundsCommand(triggeringOrder.getId(), matchEvent);

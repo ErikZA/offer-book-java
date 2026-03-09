@@ -59,7 +59,7 @@ public class KeycloakRabbitListener {
      * @param channel     Canal AMQP para ACK/NACK manual.
      * @throws Exception  Propagado apenas para cenários de erro no AMQP channel.
      */
-    @RabbitListener(queues = "wallet.keycloak.events")
+    @RabbitListener(queues = "wallet.keycloak.events", containerFactory = "rawMessageContainerFactory")
     public void handleKeycloakEvent(Message message, Channel channel) throws Exception {
         String messageId = message.getMessageProperties().getMessageId();
         long deliveryTag = message.getMessageProperties().getDeliveryTag();

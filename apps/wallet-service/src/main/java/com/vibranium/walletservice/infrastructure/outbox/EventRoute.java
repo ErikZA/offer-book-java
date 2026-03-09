@@ -33,7 +33,10 @@ public enum EventRoute {
     FUNDS_RELEASED("vibranium.events",       "wallet.events.funds-released"),
 
     /** Evento emitido quando a liberação de fundos falha (incidente crítico). */
-    FUNDS_RELEASE_FAILED("vibranium.events", "wallet.events.funds-release-failed");
+    FUNDS_RELEASE_FAILED("vibranium.events", "wallet.events.funds-release-failed"),
+
+    /** Evento emitido quando a liquidação de fundos falha (incidente crítico — fundos permanecem bloqueados). */
+    FUNDS_SETTLEMENT_FAILED("vibranium.events", "wallet.events.funds-settlement-failed");
 
     // -------------------------------------------------------------------------
     // Estado imutável
@@ -77,6 +80,7 @@ public enum EventRoute {
             case "WalletCreatedEvent"          -> WALLET_CREATED;
             case "FundsReleasedEvent"           -> FUNDS_RELEASED;
             case "FundsReleaseFailedEvent"      -> FUNDS_RELEASE_FAILED;
+            case "FundsSettlementFailedEvent"   -> FUNDS_SETTLEMENT_FAILED;
             default -> throw new IllegalArgumentException(
                     "Unknown event type: " + eventType);
         };

@@ -3,6 +3,7 @@ package com.vibranium.orderservice.infrastructure.messaging;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rabbitmq.client.Channel;
+import com.vibranium.contracts.commands.wallet.SettleFundsCommand;
 import com.vibranium.contracts.enums.FailureReason;
 import com.vibranium.contracts.enums.OrderStatus;
 import com.vibranium.contracts.events.order.MatchExecutedEvent;
@@ -438,6 +439,28 @@ public class FundsReservedEventConsumer {
                     RabbitMQConfig.EVENTS_EXCHANGE,
                     RabbitMQConfig.RK_MATCH_EXECUTED,
                     matchEvent
+            );
+
+            // Saga Step 4: emite SettleFundsCommand para wallet-service liquidar o trade.
+            // Todos os campos necessários vêm do MatchExecutedEvent criado acima.
+            SettleFundsCommand settleCmd = new SettleFundsCommand(
+                    matchEvent.correlationId(),
+                    matchEvent.matchId(),
+                    matchEvent.buyOrderId(),
+                    matchEvent.sellOrderId(),
+                    matchEvent.buyerWalletId(),
+                    matchEvent.sellerWalletId(),
+                    matchEvent.matchPrice(),
+                    matchEvent.matchAmount(),
+                    1
+            );
+
+            saveToOutbox(
+                    order.getId(),
+                    "SettleFundsCommand",
+                    RabbitMQConfig.WALLET_COMMANDS_EXCHANGE,
+                    RabbitMQConfig.RK_SETTLE_FUNDS,
+                    settleCmd
             );
 
             logger.info("Match executado (outbox): correlationId={} orderId={} qty={} fillType={}",

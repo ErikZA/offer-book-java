@@ -13,6 +13,7 @@ import com.vibranium.orderservice.domain.model.Order;
 import com.vibranium.orderservice.domain.model.OrderOutboxMessage;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
+import com.vibranium.orderservice.infrastructure.redis.RedisMatchEngineAdapter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -43,11 +44,13 @@ import java.util.List;
  *   <li>{@code status IN (PENDING, OPEN, PARTIAL)}</li>
  *   <li>{@code created_at < now() - app.saga.pending-timeout-minutes}</li>
  * </ul>
- * <p>Para ordens {@code PENDING}: emite apenas {@link OrderCancelledEvent} — os fundos
- * ainda <strong>não</strong> foram reservados, nenhuma compensação financeira é necessária.</p>
- * <p>Para ordens {@code OPEN} ou {@code PARTIAL}: emite {@link OrderCancelledEvent} +
- * {@link ReleaseFundsCommand} — os fundos já foram reservados e precisam ser liberados
- * na carteira do usuário (AT-1.1.4).</p>
+ * <p>Para <strong>todas</strong> as ordens expiradas (PENDING, OPEN e PARTIAL), emite
+ * {@link OrderCancelledEvent} + {@link ReleaseFundsCommand}. A emissão incondicional
+ * de {@code ReleaseFundsCommand} cobre a janela de corrida entre a reserva efetiva
+ * no wallet-service e a atualização de status da ordem (PENDING → OPEN): uma ordem
+ * PENDING pode já ter fundos bloqueados. O wallet-service trata
+ * {@code InsufficientLockedFundsException} graciosamente — se os fundos nunca foram
+ * reservados, o release é um no-op idempotente (AT-1.1.4).</p>
  *
  * <h3>Idempotência</h3>
  * <p>O job é naturalmente idempotente: {@code findByStatusInAndCreatedAtBefore} retorna
@@ -74,6 +77,7 @@ public class SagaTimeoutCleanupJob {
     private final OrderOutboxRepository outboxRepository;
     private final Clock               clock;
     private final ObjectMapper        objectMapper;
+    private final RedisMatchEngineAdapter matchEngine;
 
     /**
      * Threshold configurável para ordens não-terminais. Padrão: 5 minutos.
@@ -96,15 +100,18 @@ public class SagaTimeoutCleanupJob {
      * @param outboxRepository  repositório JPA da tabela de outbox.
      * @param clock             abstração temporal injetável — nunca use {@code Instant.now()}.
      * @param objectMapper      serializador Jackson compartilhado para construir o payload do outbox.
+     * @param matchEngine       adaptador Redis para remoção de ordens do book (RC-1).
      */
     public SagaTimeoutCleanupJob(OrderRepository orderRepository,
                                   OrderOutboxRepository outboxRepository,
                                   Clock clock,
-                                  ObjectMapper objectMapper) {
+                                  ObjectMapper objectMapper,
+                                  RedisMatchEngineAdapter matchEngine) {
         this.orderRepository  = orderRepository;
         this.outboxRepository = outboxRepository;
         this.clock            = clock;
         this.objectMapper     = objectMapper;
+        this.matchEngine      = matchEngine;
     }
 
     /**
@@ -121,12 +128,14 @@ public class SagaTimeoutCleanupJob {
      *
      * <p>Para cada ordem expirada:</p>
      * <ol>
-     *   <li>Verifica se os fundos já foram reservados ({@code status == OPEN || PARTIAL}).</li>
      *   <li>Chama {@code order.cancel("SAGA_TIMEOUT")} — transita para {@code CANCELLED}.</li>
      *   <li>Persiste o estado atualizado via {@code orderRepository.save()}.</li>
      *   <li>Grava {@link OrderCancelledEvent} na tabela de outbox.</li>
-     *   <li>Se fundos reservados: grava {@link ReleaseFundsCommand} adicional no outbox
-     *       para que o wallet-service desbloqueie o saldo (AT-1.1.4).</li>
+     *   <li>Grava {@link ReleaseFundsCommand} <strong>incondicionalmente</strong> no outbox
+     *       para que o wallet-service desbloqueie o saldo. Emissão incondicional cobre
+     *       a janela de corrida entre reserva efetiva e atualização de status (AT-1.1.4).</li>
+     *   <li>Remove ordens OPEN/PARTIAL do Redis book para evitar matches com ordens já
+     *       canceladas. Ordens PENDING nunca foram adicionadas ao book (RC-1).</li>
      *   <li>Emite {@code WARN} estruturado com {@code orderId}, {@code userId} e {@code age}.</li>
      * </ol>
      */
@@ -155,15 +164,27 @@ public class SagaTimeoutCleanupJob {
                 stale.size(), cutoff);
 
         for (Order order : stale) {
-            // Captura o status PRE-cancelamento: determina se fundos já foram reservados.
-            // OPEN/PARTIAL indicam que o FundsReservedEvent já foi processado com sucesso.
-            // PENDING indica que os fundos ainda não foram reservados (Saga em andamento).
-            boolean fundsAlreadyReserved = (order.getStatus() == OrderStatus.OPEN
-                    || order.getStatus() == OrderStatus.PARTIAL);
+            // 0. Captura status ANTES do cancel() para decidir remoção do Redis book (RC-1)
+            OrderStatus previousStatus = order.getStatus();
 
             // 1. Transita para CANCELLED com motivo padronizado
             order.cancel("SAGA_TIMEOUT");
             orderRepository.save(order);
+
+            // 1.1 RC-1: Remove do Redis book — ordens OPEN/PARTIAL foram inseridas na Lua script;
+            //     PENDING nunca chegaram ao book (ainda aguardavam FundsReservedEvent).
+            if (previousStatus == OrderStatus.OPEN || previousStatus == OrderStatus.PARTIAL) {
+                try {
+                    matchEngine.removeFromBook(order.getId(), order.getOrderType());
+                    logger.info("Ordem {} removida do Redis book (status anterior: {})",
+                            order.getId(), previousStatus);
+                } catch (Exception e) {
+                    // Log WARN mas não bloqueia a compensação — a ordem já está CANCELLED no DB.
+                    // Na próxima tentativa de match, o settle falhará e a compensação corrigirá.
+                    logger.warn("Falha ao remover ordem {} do Redis book: {}",
+                            order.getId(), e.getMessage());
+                }
+            }
 
             // 2. Persiste OrderCancelledEvent no outbox (relay eventual pelo OrderOutboxPublisherService)
             //    O Outbox Pattern garante que o evento não seja perdido mesmo se o broker estiver
@@ -193,18 +214,19 @@ public class SagaTimeoutCleanupJob {
                                 .formatted(order.getId(), ex.getMessage()), ex);
             }
 
-            // 3. AT-1.1.4: Compensação — emite ReleaseFundsCommand APENAS se os fundos
-            //    já foram reservados. Para ordens PENDING os fundos ainda não foram bloqueados,
-            //    então nenhum release é necessário.
-            if (fundsAlreadyReserved) {
-                emitReleaseFundsCommand(order);
-            }
+            // 3. AT-1.1.4: Compensação — emite ReleaseFundsCommand INCONDICIONALMENTE.
+            //    Emissão incondicional cobre a janela de corrida entre reserva efetiva no
+            //    wallet-service e atualização de status da ordem (PENDING → OPEN). Uma ordem
+            //    PENDING pode já ter fundos bloqueados. O wallet-service trata
+            //    InsufficientLockedFundsException graciosamente: se os fundos nunca foram
+            //    reservados, o release é um no-op idempotente.
+            emitReleaseFundsCommand(order);
 
             // 4. Log de auditoria estruturado — calcula time usando o clock abstrato
             //    (AT-09.2: nunca usa Instant.now() diretamente no job)
             long ageMinutes = Duration.between(order.getCreatedAt(), clock.instant()).toMinutes();
-            logger.warn("Saga timeout detectado: orderId={} userId={} age={}min fundsReleased={} — cancelado com SAGA_TIMEOUT",
-                    order.getId(), order.getUserId(), ageMinutes, fundsAlreadyReserved);
+            logger.warn("Saga timeout detectado: orderId={} userId={} age={}min fundsReleased=true — cancelado com SAGA_TIMEOUT",
+                    order.getId(), order.getUserId(), ageMinutes);
         }
 
         logger.info("SagaTimeoutCleanupJob: {} ordem(ns) cancelada(s) por timeout.", stale.size());

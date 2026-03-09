@@ -173,6 +173,23 @@ class AbstractOutboxPublisherTest {
         }
 
         @Test
+        @DisplayName("Deve incluir messageId no header da mensagem AMQP publicada")
+        void shouldSetMessageIdOnAmqpMessage() {
+            UUID messageId = UUID.randomUUID();
+            TestMessage msg = new TestMessage(
+                    messageId, "TestEvent",
+                    "test.exchange", "test.routing", "{\"test\":true}");
+
+            publisher.doPublish(msg);
+
+            var captor = org.mockito.ArgumentCaptor.forClass(Message.class);
+            verify(rabbitTemplate).send(anyString(), anyString(), captor.capture());
+            assertThat(captor.getValue().getMessageProperties().getMessageId())
+                    .as("messageId deve ser setado para garantir idempotência no consumidor")
+                    .isEqualTo(messageId.toString());
+        }
+
+        @Test
         @DisplayName("Deve chamar afterPublish após envio bem-sucedido")
         void shouldCallAfterPublishOnSuccess() {
             TestMessage msg = new TestMessage(
@@ -327,6 +344,7 @@ class AbstractOutboxPublisherTest {
             return MessageBuilder
                     .withBody(message.payload.getBytes(StandardCharsets.UTF_8))
                     .setContentType("application/json")
+                    .setMessageId(message.id.toString())
                     .build();
         }
 

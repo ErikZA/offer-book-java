@@ -8,10 +8,8 @@ import com.vibranium.orderservice.domain.model.UserRegistry;
 import com.vibranium.orderservice.domain.repository.UserRegistryRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
-import org.springframework.amqp.support.AmqpHeaders;
-import org.springframework.messaging.handler.annotation.Header;
-import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 
 /**
@@ -67,32 +65,24 @@ public class KeycloakEventConsumer {
      * bloqueio da fila. A mensagem será NAcked e roteada para a DLQ após
      * esgotar as tentativas configuradas no Spring Retry.</p>
      *
-     * <p>O parâmetro é {@code byte[]} (e não {@code String}) para que o
-     * {@code Jackson2JsonMessageConverter} global passe os bytes brutos sem
-     * tentar desserializar o JSON Object como scalar String — o que causaria
-     * {@code MismatchedInputException}. A conversão para String é feita
-     * manualmente com UTF-8.</p>
+     * <p>O parâmetro é {@code Message} (AMQP nativo) em vez de {@code @Payload byte[]}
+     * ou {@code @Payload String} para que o {@code Jackson2JsonMessageConverter} global
+     * seja completamente ignorado. Receber o {@code Message} diretamente faz o
+     * Spring AMQP entregar o objeto sem nenhuma conversão, evitando o
+     * {@code MismatchedInputException} que ocorre quando o converter tenta
+     * desserializar JSON Object como scalar String ou byte[].
+     * A conversão para String é feita manualmente com UTF-8.</p>
      *
-     * <p>O parâmetro é {@code String} porque o teste envia via
-     * {@code rabbitTemplate.convertAndSend(exchange, rk, stringPayload)}: o
-     * {@code Jackson2JsonMessageConverter} serializa a String como um JSON string
-     * value {@code "\"...\""} e a desserializa de volta corretamente no receptor.
-     * Payloads malformados enviados via {@code rabbitTemplate.send()} com bytes
-     * brutos falham na conversão ANTES de chegar ao listener — gerando
-     * {@code ListenerExecutionFailedException} que o Spring Retry trata e após
-     * esgotamento roteia para a DLQ.</p>
-     *
-     * @param payload       JSON bruto publicado pelo plugin aznamier.
-     * @param routingKey    Routing key da mensagem (usada para log/debug).
+     * @param amqpMessage   Mensagem AMQP nativa com bytes JSON brutos no body.
      */
     @RabbitListener(queues = RabbitMQConfig.QUEUE_KEYCLOAK_REG)
-    public void onKeycloakEvent(
-            @Payload String payload,
-            @Header(AmqpHeaders.RECEIVED_ROUTING_KEY) String routingKey) {
+    public void onKeycloakEvent(Message amqpMessage) {
 
+        String routingKey = amqpMessage.getMessageProperties().getReceivedRoutingKey();
         logger.debug("Evento Keycloak recebido: routingKey={}", routingKey);
 
         try {
+            String payload = new String(amqpMessage.getBody(), java.nio.charset.StandardCharsets.UTF_8);
             JsonNode tree = objectMapper.readTree(payload);
             processEvent(tree);
         } catch (JsonProcessingException e) {
