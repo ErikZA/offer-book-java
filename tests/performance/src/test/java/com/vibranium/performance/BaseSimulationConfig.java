@@ -26,7 +26,11 @@ public final class BaseSimulationConfig {
 
     // URLs das instâncias de order-service para distribuição round-robin
     private static final String[] ORDER_SERVICE_URLS = parseOrderServiceUrls();
-    private static final AtomicInteger URL_COUNTER = new AtomicInteger(0);
+    private static final AtomicInteger ORDER_URL_COUNTER = new AtomicInteger(0);
+
+    // URLs das instâncias de wallet-service para distribuição round-robin
+    private static final String[] WALLET_SERVICE_URLS = parseWalletServiceUrls();
+    private static final AtomicInteger WALLET_URL_COUNTER = new AtomicInteger(0);
 
     // Pre-warm: obter o token de forma eager para evitar bloqueio do actor-thread do Gatling
     // durante a injeção de virtual users
@@ -66,15 +70,39 @@ public final class BaseSimulationConfig {
      * Seleciona a próxima URL de order-service via round-robin.
      * Garante distribuição uniforme entre todas as instâncias.
      */
-    private static String nextOrderServiceUrl() {
-        int idx = Math.abs(URL_COUNTER.getAndIncrement() % ORDER_SERVICE_URLS.length);
+    static String nextOrderServiceUrl() {
+        int idx = Math.abs(ORDER_URL_COUNTER.getAndIncrement() % ORDER_SERVICE_URLS.length);
         return ORDER_SERVICE_URLS[idx];
+    }
+
+    /**
+     * Seleciona a próxima URL de wallet-service via round-robin.
+     * Garante distribuição uniforme entre todas as instâncias.
+     */
+    public static String nextWalletServiceUrl() {
+        int idx = Math.abs(WALLET_URL_COUNTER.getAndIncrement() % WALLET_SERVICE_URLS.length);
+        return WALLET_SERVICE_URLS[idx];
+    }
+
+    /**
+     * Retorna todas as URLs de wallet-service configuradas.
+     */
+    public static String[] walletServiceUrls() {
+        return WALLET_SERVICE_URLS.clone();
     }
 
     private static String[] parseOrderServiceUrls() {
         String urls = env("ORDER_SERVICE_URLS", "");
         if (urls.isBlank()) {
             return new String[]{ baseUrl() };
+        }
+        return urls.split(",");
+    }
+
+    private static String[] parseWalletServiceUrls() {
+        String urls = env("WALLET_SERVICE_URLS", "");
+        if (urls.isBlank()) {
+            return new String[]{ env("WALLET_SERVICE_URL", "http://localhost:8081") };
         }
         return urls.split(",");
     }

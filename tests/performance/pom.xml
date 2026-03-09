@@ -121,6 +121,12 @@
                 <gatling.simulationClass>com.vibranium.performance.OrderMatchingValidationSimulation</gatling.simulationClass>
             </properties>
         </profile>
+        <profile>
+            <id>rnf01</id>
+            <properties>
+                <gatling.simulationClass>com.vibranium.performance.Rnf01ScalabilitySimulation</gatling.simulationClass>
+            </properties>
+        </profile>
     </profiles>
 
 </project>

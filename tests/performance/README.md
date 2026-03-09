@@ -19,6 +19,7 @@ Suíte de benchmark para validação do SLA **RNF01: 5.000 trades/s** usando [Ga
 | Stress     | 5.000 req/s        | 120s    | Validar SLA e identificar gargalos                 |
 | Soak       | 500 req/s          | 30 min  | Detectar memory leaks e degradação temporal        |
 | Validation | 1 user sequencial  | ~5 min  | Validar casamento de ordens com carteiras reais    |
+| **RNF01**  | Configurável (default 100 req/s) | 70s | Validar escalabilidade p/ 5.000 trades/s (projeção) |
 
 ## Critérios de Aceite
 
@@ -29,6 +30,7 @@ Suíte de benchmark para validação do SLA **RNF01: 5.000 trades/s** usando [Ga
 | Stress     | < 5%      | Documentar máximo    | Documentar     | —                                      |
 | Soak       | < 1%      | —                    | < 10.000ms     | —                                      |
 | Validation | < 1%      | —                    | —              | Saldos finais = saldos esperados       |
+| RNF01      | < 1%      | ≥ 95% do target      | < 2.000ms      | Projeção horizontal ≥ 5.000 req/s      |
 
 ## Execução Rápida (Docker)
 
@@ -74,6 +76,18 @@ docker compose -f tests/performance/docker-compose.perf.yml --profile run run --
 # Validation (casamento de ordens com carteiras reais)
 docker compose -f tests/performance/docker-compose.perf.yml --profile run run --rm \
   -e GATLING_SIMULATION=com.vibranium.performance.OrderMatchingValidationSimulation gatling
+
+# RNF01 — Validação de escalabilidade (5.000 trades/s via projeção)
+# Default: 100 req/s × 10 instâncias projetadas = 1.000 req/s (ajuste conforme infra)
+docker compose -f tests/performance/docker-compose.perf.yml --profile run run --rm \
+  -e GATLING_SIMULATION=com.vibranium.performance.Rnf01ScalabilitySimulation gatling
+
+# RNF01 com parâmetros customizados (ex: staging com mais recursos)
+docker compose -f tests/performance/docker-compose.perf.yml --profile run run --rm \
+  -e GATLING_SIMULATION=com.vibranium.performance.Rnf01ScalabilitySimulation \
+  -e RNF01_TARGET_RPS=500 \
+  -e RNF01_INSTANCE_COUNT=10 \
+  gatling
 ```
 
 ### 3. Ver relatório
@@ -108,6 +122,7 @@ mvn gatling:test -pl tests/performance -Pload
 mvn gatling:test -pl tests/performance -Pstress
 mvn gatling:test -pl tests/performance -Psoak
 mvn gatling:test -pl tests/performance -Pvalidation
+mvn gatling:test -pl tests/performance -Prnf01
 ```
 
 ## Variáveis de Ambiente
@@ -123,6 +138,11 @@ mvn gatling:test -pl tests/performance -Pvalidation
 | `KEYCLOAK_ADMIN_USER`  | `admin`                   | Admin Keycloak (cenário Validation)      |
 | `KEYCLOAK_ADMIN_PASSWORD`| `perftest`              | Senha admin Keycloak (cenário Validation)|
 | `WALLET_SERVICE_URL`   | `http://wallet-service:8081`| URL da wallet-service (cenário Validation)||
+| `RNF01_TARGET_RPS`     | `100`                     | Taxa alvo req/s (cenário RNF01)          |
+| `RNF01_DURATION_SECS`  | `60`                      | Duração carga constante (cenário RNF01)  |
+| `RNF01_RAMP_SECS`      | `10`                      | Ramp-up em segundos (cenário RNF01)      |
+| `RNF01_P99_THRESHOLD_MS`| `2000`                   | p99 máximo em ms (cenário RNF01)         |
+| `RNF01_INSTANCE_COUNT` | `10`                      | Nº instâncias para projeção (cenário RNF01)|
 | `NUM_ROUNDS`           | `5`                       | Rodadas de compra/venda (Validation)     |
 | `SETTLE_PAUSE_SECONDS` | `10`                      | Pausa entre buys e sells (Validation)    |
 | `FINAL_SETTLE_WAIT_SECONDS`| `60`                  | Espera para liquidação final (Validation)|
