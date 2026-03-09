@@ -95,5 +95,6 @@ make coverage                       # Cobertura
 
 ---
 
-Para mais detalhes sobre verificação de infraestrutura, consulte [INFRASTRUCTURE_DECISIONS.md](../docs/INFRASTRUCTURE_DECISIONS.md).
+Para mais detalhes sobre verificação de infraestrutura, consulte [infra/README.md](../infra/README.md) e [docs/architecture/adr-001-debezium-single-instance.md](../docs/architecture/adr-001-debezium-single-instance.md).
+
 

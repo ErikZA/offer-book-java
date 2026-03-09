@@ -1,7 +1,7 @@
 .PHONY: help docker-build docker-dev-up docker-dev-down docker-dev-logs docker-test docker-prod-up docker-prod-down docker-status docker-clean
 
 DOCKER_COMPOSE_DEV := docker compose -f infra/docker-compose.dev.yml
-DOCKER_COMPOSE_TEST := docker compose -f tests/docker-compose.test.yml
+DOCKER_COMPOSE_TEST := docker compose -f tests/e2e/docker-compose.e2e.yml
 DOCKER_COMPOSE_PROD := docker compose -f infra/docker-compose.yml
 
 # Colors for output
@@ -97,3 +97,4 @@ docker-clean:
 
 	rm -rf target/
 	@echo "$(GREEN)✓ Clean completed$(NC)"
+

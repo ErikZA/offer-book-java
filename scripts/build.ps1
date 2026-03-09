@@ -32,21 +32,21 @@ function Show-Banner {
 function Show-Help {
     Show-Banner
     Write-Host "${YELLOW}🐳 Docker Development (with hotreload):$NC"
-    Write-Host "  .\build.ps1 docker-dev-up      - Start dev environment"
-    Write-Host "  .\build.ps1 docker-dev-down    - Stop dev environment"
-    Write-Host "  .\build.ps1 docker-dev-logs -Service order-service"
+    Write-Host "  .\scripts\build.ps1 docker-dev-up      - Start dev environment"
+    Write-Host "  .\scripts\build.ps1 docker-dev-down    - Stop dev environment"
+    Write-Host "  .\scripts\build.ps1 docker-dev-logs -Service order-service"
     Write-Host ""
     Write-Host "${YELLOW}🧪 Testing:$NC"
-    Write-Host "  .\build.ps1 docker-test        - Run all tests in containers"
+    Write-Host "  .\scripts\build.ps1 docker-test        - Run all tests in containers"
     Write-Host ""
     Write-Host "${YELLOW}🐳 Build & Production:$NC"
-    Write-Host "  .\build.ps1 docker-build       - Build Docker images"
-    Write-Host "  .\build.ps1 docker-prod-up     - Start production environment"
-    Write-Host "  .\build.ps1 docker-prod-down   - Stop production environment"
+    Write-Host "  .\scripts\build.ps1 docker-build       - Build Docker images"
+    Write-Host "  .\scripts\build.ps1 docker-prod-up     - Start production environment"
+    Write-Host "  .\scripts\build.ps1 docker-prod-down   - Stop production environment"
     Write-Host ""
     Write-Host "${YELLOW}⚙️  Utilities:$NC"
-    Write-Host "  .\build.ps1 docker-status      - Show running containers"
-    Write-Host "  .\build.ps1 docker-clean       - Clean all containers/images"
+    Write-Host "  .\scripts\build.ps1 docker-status      - Show running containers"
+    Write-Host "  .\scripts\build.ps1 docker-clean       - Clean all containers/images"
     Write-Host ""
 }
 
@@ -69,7 +69,7 @@ switch ($Command.ToLower()) {
         Write-Host "${BLUE}Services:${NC}"
         Write-Host "  Order Service: http://localhost:8080 (Debug: 5005)" -ForegroundColor Cyan
         Write-Host "  Wallet Service: http://localhost:8081 (Debug: 5006)" -ForegroundColor Cyan
-        Write-Host "${YELLOW}📝 Tip: Run '.\build.ps1 docker-dev-logs -Service order-service' to view logs${NC}"
+        Write-Host "${YELLOW}📝 Tip: Run '.\scripts\build.ps1 docker-dev-logs -Service order-service' to view logs${NC}"
     }
 
     "docker-dev-down" {
@@ -83,7 +83,7 @@ switch ($Command.ToLower()) {
         Show-Banner
         if ($Service -eq "") {
             Write-Host "${RED}ERROR: Service name required${NC}"
-            Write-Host "Usage: .\build.ps1 docker-dev-logs -Service order-service"
+            Write-Host "Usage: .\scripts\build.ps1 docker-dev-logs -Service order-service"
             exit 1
         }
         Write-Host "${YELLOW}📋 Showing logs for $Service...${NC}"
@@ -93,9 +93,9 @@ switch ($Command.ToLower()) {
     "docker-test" {
         Show-Banner
         Write-Host "${YELLOW}🧪 Running tests in Docker...${NC}"
-        docker compose -f tests/docker-compose.test.yml up --abort-on-container-exit 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose -f tests/e2e/docker-compose.e2e.yml up --abort-on-container-exit 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
         Write-Host "${YELLOW}🧹 Cleaning test environment...${NC}"
-        docker compose -f tests/docker-compose.test.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose -f tests/e2e/docker-compose.e2e.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
         Write-Host "${GREEN}✓ Tests completed${NC}"
     }
 
@@ -125,7 +125,7 @@ switch ($Command.ToLower()) {
         Show-Banner
         Write-Host "${YELLOW}🧹 Cleaning Docker artifacts...${NC}"
         docker compose -f infra/docker-compose.dev.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
-        docker compose -f tests/docker-compose.test.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose -f tests/e2e/docker-compose.e2e.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
         docker compose -f infra/docker-compose.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
         Write-Host "${GREEN}✓ Clean completed${NC}"
     }
@@ -140,3 +140,4 @@ switch ($Command.ToLower()) {
         exit 1
     }
 }
+

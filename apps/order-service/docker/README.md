@@ -39,7 +39,7 @@ docker compose -f infra/docker-compose.dev.yml up order-service
 
 # Via scripts
 make docker-dev-up     (Linux/Mac)
-.\build.ps1 docker-dev-up  (Windows)
+.\scripts\build.ps1 docker-dev-up  (Windows)
 ```
 
 ### Produção
@@ -87,5 +87,7 @@ ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
 
 ## Mais Informações
 
-- Ver [docker-compose.dev.yml](/docker-compose.dev.yml)
-- Ver [TESTING_GUIDE.md](/TESTING_GUIDE.md)
+- Ver [infra/docker-compose.dev.yml](../../../infra/docker-compose.dev.yml)
+- Ver [docs/testing/COMPREHENSIVE_TESTING.md](../../../docs/testing/COMPREHENSIVE_TESTING.md)
+
+

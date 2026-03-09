@@ -1,80 +1,58 @@
 # Documentação
 
-Referência técnica completa do projeto.
+Referência técnica central do projeto.
 
-## 📚 Estrutura
+## Estrutura
 
-### 🧪 [Testes & Desenvolvimento](./testing/)
-Tudo o que você precisa para trabalhar com testes e configurar o ambiente.
+### Testes e desenvolvimento
 
-- **[testing/README.md](./testing/README.md)** - Índice da documentação de testes ⭐
-  - Navegação para todos os recursos
-  - Quick links
-  - Padrões disponíveis
+- [testing/README.md](./testing/README.md): índice rápido da documentação de testes.
+- [testing/COMPREHENSIVE_TESTING.md](./testing/COMPREHENSIVE_TESTING.md): guia canônico condensado de testes.
+- [testing/COMPREHENSIVE_TESTING_SECTIONS.md](./testing/COMPREHENSIVE_TESTING_SECTIONS.md): mapa de seções da versão legada detalhada.
+- [../tests/README.md](../tests/README.md): foco no módulo `tests/` (E2E e scripts).
 
-- **[testing/COMPREHENSIVE_TESTING.md](./testing/COMPREHENSIVE_TESTING.md)** - Guia Completo via Docker (500+ linhas) 📖
-  - Setup e Quick Start (Windows/Linux/macOS) - **Docker-based**
-  - 20+ Padrões prontos para copiar/colar
-  - Testes unitários e integração (via Docker)
-  - Ferramentas (JUnit 5, Mockito, AssertJ, REST Assured, etc.)
-  - Debug remoto
-  - Cobertura de código
-  - Troubleshooting
-  - **👉 Comece por aqui para testes!**
+### Arquitetura e design
 
-- **[docker/README.md](../docker/README.md)** - Como usar Docker Compose
-  - Desenvolvimento com hotreload
-  - Testes automatizados
-  - Produção
-  
-- **[SETUP_COMPLETE.md](./SETUP_COMPLETE.md)** - Resumo do que foi implementado
+- [architecture/README.md](./architecture/README.md): índice canônico da arquitetura.
 
-⚠️ **Histórico (Descontinuados)**: 
-- SETUP_MAVEN.md - Descontinuado (use Docker em vez disso)
-- [testing/TESTING_GUIDE.md](./testing/TESTING_GUIDE.md), [testing/TEST_PATTERNS.md](./testing/TEST_PATTERNS.md), [testing/FINAL_CHECKLIST.md](./testing/FINAL_CHECKLIST.md) - Consolidados em COMPREHENSIVE_TESTING.md
+### Dados e modelagem
 
-### 🏗️ [Arquitetura & Design](./architecture/)
-Entenda a visão geral, fluxos e padrões do sistema.
+- [database/README.md](./database/README.md): índice canônico de modelagem e persistência.
 
-- **[order-book-mvp.md](./architecture/order-book-mvp.md)** - Visão geral da arquitetura
-- **[order-book-mvp-flow.md](./architecture/order-book-mvp-flow.md)** - Fluxos de caso de uso
-- **[order-book-mvp-sequence.md](./architecture/order-book-mvp-sequence.md)** - Diagramas de sequência
-- **[ddd-cqrs-event-source.md](./architecture/ddd-cqrs-event-source.md)** - Padrões (DDD/CQRS/Event Sourcing) + Transactional Outbox com Polling SKIP LOCKED
-- **[tools-stack.md](./architecture/tools-stack.md)** - Stack de ferramentas (inclui Testcontainers, Spring Retry e Polling SKIP LOCKED)
-- **[quality-and-tracing.md](./architecture/quality-and-tracing.md)** - Qualidade e observabilidade (inclui tracing Jaeger, métricas Prometheus + Grafana, Circuit Breaker)
-- **[redis-cluster-setup.md](./architecture/redis-cluster-setup.md)** - Redis Cluster HA para Order Book (AT-15: 6 nodes, failover, recovery, monitoramento)
+### Infraestrutura e segurança
 
-### 🔐 [Segurança & Secrets](./SECRETS_MANAGEMENT.md)
-Gestão de credenciais com Docker Secrets.
+- [../infra/README.md](../infra/README.md): execução dos ambientes Docker e operação da infra.
+- [SECRETS_MANAGEMENT.md](./SECRETS_MANAGEMENT.md): gestão de credenciais e secrets.
 
-- **[SECRETS_MANAGEMENT.md](./SECRETS_MANAGEMENT.md)** - Guia completo de gestão de secrets (Docker Secrets, rotação, troubleshooting)
+### Performance
 
-### 🚀 [Performance Testing](./PERFORMANCE_REPORT.md)
-Testes de carga e análise de capacidade.
+- [../tests/performance/README.md](../tests/performance/README.md): execução dos benchmarks.
+- [PERFORMANCE_REPORT.md](./PERFORMANCE_REPORT.md): resultados e análise técnica.
+- [JWT_ENV_MAPPING.md](./JWT_ENV_MAPPING.md): mapeamento JWT por ambiente.
 
-- **[PERFORMANCE_REPORT.md](./PERFORMANCE_REPORT.md)** - Relatório completo de performance (Smoke, Load, Stress, Soak)
-  - Métricas detalhadas por cenário
-  - Análise de causas raiz
-  - Recomendações de tuning e escala
-  - Projeção de capacidade
-- **[PERFORMANCE_PROMPTS.md](./PERFORMANCE_PROMPTS.md)** - Prompts de engenharia para correção de bugs e escalabilidade
-- **[JWT_ENV_MAPPING.md](./JWT_ENV_MAPPING.md)** - Mapeamento de variáveis JWT por ambiente
+### Governança e referência
 
-### 📋 Referência
-- **[SETUP_COMPLETE.md](./SETUP_COMPLETE.md)** - Resumo do que foi implementado
-- **[PROJECT_STRUCTURE.md](./PROJECT_STRUCTURE.md)** - Estrutura visual do projeto
+- [DOCS_INFORMATION_ARCHITECTURE.md](./DOCS_INFORMATION_ARCHITECTURE.md): arquitetura alvo da documentação.
+- [DOCS_TRACEABILITY_MATRIX.md](./DOCS_TRACEABILITY_MATRIX.md): rastreabilidade de consolidação sem perda.
+- [DOCS_CONTRIBUTING.md](./DOCS_CONTRIBUTING.md): regras para contribuir sem regressão documental.
+- [PROJECT_STRUCTURE.md](./PROJECT_STRUCTURE.md): visão estrutural do repositório.
 
-## 🎯 Por Onde Começar?
+## Histórico em consolidação
+
+- [SETUP_COMPLETE.md](./SETUP_COMPLETE.md): ponte para setup histórico.
+- [SETUP_MAVEN.md](./SETUP_MAVEN.md): guia descontinuado de Maven local.
+- [archive/README.md](./archive/README.md): inventário de documentos legados preservados.
+
+## Por onde começar
 
 | Objetivo | Comece por |
-|----------|-----------|
-| **Configurar e usar Docker** | [../docker/README.md](../docker/README.md) |
-| **Entender & escrever testes** | [testing/COMPREHENSIVE_TESTING.md](./testing/COMPREHENSIVE_TESTING.md) ⭐ |
-| **Testes de performance** | [PERFORMANCE_REPORT.md](./PERFORMANCE_REPORT.md) 🚀 |
-| **Gestão de secrets** | [SECRETS_MANAGEMENT.md](./SECRETS_MANAGEMENT.md) 🔐 |
-| **Entender arquitetura** | [architecture/order-book-mvp.md](./architecture/order-book-mvp.md) |
-| **Ver fluxos** | [architecture/order-book-mvp-flow.md](./architecture/order-book-mvp-flow.md) |
-| **Padrões de design** | [architecture/ddd-cqrs-event-source.md](./architecture/ddd-cqrs-event-source.md)
+|---|---|
+| Subir ambiente local | [../infra/README.md](../infra/README.md) |
+| Rodar e escrever testes | [testing/README.md](./testing/README.md) |
+| Entender arquitetura | [architecture/README.md](./architecture/README.md) |
+| Entender modelagem de dados | [database/README.md](./database/README.md) |
+| Rodar performance | [../tests/performance/README.md](../tests/performance/README.md) |
+| Gestão de secrets | [SECRETS_MANAGEMENT.md](./SECRETS_MANAGEMENT.md) |
 
 ---
 
