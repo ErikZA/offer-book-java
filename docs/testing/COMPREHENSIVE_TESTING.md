@@ -41,7 +41,8 @@
 37. [Deduplicação de Ordens no Redis via Lua — HEXISTS Guard (AT-16)](#deduplicação-de-ordens-no-redis-via-lua--hexists-guard-at-16)
 38. [Atomicidade Redis+PostgreSQL com Lua Compensatório — undo_match.lua (AT-17)](#atomicidade-redispostgresql-com-lua-compensatório--undo_matchlua-at-17)
 39. [Event Store Imutável — Auditoria e Replay de Eventos (AT-14)](#event-store-imutável--auditoria-e-replay-de-eventos-at-14)
-40. [Referências](#referências)
+40. [RNF01 — Validação de Alta Escalabilidade (5.000 trades/s)](#rnf01--validação-de-alta-escalabilidade-5000-tradess)
+41. [Referências](#referências)
 
 ---
 
@@ -3407,6 +3408,233 @@ mvn test -pl apps/order-service -Dtest="EventStoreAppendOnlyTest,EventStoreRepla
 | `EventStoreAppendOnlyTest.java` | Criado | Testes de integridade append-only |
 | `EventStoreReplayTest.java` | Criado | Testes de replay temporal |
 | `EventStoreAuditEndpointTest.java` | Criado | Testes REST + segurança |
+
+---
+
+## RNF01 — Validação de Alta Escalabilidade (5.000 trades/s)
+
+### Visão Geral
+
+O requisito não funcional **RNF01** exige que a plataforma Vibranium suporte **5.000 trades por segundo** em ambiente de produção. Este conjunto de testes valida a escalabilidade horizontal do sistema através de projeções matemáticas baseadas no throughput medido por instância.
+
+### Estratégia de Validação
+
+Em ambientes Docker locais (desenvolvimento/CI), é impossível alcançar 5.000 req/s reais devido a:
+- CPU e memória compartilhados entre múltiplos containers
+- I/O de disco limitado
+- Overhead de virtualização/WSL2
+
+A abordagem adotada:
+1. **Medir throughput por instância** em carga controlada (100-500 req/s)
+2. **Validar critérios de qualidade**: error rate < 1%, p99 < 2s, throughput sustentado ≥ 95% da taxa injetada
+3. **Projetar escalabilidade horizontal**: `Instâncias necessárias = ceil(5000 / throughput_por_instância)`
+4. **Validar viabilidade**: número de instâncias necessárias deve ser ≤ 100 (ordem-service) / ≤ 500 (pipeline completo)
+
+### Estrutura dos Testes
+
+A validação do RNF01 está distribuída em três camadas:
+
+#### 1. Testes de Integração (`Rnf01ScalabilityIntegrationTest`)
+
+**Localização:** `apps/order-service/src/test/java/com/vibranium/orderservice/integration/`
+
+Mede throughput em camadas isoladas usando Testcontainers:
+
+| Teste | Carga | O que mede | Critério de aceite |
+|-------|-------|------------|-------------------|
+| `rnf01_httpThroughput_200ConcurrentOrders` | 200 ordens simultâneas | Throughput HTTP (POST /api/v1/orders) | ≥ 50 req/s, 0% erros |
+| `rnf01_sagaThroughput_500ConcurrentEvents` | 500 FundsReservedEvents | Throughput Saga (event → OPEN) | ≥ 50 events/s, 0% PENDING residual |
+
+**Técnicas utilizadas:**
+- Virtual Threads (JEP 444) para concorrência massiva
+- `CountDownLatch` para disparo sincronizado
+- `AtomicInteger` para contadores thread-safe
+- Projeção: `ceil(5000 / throughput_medido)`
+
+#### 2. Testes E2E (`Rnf01ScalabilityE2eIT`)
+
+**Localização:** `tests/e2e/src/test/java/com/vibranium/e2e/`
+
+Valida o **pipeline completo** (HTTP → Order → RabbitMQ → Wallet → Matching) usando `docker-compose.e2e.yml`:
+
+| Teste | Carga | O que valida |
+|-------|-------|-------------|
+| `rnf01_e2eHttpThroughput` | 100 ordens concorrentes | Aceitação HTTP (202) + throughput ≥ 10 orders/s |
+| `rnf01_e2eFullPipelineThroughput` | 20 BUY + 20 SELL | Trades completos (FILLED) + projeção de instâncias |
+
+**Seeding de dados:**
+- Criação de 20 usuários com IDs fixos (idempotência)
+- Publicação de eventos REGISTER via RabbitMQ Management API
+- Criação de wallets com saldo inicial (BRL 100.000, VIB 10.000)
+
+#### 3. Simulação Gatling (`Rnf01ScalabilitySimulation`)
+
+**Localização:** `tests/performance/src/test/java/com/vibranium/performance/`
+
+Simulação de carga sustentada para medição de throughput e latências:
+
+```java
+setUp(
+    rnf01Scenario.injectOpen(
+        rampUsersPerSec(1).to(TARGET_RPS).during(RAMP_SECS),
+        constantUsersPerSec(TARGET_RPS).during(DURATION_SECS)
+    )
+)
+.assertions(
+    global().failedRequests().percent().lt(1.0),
+    global().responseTime().percentile4().lt(P99_THRESHOLD_MS),
+    global().requestsPerSec().gte(MIN_THROUGHPUT)
+);
+```
+
+**Variáveis de ambiente:**
+
+| Variável | Default | Descrição |
+|----------|---------|-----------|
+| `RNF01_TARGET_RPS` | 100 | Taxa alvo em req/s |
+| `RNF01_DURATION_SECS` | 60 | Duração da carga constante |
+| `RNF01_RAMP_SECS` | 10 | Ramp-up em segundos |
+| `RNF01_P99_THRESHOLD_MS` | 2000 | p99 máximo em ms |
+| `RNF01_INSTANCE_COUNT` | 10 | Nº instâncias para projeção |
+
+### Execução
+
+#### Docker Compose (local/CI)
+
+```bash
+# Executar simulação RNF01 com parâmetros padrão
+docker compose -f tests/performance/docker-compose.perf.yml --profile run run --rm \
+  -e GATLING_SIMULATION=com.vibranium.performance.Rnf01ScalabilitySimulation \
+  gatling
+
+# Executar com parâmetros customizados (staging)
+docker compose -f tests/performance/docker-compose.perf.yml --profile run run --rm \
+  -e GATLING_SIMULATION=com.vibranium.performance.Rnf01ScalabilitySimulation \
+  -e RNF01_TARGET_RPS=500 \
+  -e RNF01_INSTANCE_COUNT=10 \
+  gatling
+```
+
+#### Ambiente AWS a1.medium (simulação)
+
+Compose file dedicado que simula instâncias AWS a1.medium (1 vCPU, 2 GiB RAM):
+
+```bash
+# Subir infraestrutura
+docker compose -f tests/performance/docker-compose.aws-a1medium.yml up -d --build
+
+# Executar smoke test
+docker compose -f tests/performance/docker-compose.aws-a1medium.yml run --rm \
+  -e GATLING_SIMULATION=com.vibranium.performance.SmokeSimulation gatling
+
+# Executar RNF01
+docker compose -f tests/performance/docker-compose.aws-a1medium.yml run --rm \
+  -e GATLING_SIMULATION=com.vibranium.performance.Rnf01ScalabilitySimulation gatling
+```
+
+**Diferenças do docker-compose.aws-a1medium.yml:**
+- 2 réplicas de order-service (1 vCPU, 2GB RAM cada)
+- 2 réplicas de wallet-service (1 vCPU, 2GB RAM cada)
+- `JAVA_OPTS` ajustado: `-Xms512m -Xmx1536m -XX:+UseZGC`
+- Kong Gateway **removido** (tráfego direto aos serviços)
+- Healthchecks mais tolerantes (`start_period: 120s`)
+
+#### Maven (desenvolvimento)
+
+```bash
+# Testes de integração RNF01 (order-service)
+mvn test -pl apps/order-service -Dtest=Rnf01ScalabilityIntegrationTest
+
+# Testes E2E RNF01
+mvn test -pl tests/e2e -Dit.test=Rnf01ScalabilityE2eIT
+
+# Gatling via profile Maven
+mvn gatling:test -pl tests/performance -Prnf01
+```
+
+### Melhorias Implementadas
+
+#### 1. Publicação de eventos REGISTER via RabbitMQ Management API
+
+**Problema:** Usuários criados via Keycloak Admin API não geram eventos `KK.EVENT.CLIENT.*.REGISTER` automaticamente.
+
+**Solução:** `WalletApiHelper.publishRegisterEvent()` simula o payload do plugin aznamier:
+
+```java
+String eventPayload = """
+    {
+      "@class": "com.github.aznamier.keycloak.event.provider.EventClientNotificationMqMsg",
+      "time": %d,
+      "type": "REGISTER",
+      "realmId": "%s",
+      "userId": "%s",
+      "details": {"username": "%s"}
+    }
+    """.formatted(System.currentTimeMillis(), realm, userId, username);
+
+// Publica via RabbitMQ Management API
+given()
+    .header("Authorization", rabbitmqAuthHeader)
+    .body(publishNode)
+    .post(rabbitmqManagementUrl + "/api/exchanges/%2F/amq.topic/publish");
+```
+
+#### 2. Suporte a múltiplas instâncias (round-robin)
+
+**BaseSimulationConfig:**
+- `ORDER_SERVICE_URLS` (variável `ORDER_SERVICE_URLS`, fallback para `TARGET_BASE_URL`)
+- `WALLET_SERVICE_URLS` (variável `WALLET_SERVICE_URLS`, fallback para `WALLET_SERVICE_URL`)
+- `nextOrderServiceUrl()` e `nextWalletServiceUrl()` com `AtomicInteger` para distribuição uniforme
+
+**WalletApiHelper:**
+- Construtor aceita `String[]` de URLs
+- Método `nextUrl()` com round-robin interno
+- Métodos `waitForWallet()`, `adjustBalance()` e `getBalance()` usam round-robin automaticamente
+
+#### 3. Teste de consumer Keycloak (`KeycloakEventConsumerIntegrationTest`)
+
+Valida processamento de eventos REGISTER no order-service:
+
+| Teste | Valida |
+|-------|--------|
+| `shouldRegisterUserFromRawJsonBytes` | Bytes JSON brutos (como plugin Keycloak envia) → UserRegistry criado |
+| `shouldIgnoreNonRegisterEvents` | Evento LOGIN → ignorado |
+| `shouldBeIdempotentForDuplicateRegisterEvents` | 2 eventos idênticos → apenas 1 UserRegistry |
+
+### Critérios de Aceite RNF01
+
+| Camada | Critério | Threshold |
+|--------|----------|-----------|
+| HTTP (Integração) | Throughput por instância | ≥ 50 req/s |
+| HTTP (Integração) | Error rate | 0% |
+| HTTP (Integração) | Projeção de instâncias para 5.000 TPS | ≤ 100 |
+| Saga (Integração) | Throughput por instância | ≥ 50 events/s |
+| Saga (Integração) | Ordens PENDING residuais | 0 |
+| Saga (Integração) | Projeção de instâncias | ≤ 100 |
+| E2E HTTP | Throughput por instância | ≥ 10 orders/s |
+| E2E HTTP | Aceitação (HTTP 202) | 100% |
+| E2E HTTP | Projeção de instâncias | ≤ 250 |
+| E2E Pipeline | Trades FILLED | ≥ 50% das ordens |
+| E2E Pipeline | Projeção de instâncias | ≤ 500 |
+| Gatling | Error rate | < 1% |
+| Gatling | p99 | < 2.000ms |
+| Gatling | Throughput sustentado | ≥ 95% da taxa injetada |
+
+### Artefatos gerados pelo RNF01
+
+| Artefato | Tipo | Descrição |
+|----------|------|-----------|
+| `Rnf01ScalabilityIntegrationTest.java` | Novo | Testes de integração (HTTP + Saga throughput) |
+| `Rnf01ScalabilityE2eIT.java` | Novo | Testes E2E (pipeline completo) |
+| `Rnf01ScalabilitySimulation.java` | Novo | Simulação Gatling com projeção de escalabilidade |
+| `KeycloakEventConsumerIntegrationTest.java` | Novo | Testes de consumer REGISTER (order-service) |
+| `docker-compose.aws-a1medium.yml` | Novo | Simulação de instâncias AWS a1.medium |
+| `WalletApiHelper.java` | Atualizado | +`publishRegisterEvent()`, +round-robin multi-instância |
+| `BaseSimulationConfig.java` | Atualizado | +suporte a `WALLET_SERVICE_URLS` |
+| `OrderMatchingValidationSimulation.java` | Atualizado | +publicação de eventos REGISTER, +round-robin |
+| `docker-compose.perf.yml` | Atualizado | +CPU limits, +healthchecks tolerantes |
+| `tests/performance/README.md` | Atualizado | +seção RNF01, +variáveis de ambiente |
+| `tests/performance/pom.xml` | Atualizado | +profile `rnf01` |
 
 ---
 
