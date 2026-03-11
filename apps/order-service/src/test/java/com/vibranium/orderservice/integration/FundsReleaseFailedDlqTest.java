@@ -7,8 +7,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageBuilder;
 import org.springframework.amqp.core.MessageProperties;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.web.client.RestTemplate;
 
 import java.net.URI;
@@ -45,10 +45,7 @@ import static org.awaitility.Awaitility.await;
  * <p>Consulta a RabbitMQ Management HTTP API para verificar que a DLQ recebeu
  * a mensagem tóxica. Utiliza o mesmo padrão de {@link ProjectionDlqIntegrationTest}.</p>
  */
-@SpringBootTest(
-        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = "spring.rabbitmq.listener.simple.acknowledge-mode=manual"
-)
+@TestPropertySource(properties = "spring.rabbitmq.listener.simple.acknowledge-mode=manual")
 @DisplayName("Atividade 5 (DLQ) — Mensagens tóxicas roteadas para order.events.funds-release-failed.dlq")
 class FundsReleaseFailedDlqTest extends AbstractIntegrationTest {
 

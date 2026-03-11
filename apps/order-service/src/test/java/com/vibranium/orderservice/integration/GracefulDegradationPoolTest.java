@@ -2,6 +2,7 @@ package com.vibranium.orderservice.integration;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
@@ -19,6 +20,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *   <li>Respostas contêm campos padronizados (error, correlationId).</li>
  * </ul>
  */
+@AutoConfigureObservability
 @DisplayName("BUG-04 — Graceful Degradation (Pool Exhaustion)")
 class GracefulDegradationPoolTest extends AbstractIntegrationTest {
 
@@ -77,3 +79,5 @@ class GracefulDegradationPoolTest extends AbstractIntegrationTest {
                 .andExpect(jsonPath("$.components.db.status").value("UP"));
     }
 }
+
+

@@ -9,6 +9,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
+import org.springframework.web.ErrorResponseException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -120,6 +122,32 @@ public class GlobalExceptionHandler {
         return serviceUnavailable();
     }
 
+    /**
+     * Preserva códigos HTTP definidos por exceções do framework/controlador
+     * (ex.: 403, 404), evitando conversão indevida para 500.
+     */
+    @ExceptionHandler(ErrorResponseException.class)
+    ResponseEntity<ErrorResponse> handleFrameworkHttpException(ErrorResponseException ex) {
+        HttpStatus status = HttpStatus.resolve(ex.getStatusCode().value());
+        String publicMessage = (status == HttpStatus.NOT_FOUND)
+                ? "Resource not found"
+                : safeHttpMessage(ex, status);
+
+        if (status != null && status.is5xxServerError()) {
+            logger.error("HTTP framework exception mapped to {}: {}", ex.getStatusCode().value(), ex.getMessage(), ex);
+        } else {
+            logger.warn("HTTP framework exception mapped to {}: {}", ex.getStatusCode().value(), ex.getMessage());
+        }
+
+        return ResponseEntity.status(ex.getStatusCode()).body(ErrorResponse.of(publicMessage));
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    ResponseEntity<ErrorResponse> handleNoResourceFound(NoResourceFoundException ex) {
+        logger.warn("HTTP resource not found: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErrorResponse.of("Resource not found"));
+    }
+
     // -------------------------------------------------------------------------
     // Catch-all: previne vazamento de informação (OWASP A01)
     // -------------------------------------------------------------------------
@@ -150,4 +178,14 @@ public class GlobalExceptionHandler {
     private String safeMessage(FieldError err) {
         return err.getDefaultMessage() != null ? err.getDefaultMessage() : "Valor inválido";
     }
+
+    private String safeHttpMessage(ErrorResponseException ex, HttpStatus status) {
+        String reason = ex.getBody() != null ? ex.getBody().getDetail() : null;
+        if (reason != null && !reason.isBlank()) {
+            return reason;
+        }
+        return status != null ? status.getReasonPhrase() : "Request failed";
+    }
 }
+
+

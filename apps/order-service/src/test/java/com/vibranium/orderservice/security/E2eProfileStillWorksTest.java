@@ -43,6 +43,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
                         "org.springframework.boot.autoconfigure.data.mongo.MongoDataAutoConfiguration," +
                         "org.springframework.boot.autoconfigure.data.mongo.MongoRepositoriesAutoConfiguration",
                 "app.mongodb.enabled=false",
+                "management.endpoint.health.group.readiness.include=db,redis,rabbit",
                 // Desabilita issuer-uri (sem Keycloak em teste E2E)
                 "spring.security.oauth2.resourceserver.jwt.issuer-uri="
         }
@@ -132,3 +133,4 @@ class E2eProfileStillWorksTest {
                 .andExpect(status().isCreated());
     }
 }
+

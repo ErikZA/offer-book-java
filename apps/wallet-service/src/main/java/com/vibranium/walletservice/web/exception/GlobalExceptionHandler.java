@@ -7,6 +7,9 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.web.ErrorResponseException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -118,6 +121,32 @@ public class GlobalExceptionHandler {
         return serviceUnavailable();
     }
 
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ErrorResponse> handleAccessDenied(AccessDeniedException ex) {
+        logger.warn("Access denied: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ErrorResponse("Access denied"));
+    }
+
+    @ExceptionHandler(ErrorResponseException.class)
+    public ResponseEntity<ErrorResponse> handleFrameworkHttpException(ErrorResponseException ex) {
+        HttpStatus status = HttpStatus.resolve(ex.getStatusCode().value());
+        String message = safeHttpMessage(ex, status);
+
+        if (status != null && status.is5xxServerError()) {
+            logger.error("HTTP framework exception mapped to {}: {}", ex.getStatusCode().value(), ex.getMessage(), ex);
+        } else {
+            logger.warn("HTTP framework exception mapped to {}: {}", ex.getStatusCode().value(), ex.getMessage());
+        }
+
+        return ResponseEntity.status(ex.getStatusCode()).body(new ErrorResponse(message));
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNoResourceFound(NoResourceFoundException ex) {
+        logger.warn("HTTP resource not found: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ErrorResponse("Resource not found"));
+    }
+
     // -------------------------------------------------------------------------
     // Catch-all: previne vazamento de informação (OWASP A01)
     // -------------------------------------------------------------------------
@@ -146,4 +175,18 @@ public class GlobalExceptionHandler {
         headers.set("Retry-After", String.valueOf(DEFAULT_RETRY_AFTER_SECONDS));
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).headers(headers).body(body);
     }
+
+    private String safeHttpMessage(ErrorResponseException ex, HttpStatus status) {
+        if (status == HttpStatus.NOT_FOUND) {
+            return "Resource not found";
+        }
+        String reason = ex.getBody() != null ? ex.getBody().getDetail() : null;
+        if (reason != null && !reason.isBlank()) {
+            return reason;
+        }
+        return status != null ? status.getReasonPhrase() : "Request failed";
+    }
 }
+
+
+

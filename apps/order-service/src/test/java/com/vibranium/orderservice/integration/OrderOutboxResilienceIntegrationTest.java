@@ -95,6 +95,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
                 // falhariam na injeção de dependência.
                 "app.mongodb.enabled=false",
 
+                // Remove o contributor 'mongo' do readiness group quando Mongo está desabilitado.
+                // Evita NoSuchHealthContributorException no startup do contexto.
+                "management.endpoint.health.group.readiness.include=db,redis,rabbit",
+
                 // Reduz o intervalo do Outbox Publisher de 5000ms para 1000ms.
                 // Cada ciclo do scheduler demora ≤ 1s para falhar (connection-timeout abaixo).
                 // 3 ciclos confirmados = ~3-4s → Awaitility.during(4s) cobre com folga.
@@ -653,3 +657,4 @@ class OrderOutboxResilienceIntegrationTest {
                 """.formatted(wId, type, price, amount);
     }
 }
+
