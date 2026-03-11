@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vibranium.contracts.commands.wallet.SettleFundsCommand;
 import com.vibranium.contracts.enums.AssetType;
+import com.vibranium.walletservice.application.service.EventStoreService;
 import com.vibranium.walletservice.application.service.WalletService;
 import com.vibranium.walletservice.domain.model.Wallet;
 import com.vibranium.walletservice.domain.repository.IdempotencyKeyRepository;
@@ -67,6 +68,9 @@ class WalletServiceLockOrderTest {
     private IdempotencyKeyRepository idempotencyKeyRepository;
 
     @Mock
+    private EventStoreService eventStoreService;
+
+    @Mock
     private ObjectMapper objectMapper;
 
     private final MeterRegistry meterRegistry = new SimpleMeterRegistry();
@@ -111,7 +115,7 @@ class WalletServiceLockOrderTest {
         lenient().when(objectMapper.writeValueAsString(any())).thenReturn("{}");
 
         service = new WalletService(
-                walletRepository, outboxMessageRepository, idempotencyKeyRepository, objectMapper, meterRegistry
+                walletRepository, outboxMessageRepository, idempotencyKeyRepository, eventStoreService, objectMapper, meterRegistry
         );
     }
 

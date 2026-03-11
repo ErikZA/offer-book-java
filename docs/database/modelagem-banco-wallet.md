@@ -9,6 +9,7 @@ O desafio nos pede para controlar o "saldo em reais, a quantidade de Vibranium (
 ```mermaid
 erDiagram
     TB_WALLET ||--o{ TB_WALLET_LEDGER : "possui extrato"
+    TB_WALLET ||--o{ TB_EVENT_STORE : "gera eventos"
     TB_WALLET {
         uuid id PK
         uuid user_id UK "Vem do Keycloak (Relacionamento 1:1)"
@@ -42,6 +43,18 @@ erDiagram
     IDEMPOTENCY_KEY {
         string message_id PK "ID da Mensagem do RabbitMQ"
         timestamp processed_at
+    }
+
+    TB_EVENT_STORE {
+        bigserial sequence_id PK "Sequência monotônica global"
+        uuid event_id UK "UUID único do evento (DomainEvent.eventId)"
+        varchar aggregate_id "ID do agregado (walletId)"
+        varchar aggregate_type "Tipo do agregado (Wallet)"
+        varchar event_type "Ex: FundsReservedEvent"
+        jsonb payload "Corpo completo do evento"
+        timestamptz occurred_on "Quando o fato ocorreu"
+        uuid correlation_id "Correlação da Saga"
+        integer schema_version "Versão do schema"
     }
 
     WALLET_OUTBOX_OFFSET {
@@ -96,6 +109,73 @@ Tabela criada nas migrations V5 e V6 para persistir a posição de leitura (LSN 
 
 * **Colunas principais:** `id` (PK do backing store), `offset_key` (chave de partição), `offset_val` (LSN persistido).
 * **Colunas de auditoria:** `record_insert_ts` (timestamp) e `record_insert_seq` (sequência SERIAL) para diagnóstico operacional.
+
+### 6. `tb_event_store` (O Registro Imutável — Introduzido em V8)
+
+Tabela **append-only** que persiste todos os eventos de domínio do wallet-service para auditoria, compliance e replay temporal. Complementa a `outbox_message` (que garante delivery ao RabbitMQ) com um registro **permanente e inviolável**.
+
+> **Referência arquitetural:** Mesma estratégia do order-service (AT-14) — consistência entre microserviços. Ver [ddd-cqrs-event-source.md, seção 2.2](../architecture/ddd-cqrs-event-source.md#22-event-store-postgresql--auditoria-e-compliance-at-14).
+
+**Schema:**
+```sql
+CREATE TABLE tb_event_store (
+    sequence_id     BIGSERIAL    PRIMARY KEY,    -- Sequência monotônica global
+    event_id        UUID         NOT NULL UNIQUE, -- Deduplicação (DomainEvent.eventId)
+    aggregate_id    VARCHAR(255) NOT NULL,        -- Ex: walletId (UUID como string)
+    aggregate_type  VARCHAR(100) NOT NULL,        -- "Wallet"
+    event_type      VARCHAR(150) NOT NULL,        -- Ex: "FundsReservedEvent"
+    payload         JSONB        NOT NULL,        -- Corpo completo serializado
+    occurred_on     TIMESTAMPTZ  NOT NULL,        -- Timestamp UTC do fato
+    correlation_id  UUID         NOT NULL,        -- Correlação da Saga
+    schema_version  INTEGER      NOT NULL DEFAULT 1  -- Evolução backward-compatible
+);
+```
+
+**Índices:**
+| Índice | Colunas | Propósito |
+|--------|---------|-----------|
+| `idx_event_store_aggregate_replay` | `(aggregate_id, sequence_id)` | Replay eficiente por agregado |
+| `idx_event_store_event_type` | `(event_type)` | Consulta por tipo de evento |
+| `idx_event_store_correlation` | `(correlation_id)` | Rastreabilidade de Saga |
+
+**Proteção de Imutabilidade (Triggers):**
+```sql
+-- Rejeita UPDATE
+CREATE TRIGGER trg_event_store_deny_update
+    BEFORE UPDATE ON tb_event_store
+    FOR EACH ROW EXECUTE FUNCTION fn_event_store_deny_update();
+
+-- Rejeita DELETE
+CREATE TRIGGER trg_event_store_deny_delete
+    BEFORE DELETE ON tb_event_store
+    FOR EACH ROW EXECUTE FUNCTION fn_event_store_deny_delete();
+```
+
+Ambas as funções lançam `RAISE EXCEPTION 'Event Store is append-only: ... not allowed'`, impedindo qualquer alteração no nível do banco de dados, independente da camada de aplicação.
+
+**Diferença entre Outbox e Event Store:**
+
+| Aspecto | `outbox_message` | `tb_event_store` |
+|---------|-------------------|------------------|
+| **Propósito** | Garantir delivery ao RabbitMQ | Registro permanente para auditoria |
+| **Ciclo de vida** | Transiente (DELETE após publicação) | Permanente (append-only) |
+| **Mutabilidade** | UPDATE `processed=true` + DELETE periódico | **NUNCA** (triggers bloqueiam) |
+| **Consulta típica** | Polling interno (mensagens pendentes) | Replay temporal por aggregateId |
+| **Compliance** | NÃO — registros são apagados | SIM — imutável, pronto para auditoria |
+
+**Mapeamento de Operações Wallet → Eventos:**
+
+| Operação do WalletService | Evento Gravado |
+|---------------------------|----------------|
+| `createWallet()` | `WalletCreatedEvent` |
+| `reserveFunds()` — sucesso | `FundsReservedEvent` |
+| `reserveFunds()` — falha | `FundsReservationFailedEvent` |
+| `releaseFunds()` — sucesso | `FundsReleasedEvent` |
+| `releaseFunds()` — falha | `FundsReleaseFailedEvent` |
+| `settleFunds()` — sucesso | `FundsSettledEvent` |
+| `settleFunds()` — falha | `FundsSettlementFailedEvent` |
+
+> **Atomicidade:** Os três registros (saldo + outbox + event store) são persistidos na **mesma transação ACID** do PostgreSQL. Se qualquer um falhar, tudo é revertido.
 
 
 

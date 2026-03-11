@@ -9,6 +9,7 @@ Microsserviço responsável pela gestão de carteiras, reservas, liquidação e 
 - Publicar eventos financeiros para a Saga de ordens.
 - Aplicar regras de autenticação/autorização (`JWT` + ownership).
 - Garantir idempotência e tratamento de falhas (DLQ, retry, cleanup).
+- Auditar todos os eventos de domínio em Event Store append-only (compliance e replay temporal).
 
 ## Endpoints principais
 
@@ -17,6 +18,7 @@ Microsserviço responsável pela gestão de carteiras, reservas, liquidação e 
 - `PUT /api/wallets/{id}/deposit`
 - `PUT /api/wallets/{id}/withdraw`
 - `GET /api/wallets/{id}/transactions`
+- `GET /admin/events?aggregateId={id}&until={datetime}` — Auditoria Event Store (`ROLE_ADMIN`)
 
 ## Estrutura (alto nível)
 
@@ -61,10 +63,12 @@ docker compose -f tests/e2e/docker-compose.e2e.yml up --abort-on-container-exit
 ## Navegação técnica
 
 - Arquitetura do MVP: [../../docs/architecture/order-book-mvp.md](../../docs/architecture/order-book-mvp.md)
+- Event Store e auditoria: [../../docs/architecture/ddd-cqrs-event-source.md](../../docs/architecture/ddd-cqrs-event-source.md#22-event-store-postgresql--auditoria-e-compliance-at-14)
 - Qualidade e observabilidade: [../../docs/architecture/quality-and-tracing.md](../../docs/architecture/quality-and-tracing.md)
 - Modelagem de carteira: [../../docs/database/modelagem-banco-wallet.md](../../docs/database/modelagem-banco-wallet.md)
 - Secrets e segurança: [../../docs/SECRETS_MANAGEMENT.md](../../docs/SECRETS_MANAGEMENT.md)
 - Guia de testes: [../../docs/testing/COMPREHENSIVE_TESTING.md](../../docs/testing/COMPREHENSIVE_TESTING.md)
+- Seções detalhadas de testes (Event Store): [../../docs/testing/COMPREHENSIVE_TESTING_SECTIONS.md](../../docs/testing/COMPREHENSIVE_TESTING_SECTIONS.md)
 
 ## Histórico preservado
 
@@ -75,4 +79,4 @@ A versão anterior completa deste README foi preservada em:
 ## Estado do Documento
 
 - Status: `canônico`
-- Última consolidação: 2026-03-09
+- Última consolidação: 2026-03-11

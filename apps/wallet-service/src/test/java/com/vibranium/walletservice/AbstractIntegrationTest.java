@@ -9,6 +9,7 @@ import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -125,6 +126,9 @@ public abstract class AbstractIntegrationTest {
     @Autowired
     protected IdempotencyKeyRepository idempotencyKeyRepository;
 
+    @Autowired
+    protected JdbcTemplate jdbcTemplate;
+
     /**
      * Limpa todo o estado mutável entre os testes para garantir isolamento total.
      *
@@ -162,6 +166,9 @@ public abstract class AbstractIntegrationTest {
         }
 
         // --- DB cleanup: garante base vazia para cada teste ---
+        // TRUNCATE ignora triggers de row-level (trg_event_store_deny_delete),
+        // permitindo limpar o Event Store append-only entre testes.
+        jdbcTemplate.execute("TRUNCATE TABLE tb_event_store RESTART IDENTITY CASCADE");
         idempotencyKeyRepository.deleteAll();
         outboxMessageRepository.deleteAll();
         walletRepository.deleteAll();

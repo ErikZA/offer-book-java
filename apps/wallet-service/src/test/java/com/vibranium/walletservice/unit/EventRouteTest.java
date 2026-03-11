@@ -83,8 +83,8 @@ class EventRouteTest {
     // -------------------------------------------------------------------------
 
     @Test
-    @DisplayName("EventRoute deve conter exatamente 6 rotas")
-    void shouldHaveExactlyFourRoutes() {
-        assertThat(EventRoute.values()).hasSize(6);
+    @DisplayName("EventRoute deve conter exatamente 7 rotas")
+    void shouldHaveExactlySevenRoutes() {
+        assertThat(EventRoute.values()).hasSize(7);
     }
 }

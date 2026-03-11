@@ -31,7 +31,7 @@ Este arquivo é a **Etapa 1** da consolidação documental. Ele garante rastreab
 |---|---|---:|---|---|---|
 | `docs/architecture/adr-001-debezium-single-instance.md` | docs | 308 | arquitetura | manter/melhorar | `docs/architecture/README.md + docs/architecture/*` |
 | `docs/architecture/consumer-prefetch-tuning.md` | docs | 131 | arquitetura | manter/melhorar | `docs/architecture/README.md + docs/architecture/*` |
-| `docs/architecture/ddd-cqrs-event-source.md` | docs | 348 | arquitetura | manter/melhorar | `docs/architecture/README.md + docs/architecture/*` |
+| `docs/architecture/ddd-cqrs-event-source.md` | docs | 406 | arquitetura | manter/melhorar | `docs/architecture/README.md + docs/architecture/*` |
 | `docs/architecture/motor-order-book.md` | docs | 261 | arquitetura | manter/melhorar | `docs/architecture/README.md + docs/architecture/*` |
 | `docs/architecture/order-book-mvp-flow.md` | docs | 120 | arquitetura | manter/melhorar | `docs/architecture/README.md + docs/architecture/*` |
 | `docs/architecture/order-book-mvp-sequence.md` | docs | 137 | arquitetura | manter/melhorar | `docs/architecture/README.md + docs/architecture/*` |
@@ -43,7 +43,7 @@ Este arquivo é a **Etapa 1** da consolidação documental. Ele garante rastreab
 | `libs/common-contracts/README.md` | readme | 223 | biblioteca | manter/melhorar | `libs/common-contracts/README.md` |
 | `docs/database/data-base-storage.md` | docs | 91 | dados | manter/melhorar | `docs/database/README.md + docs/database/*` |
 | `docs/database/modelagem-banco-order.md` | docs | 184 | dados | manter/melhorar | `docs/database/README.md + docs/database/*` |
-| `docs/database/modelagem-banco-wallet.md` | docs | 121 | dados | manter/melhorar | `docs/database/README.md + docs/database/*` |
+| `docs/database/modelagem-banco-wallet.md` | docs | 209 | dados | manter/melhorar | `docs/database/README.md + docs/database/*` |
 | `docs/database/modelagem-kong-keycloak.md` | docs | 95 | dados | manter/melhorar | `docs/database/README.md + docs/database/*` |
 | `docs/database/modelagem-mongodb.md` | docs | 32 | dados | consolidado (ponte) | `docs/database/README.md + docs/database/*` |
 | `docs/database/modelagem-motor-redis.md` | docs | 102 | dados | manter/melhorar | `docs/database/README.md + docs/database/*` |
@@ -78,8 +78,8 @@ Este arquivo é a **Etapa 1** da consolidação documental. Ele garante rastreab
 | `infra/secrets/README.md` | readme | 18 | segurança-secrets | manter/melhorar | `docs/SECRETS_MANAGEMENT.md + infra/secrets/README.md` |
 | `docs/SETUP_COMPLETE.md` | docs | 25 | setup | consolidado (ponte) | `README.md + docs/testing/COMPREHENSIVE_TESTING.md + docs/archive/*` |
 | `docs/SETUP_MAVEN.md` | docs | 20 | setup | consolidado (histórico) | `README.md + docs/testing/COMPREHENSIVE_TESTING.md + docs/archive/*` |
-| `docs/testing/COMPREHENSIVE_TESTING_SECTIONS.md` | docs | 82 | testes | consolidado (índice legado) | `docs/testing/COMPREHENSIVE_TESTING.md + docs/archive/COMPREHENSIVE_TESTING_legacy_2026-03-09.md` |
-| `docs/testing/COMPREHENSIVE_TESTING.md` | docs | 73 | testes | consolidado (canônico) | `docs/testing/COMPREHENSIVE_TESTING.md + docs/testing/README.md + docs/testing/COMPREHENSIVE_TESTING_SECTIONS.md` |
+| `docs/testing/COMPREHENSIVE_TESTING_SECTIONS.md` | docs | 112 | testes | consolidado (índice legado) | `docs/testing/COMPREHENSIVE_TESTING.md + docs/archive/COMPREHENSIVE_TESTING_legacy_2026-03-09.md` |
+| `docs/testing/COMPREHENSIVE_TESTING.md` | docs | 78 | testes | consolidado (canônico) | `docs/testing/COMPREHENSIVE_TESTING.md + docs/testing/README.md + docs/testing/COMPREHENSIVE_TESTING_SECTIONS.md` |
 | `docs/testing/README.md` | docs | 24 | testes | consolidado (índice) | `docs/testing/COMPREHENSIVE_TESTING.md + docs/testing/README.md + docs/testing/COMPREHENSIVE_TESTING_SECTIONS.md` |
 | `tests/README.md` | readme | 122 | testes | manter/melhorar | `docs/testing/COMPREHENSIVE_TESTING.md + docs/testing/README.md + docs/testing/COMPREHENSIVE_TESTING_SECTIONS.md` |
 

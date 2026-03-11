@@ -53,6 +53,33 @@ Mapa de seções da versão completa preservada em:
 | 4932 | Deduplicação de Ordens no Redis via Lua — HEXISTS Guard (AT-16) |
 | 5025 | Atomicidade Redis+PostgreSQL com Lua Compensatório — undo_match.lua (AT-17) |
 
+## Seções Pós-Consolidação: Event Store no wallet-service (AT-14 expansão)
+
+As seções abaixo documentam a expansão do Event Store (originalmente AT-14 no order-service) para o wallet-service, implementada em 2026-03-11.
+
+| Classe de Teste | Testes | Descrição |
+|---|---:|---|
+| `EventStoreAppendOnlyTest` | 5 | Proteção de imutabilidade: triggers rejeitam UPDATE/DELETE, constraint UNIQUE em eventId, persistência de campos |
+| `EventStoreReplayTest` | 6 | Replay temporal: filtragem por `until`, isolamento entre aggregates, sequenceId monotônico |
+| `EventStoreAuditEndpointTest` | 5 | Endpoint admin `GET /admin/events`: RBAC (ROLE_ADMIN), 401/403, filtro temporal, aggregate vazio |
+| `EventStoreWalletIntegrationTest` | 6 | Integração WalletService → Event Store: createWallet, reserveFunds (sucesso/falha), releaseFunds, settleFunds |
+
+### Cobertura: Operações Wallet → Event Store
+
+| Operação do WalletService | Evento Gravado | Testado em |
+|---|---|---|
+| `createWallet()` | `WalletCreatedEvent` | `EventStoreWalletIntegrationTest` |
+| `reserveFunds()` sucesso | `FundsReservedEvent` | `EventStoreWalletIntegrationTest` |
+| `reserveFunds()` falha | `FundsReservationFailedEvent` | `EventStoreWalletIntegrationTest` |
+| `releaseFunds()` sucesso | `FundsReleasedEvent` | `EventStoreWalletIntegrationTest` |
+| `releaseFunds()` falha | `FundsReleaseFailedEvent` | `EventStoreWalletIntegrationTest` |
+| `settleFunds()` sucesso | `FundsSettledEvent` | `EventStoreWalletIntegrationTest` |
+| `settleFunds()` falha | `FundsSettlementFailedEvent` | `EventStoreWalletIntegrationTest` |
+
+### Padrão de Cleanup em Testes
+
+A tabela `tb_event_store` possui triggers que rejeitam `DELETE`. Para limpeza entre testes, usa-se `TRUNCATE TABLE tb_event_store RESTART IDENTITY CASCADE` no `AbstractIntegrationTest.resetState()`, pois `TRUNCATE` bypassa triggers row-level no PostgreSQL.
+
 ## Seções com AT*
 
 | Linha | AT |
@@ -67,6 +94,7 @@ Mapa de seções da versão completa preservada em:
 | 2955 | MongoDB Replica Set rs0 no Staging (AT-1.3.2) |
 | 3040 | @JsonIgnoreProperties em Todos os Records — Forward Compatibility (AT-5.2.1) |
 | 3310 | Event Store Imutável — Auditoria e Replay de Eventos (AT-14) |
+| — | Event Store no wallet-service — Expansão AT-14 para operações financeiras (2026-03-11) |
 | 3654 | Segurança de Container — Non-Root User + Shell Form ENTRYPOINT (AT-1.5.1) |
 | 3716 | Saga TCC — tryMatch() fora de @Transactional + Compensação Redis (AT-2.1.1) |
 | 3829 | DLX nas Filas de Projeção — Mensagens Tóxicas para DLQ (AT-2.2.1) |

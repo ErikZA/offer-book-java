@@ -8,6 +8,7 @@ import com.vibranium.contracts.commands.wallet.SettleFundsCommand;
 import com.vibranium.contracts.enums.FailureReason;
 import com.vibranium.contracts.events.wallet.*;
 import com.vibranium.walletservice.application.dto.WalletResponse;
+import com.vibranium.contracts.events.DomainEvent;
 import com.vibranium.walletservice.domain.model.IdempotencyKey;
 import com.vibranium.walletservice.domain.model.OutboxMessage;
 import com.vibranium.walletservice.domain.model.Wallet;
@@ -67,17 +68,20 @@ public class WalletService {
     private final WalletRepository walletRepository;
     private final OutboxMessageRepository outboxMessageRepository;
     private final IdempotencyKeyRepository idempotencyKeyRepository;
+    private final EventStoreService eventStoreService;
     private final ObjectMapper objectMapper;
     private final MeterRegistry meterRegistry;
 
     public WalletService(WalletRepository walletRepository,
                          OutboxMessageRepository outboxMessageRepository,
                          IdempotencyKeyRepository idempotencyKeyRepository,
+                         EventStoreService eventStoreService,
                          ObjectMapper objectMapper,
                          MeterRegistry meterRegistry) {
         this.walletRepository = walletRepository;
         this.outboxMessageRepository = outboxMessageRepository;
         this.idempotencyKeyRepository = idempotencyKeyRepository;
+        this.eventStoreService = eventStoreService;
         this.objectMapper = objectMapper;
         this.meterRegistry = meterRegistry;
     }
@@ -105,11 +109,13 @@ public class WalletService {
         wallet = walletRepository.save(wallet);
 
         WalletCreatedEvent event = WalletCreatedEvent.of(correlationId, wallet.getId(), userId);
+        String eventJson = toJson(event);
         outboxMessageRepository.save(OutboxMessage.create(
                 "WalletCreatedEvent",
                 wallet.getId().toString(),
-                toJson(event)
+                eventJson
         ));
+        appendToEventStore(event, "Wallet", eventJson);
 
         // Grava chave de idempotência na mesma transação — à prova de retries
         idempotencyKeyRepository.save(new IdempotencyKey(messageId));
@@ -155,11 +161,13 @@ public class WalletService {
             FundsReservedEvent event = FundsReservedEvent.of(
                     cmd.correlationId(), cmd.orderId(), cmd.walletId(), cmd.asset(), cmd.amount()
             );
+            String eventJson = toJson(event);
             outboxMessageRepository.save(OutboxMessage.create(
                     "FundsReservedEvent",
                     wallet.getId().toString(),
-                    toJson(event)
+                    eventJson
             ));
+            appendToEventStore(event, "Wallet", eventJson);
             logger.info("Funds reserved: walletId={}, asset={}, amount={}",
                     cmd.walletId(), cmd.asset(), cmd.amount());
 
@@ -179,11 +187,13 @@ public class WalletService {
                     FailureReason.INSUFFICIENT_FUNDS,
                     e.getMessage()
             );
+            String failedJson = toJson(failedEvent);
             outboxMessageRepository.save(OutboxMessage.create(
                     "FundsReservationFailedEvent",
                     wallet.getId().toString(),
-                    toJson(failedEvent)
+                    failedJson
             ));
+            appendToEventStore(failedEvent, "Wallet", failedJson);
         }
     }
 
@@ -232,11 +242,13 @@ public class WalletService {
                     cmd.correlationId(), cmd.orderId(),
                     cmd.walletId(), cmd.asset(), cmd.amount()
             );
+            String eventJson = toJson(event);
             outboxMessageRepository.save(OutboxMessage.create(
                     "FundsReleasedEvent",
                     wallet.getId().toString(),
-                    toJson(event)
+                    eventJson
             ));
+            appendToEventStore(event, "Wallet", eventJson);
             logger.info("Funds released: walletId={}, asset={}, amount={}",
                     cmd.walletId(), cmd.asset(), cmd.amount());
 
@@ -258,15 +270,18 @@ public class WalletService {
                     ? FailureReason.WALLET_NOT_FOUND
                     : FailureReason.RELEASE_DB_ERROR;
 
+            FundsReleaseFailedEvent failedEvent = FundsReleaseFailedEvent.of(
+                    cmd.correlationId(), cmd.orderId(),
+                    cmd.walletId().toString(),
+                    reason, e.getMessage()
+            );
+            String failedJson = toJson(failedEvent);
             outboxMessageRepository.save(OutboxMessage.create(
                     "FundsReleaseFailedEvent",
                     cmd.walletId().toString(),
-                    toJson(FundsReleaseFailedEvent.of(
-                            cmd.correlationId(), cmd.orderId(),
-                            cmd.walletId().toString(),
-                            reason, e.getMessage()
-                    ))
+                    failedJson
             ));
+            appendToEventStore(failedEvent, "Wallet", failedJson);
         }
     }
 
@@ -355,11 +370,13 @@ public class WalletService {
                     cmd.buyerWalletId(), cmd.sellerWalletId(),
                     cmd.matchPrice(), cmd.matchAmount()
             );
+            String eventJson = toJson(event);
             outboxMessageRepository.save(OutboxMessage.create(
                     "FundsSettledEvent",
                     cmd.matchId().toString(),
-                    toJson(event)
+                    eventJson
             ));
+            appendToEventStore(event, "Wallet", eventJson);
             logger.info("Funds settled: matchId={}, totalBrl={}, vibAmount={}",
                     cmd.matchId(), totalBrl, cmd.matchAmount());
 
@@ -376,13 +393,16 @@ public class WalletService {
                     ? FailureReason.WALLET_NOT_FOUND
                     : FailureReason.INSUFFICIENT_FUNDS;
 
+            FundsSettlementFailedEvent failedEvent = FundsSettlementFailedEvent.of(
+                    cmd.correlationId(), cmd.matchId(), reason, e.getMessage()
+            );
+            String failedJson = toJson(failedEvent);
             outboxMessageRepository.save(OutboxMessage.create(
                     "FundsSettlementFailedEvent",
                     cmd.matchId().toString(),
-                    toJson(FundsSettlementFailedEvent.of(
-                            cmd.correlationId(), cmd.matchId(), reason, e.getMessage()
-                    ))
+                    failedJson
             ));
+            appendToEventStore(failedEvent, "Wallet", failedJson);
         }
     }
 
@@ -485,5 +505,25 @@ public class WalletService {
         } catch (JsonProcessingException e) {
             throw new RuntimeException("Falha ao serializar evento para JSON: " + obj.getClass().getSimpleName(), e);
         }
+    }
+
+    /**
+     * Grava um evento de domínio no Event Store (append-only) na mesma transação.
+     *
+     * @param event         Evento de domínio implementando {@link DomainEvent}.
+     * @param aggregateType Tipo do agregado (ex: "Wallet").
+     * @param payload       JSON já serializado do evento.
+     */
+    private void appendToEventStore(DomainEvent event, String aggregateType, String payload) {
+        eventStoreService.append(
+                event.eventId(),
+                event.aggregateId(),
+                aggregateType,
+                event.getClass().getSimpleName(),
+                payload,
+                event.occurredOn(),
+                event.correlationId(),
+                event.schemaVersion()
+        );
     }
 }

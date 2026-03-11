@@ -55,11 +55,13 @@ docker compose -f tests/e2e/docker-compose.e2e.yml down -v
 - Performance: [../../tests/performance/README.md](../../tests/performance/README.md)
 - Infra para execução: [../../infra/README.md](../../infra/README.md)
 - Seções detalhadas da versão legada: [COMPREHENSIVE_TESTING_SECTIONS.md](./COMPREHENSIVE_TESTING_SECTIONS.md)
+- Event Store (wallet-service): [COMPREHENSIVE_TESTING_SECTIONS.md — AT-14 expansão](./COMPREHENSIVE_TESTING_SECTIONS.md#seções-pós-consolidação-event-store-no-wallet-service-at-14-expansão)
 
 ## Cobertura, debug e troubleshooting
 
 - Cobertura (JaCoCo), debug remoto e troubleshooting permanecem documentados na versão legada completa.
 - Use o índice de seções para localizar rapidamente o tópico necessário.
+- **Event Store wallet-service (AT-14 expansão):** 4 classes de teste com 22 testes cobrindo append-only, replay temporal, audit endpoint RBAC e integração com todas as 7 operações do `WalletService`.
 
 ## Versão legada preservada (sem perda)
 
@@ -70,4 +72,4 @@ Todo o conteúdo detalhado anterior foi preservado em:
 ## Estado do Documento
 
 - Status: `canônico`
-- Última consolidação: 2026-03-09
+- Última consolidação: 2026-03-11

@@ -221,6 +221,73 @@ List<EventStoreEntry> events = eventStoreRepository
 
 ---
 
+### 2.2.1 Event Store no wallet-service — Operações Financeiras (AT-14 expansão)
+
+O padrão Event Store (originalmente introduzido para order-service) foi expandido para o wallet-service em 2026-03-11, auditando **todas as operações financeiras** com rastreabilidade completa para compliance.
+
+#### Por que o wallet-service precisa de Event Store
+
+O wallet-service manipula **dinheiro real** — reservas, liberações e liquidações de BRL e Vibranium. Em caso de disputa regulatória, é necessário provar:
+- Que uma reserva de fundos ocorreu em determinado instante
+- Que uma liquidação foi aplicada corretamente
+- Que nenhum evento foi alterado retroativamente
+
+O `outbox_message` não serve para isso porque seus registros são **apagados** após publicação no RabbitMQ.
+
+#### Eventos de Domínio Auditados
+
+Todos os 7 caminhos de evento do `WalletService` gravam no Event Store:
+
+| Operação | Evento | Cenário |
+|----------|--------|---------|
+| `createWallet()` | `WalletCreatedEvent` | Criação de carteira via Keycloak |
+| `reserveFunds()` | `FundsReservedEvent` | Bloqueio de saldo (pré-match) |
+| `reserveFunds()` | `FundsReservationFailedEvent` | Saldo insuficiente |
+| `releaseFunds()` | `FundsReleasedEvent` | Liberação de saldo (ordem cancelada) |
+| `releaseFunds()` | `FundsReleaseFailedEvent` | Falha na liberação |
+| `settleFunds()` | `FundsSettledEvent` | Liquidação buyer↔seller |
+| `settleFunds()` | `FundsSettlementFailedEvent` | Falha na liquidação |
+
+#### Atomicidade de Três Escritas
+
+Os três registros são persistidos na **mesma transação ACID** do PostgreSQL:
+
+```
+@Transactional
+WalletService.reserveFunds(command, messageId)
+  │
+  ├── wallet.reserveFunds(asset, amount)     ← Invariante de domínio
+  │
+  ├── walletRepository.save(wallet)          ← Estado (tb_wallet)
+  │
+  ├── outboxRepository.save(outboxMsg)       ← Delivery (outbox_message)
+  │
+  └── eventStoreService.append(entry)        ← Auditoria (tb_event_store)
+```
+
+Se qualquer uma falhar, **todas são revertidas**. O Event Store nunca fica inconsistente com o estado da carteira.
+
+#### Endpoint de Auditoria Admin
+
+```
+GET /admin/events?aggregateId={walletId}&until={2026-03-11T14:00:00Z}
+Authorization: Bearer <jwt-com-ROLE_ADMIN>
+```
+
+Retorna o histórico financeiro imutável da carteira, com filtro temporal opcional para replay até um ponto específico no tempo.
+
+#### Consistência Arquitetural com order-service
+
+| Aspecto | order-service | wallet-service |
+|---------|---------------|----------------|
+| Tabela | `tb_event_store` | `tb_event_store` |
+| Triggers | `fn_deny_event_store_mutation` | `fn_event_store_deny_update/delete` |
+| Endpoint | `GET /admin/events` | `GET /admin/events` |
+| Migration | `V5__create_event_store.sql` | `V8__create_event_store.sql` |
+| Cobertura | Eventos de ordem (Order aggregate) | Eventos financeiros (Wallet aggregate) |
+
+---
+
 ## 3. CQRS (Command Query Responsibility Segregation) 🔀
 
 ### O que é e para que serve?
@@ -330,7 +397,7 @@ Ao juntar esses três padrões, criamos um sistema **robusto e escalável** para
 * O **Event Sourcing** (via RabbitMQ + MongoDB `history[]`) garante que nenhum evento se perde e temos o extrato histórico auditável de tudo que aconteceu com cada ordem.
 * O **CQRS** garante que os milhares de robôs pesquisando histórico de ordens (Query Side) não concorrem com o Motor de Match Redis nem com as escritas ACID no PostgreSQL (Command Side).
 
-**Status de implementação (28/02/2026):**
+**Status de implementação (11/03/2026):**
 
 | Padrão         | Status | Detalhe                                                              |
 |----------------|--------|----------------------------------------------------------------------|
@@ -338,6 +405,8 @@ Ao juntar esses três padrões, criamos um sistema **robusto e escalável** para
 | DDD — State Machine | ✅ | `Order` impõe máquina de estados internamente (US-008); `transitionTo` package-private; guards em `markAsOpen`, `applyMatch`, `cancel` |
 | DDD Wallet Invariants | ✅ | US-005: setters removidos; `applyBuySettlement`, `applySellSettlement`, `@Version` |
 | Event Sourcing | ✅     | `OrderDocument.history[]` no MongoDB; idempotência por `eventId`     |
+| Event Store (order-service) | ✅ | AT-14: `tb_event_store` append-only com triggers; replay temporal; endpoint admin |
+| Event Store (wallet-service) | ✅ | AT-14 expansão: `tb_event_store` append-only; 7 eventos financeiros; `GET /admin/events` |
 | CQRS Command   | ✅     | `POST /api/v1/orders` → PostgreSQL + Redis + RabbitMQ                |
 | CQRS Query     | ✅     | `GET /api/v1/orders` → MongoDB (eventual consistency)                |
 | Saga           | ✅     | Reserve Funds → Match Engine → FILLED/OPEN/CANCELLED                 |
