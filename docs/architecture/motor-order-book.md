@@ -87,15 +87,7 @@ O Lua já removia a contraparte do Sorted Set via `ZREM` antes do US-002, mas **
 
 ### Design decision: Lua é a fonte de verdade
 
-Existem duas abordagens possíveis para tratar o requeue:
-
-**Opção A — requeue no Java** (`requeueResidual()` após `tryMatch()`)
-```
-tryMatch() → detecta PARTIAL → Java chama ZADD
-```
-Problema: entre o `ZREM` do Lua e o `ZADD` do Java há uma **janela de concorrência**. Um segundo consumidor poderia ler o livro nesse intervalo e não encontrar a contraparte — divergência transitória de estado.
-
-**Opção B — requeue dentro do próprio Lua (adotada)**
+**Requeue dentro do próprio Lua (adotada)**
 ```lua
 -- Dentro de EVAL (atômico no Redis)
 redis.call('ZREM', KEYS[1], askValue)   -- remove original
@@ -259,3 +251,4 @@ A guarda Redis é necessária porque a Fase 1 pode completar com sucesso (novo `
 ### Atomicidade
 
 O `HEXISTS` executa dentro do mesmo `EVAL` que o `ZADD`/`HSET`. Não há janela entre a verificação e a inserção — impossível double-booking por race condition.
+
