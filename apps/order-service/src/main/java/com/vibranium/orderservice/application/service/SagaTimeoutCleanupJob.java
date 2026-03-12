@@ -33,18 +33,18 @@ import java.util.List;
  * Job periódico de limpeza de ordens expiradas pelo timeout da Saga.
  *
  * <h3>Problema (AT-09.1 / AT-1.1.4)</h3>
- * <p>Toda Saga deve ter ciclo de vida finito. Uma ordem que permanece em {@code PENDING},
- * {@code OPEN} ou {@code PARTIAL} indefinidamente é uma "ordem zumbi": o usuário não
+ * <p>Toda Saga deve ter ciclo de vida finito. Uma ordem que permanece em {@code PENDING}
+ * indefinidamente é uma "ordem zumbi": o usuário não
  * recebe feedback e os recursos ficam em estado inconsistente.</p>
  *
  * <h3>Solução</h3>
  * <p>A cada {@code 60 segundos} (configurável via {@code app.saga.cleanup-delay-ms}),
  * este job busca ordens com:</p>
  * <ul>
- *   <li>{@code status IN (PENDING, OPEN, PARTIAL)}</li>
+ *   <li>{@code status IN (PENDING)}</li>
  *   <li>{@code created_at < now() - app.saga.pending-timeout-minutes}</li>
  * </ul>
- * <p>Para <strong>todas</strong> as ordens expiradas (PENDING, OPEN e PARTIAL), emite
+ * <p>Para <strong>todas</strong> as ordens expiradas (PENDING), emite
  * {@link OrderCancelledEvent} + {@link ReleaseFundsCommand}. A emissão incondicional
  * de {@code ReleaseFundsCommand} cobre a janela de corrida entre a reserva efetiva
  * no wallet-service e a atualização de status da ordem (PENDING → OPEN): uma ordem
@@ -61,13 +61,7 @@ import java.util.List;
  * <p>O {@link Clock} é injetado como bean (definido em {@link com.vibranium.orderservice.config.TimeConfig})
  * em vez de usar {@code Instant.now()} diretamente. Em produção usa {@code Clock.systemUTC()};
  * em testes, {@code Clock.fixed(...)} garante determinismo sem {@code Thread.sleep}.</p>
- *
- * <h3>Compensação financeira (AT-1.1.4)</h3>
- * <p>Para ordens {@code OPEN} (BUY): libera {@code price × remainingAmount} BRL.<br>
- * Para ordens {@code OPEN} (SELL): libera {@code remainingAmount} VIBRANIUM.<br>
- * Para ordens {@code PARTIAL}: usa {@code remainingAmount} — a quantidade já liquidada
- * foi removida do locked pelo wallet-service durante o settlement parcial.</p>
- */
+  */
 @Component
 public class SagaTimeoutCleanupJob {
 
@@ -146,10 +140,10 @@ public class SagaTimeoutCleanupJob {
         // Usa clock.instant() em vez de Instant.now() para permitir testes determinísticos (AT-09.2)
         Instant cutoff = clock.instant().minus(timeoutMinutes, ChronoUnit.MINUTES);
 
-        // AT-1.1.4: inclui OPEN e PARTIAL além de PENDING — ordens nesses estados
+        // AT-1.1.4: inclui PENDING — ordens nesses estados
         // também são "zumbis" se passaram muito tempo sem ser resolvidas.
         List<OrderStatus> eligibleStatuses = List.of(
-                OrderStatus.PENDING, OrderStatus.OPEN, OrderStatus.PARTIAL
+                OrderStatus.PENDING
         );
 
         List<Order> stale = orderRepository.findByStatusInAndCreatedAtBefore(eligibleStatuses, cutoff);
@@ -164,27 +158,9 @@ public class SagaTimeoutCleanupJob {
                 stale.size(), cutoff);
 
         for (Order order : stale) {
-            // 0. Captura status ANTES do cancel() para decidir remoção do Redis book (RC-1)
-            OrderStatus previousStatus = order.getStatus();
-
             // 1. Transita para CANCELLED com motivo padronizado
             order.cancel("SAGA_TIMEOUT");
             orderRepository.save(order);
-
-            // 1.1 RC-1: Remove do Redis book — ordens OPEN/PARTIAL foram inseridas na Lua script;
-            //     PENDING nunca chegaram ao book (ainda aguardavam FundsReservedEvent).
-            if (previousStatus == OrderStatus.OPEN || previousStatus == OrderStatus.PARTIAL) {
-                try {
-                    matchEngine.removeFromBook(order.getId(), order.getOrderType());
-                    logger.info("Ordem {} removida do Redis book (status anterior: {})",
-                            order.getId(), previousStatus);
-                } catch (Exception e) {
-                    // Log WARN mas não bloqueia a compensação — a ordem já está CANCELLED no DB.
-                    // Na próxima tentativa de match, o settle falhará e a compensação corrigirá.
-                    logger.warn("Falha ao remover ordem {} do Redis book: {}",
-                            order.getId(), e.getMessage());
-                }
-            }
 
             // 2. Persiste OrderCancelledEvent no outbox (relay eventual pelo OrderOutboxPublisherService)
             //    O Outbox Pattern garante que o evento não seja perdido mesmo se o broker estiver

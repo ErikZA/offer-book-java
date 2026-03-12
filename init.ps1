@@ -35,7 +35,7 @@ try {
 # Verificar se Docker daemon está rodando
 Write-Host "`n📦 Verificando Docker daemon..." -ForegroundColor Cyan
 try {
-    $dockerInfo = & docker info 2>&1 | Select-Object -First 1
+    $dockerInfo = & docker info 2>&1 | Select-Object -First 100
     if ($dockerInfo -match "Containers") {
         Write-Host "   ✅ Docker daemon está rodando" -ForegroundColor Green
     } else {
@@ -51,7 +51,7 @@ try {
 Write-Host "`n✅ Ambiente Docker validado com sucesso!" -ForegroundColor Green
 
 Write-Host "`n📖 Próximos passos:" -ForegroundColor Cyan
-Write-Host "   1. Windows:  .\build.ps1 docker-dev-up" -ForegroundColor Yellow
+Write-Host "   1. Windows:  .\scripts\build.ps1 docker-dev-up" -ForegroundColor Yellow
 Write-Host "   2. Linux:    make docker-dev-up" -ForegroundColor Yellow
 Write-Host "   3. Ou use:   docker compose -f infra/docker-compose.dev.yml up" -ForegroundColor Yellow
 

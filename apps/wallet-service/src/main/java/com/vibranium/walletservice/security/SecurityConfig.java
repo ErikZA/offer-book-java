@@ -82,7 +82,7 @@ public class SecurityConfig {
 
                         // Actuator health/info: sem autenticação
                         // (Kong health check, Kubernetes liveness/readiness, Prometheus scrape)
-                        .requestMatchers("/actuator/health", "/actuator/info").permitAll()
+                        .requestMatchers("/actuator/**").permitAll()
 
                         // OpenAPI / Swagger UI — documentação pública
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()

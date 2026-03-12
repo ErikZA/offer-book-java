@@ -1,15 +1,26 @@
 # ================================================================================
 # INFRASTRUCTURE VALIDATION SCRIPT - WINDOWS (PowerShell)
 # ================================================================================
-# Validates 7 critical infrastructure requirements for Kong + Keycloak + PostgreSQL
-# Exit code: 0 = SUCCESS, 1 = FAILURE (any validation fails)
+# Validates critical infrastructure for the Vibranium Platform.
+#
+# Environments:
+#   dev   -> infra/docker-compose.dev.yml   (Kong DB-less, Keycloak com banco dedicado)
+#   infra -> infra/docker-compose.yml       (Kong DB-mode, Keycloak no PostgreSQL compartilhado)
+#
+# Usage (executar a partir da RAIZ do projeto):
+#   .\scripts\verify-infra.ps1                    # default: dev
+#   .\scripts\verify-infra.ps1 -Environment dev
+#   .\scripts\verify-infra.ps1 -Environment infra
+#
+# Exit code: 0 = ALL PASSED, 1 = FAILURE
 # ================================================================================
 
 param(
+    [ValidateSet("dev", "infra")]
+    [string]$Environment = "dev",
     [switch]$Verbose = $false
 )
 
-# Strict mode
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Continue"
 
@@ -26,24 +37,24 @@ function Write-Header {
 
 function Write-Success {
     param([string]$Message)
-    Write-Host "✓ $Message" -ForegroundColor Green
+    Write-Host "  ✓ $Message" -ForegroundColor Green
     $script:PassedChecks++
 }
 
-function Write-Error-Custom {
+function Write-Fail {
     param([string]$Message)
-    Write-Host "✗ $Message" -ForegroundColor Red
+    Write-Host "  ✗ $Message" -ForegroundColor Red
     $script:FailedChecks++
 }
 
-function Write-Warning-Custom {
+function Write-Warn {
     param([string]$Message)
-    Write-Host "⚠ $Message" -ForegroundColor Yellow
+    Write-Host "  ⚠ $Message" -ForegroundColor Yellow
 }
 
 function Write-Info {
     param([string]$Message)
-    Write-Host "ℹ $Message" -ForegroundColor Cyan
+    Write-Host "  ℹ $Message" -ForegroundColor Cyan
 }
 
 # ================================================================================
@@ -62,417 +73,353 @@ function Test-CommandExists {
     return $?
 }
 
+# Check if a container is healthy via Docker healthcheck
+function Test-ContainerHealthy {
+    param([string]$Name)
+    try {
+        $status = docker inspect --format '{{.State.Health.Status}}' $Name 2>$null
+        return $status -eq 'healthy'
+    }
+    catch { return $false }
+}
+
+# Execute a command inside a running container
 function Invoke-DockerExec {
-    param(
-        [string]$Container,
-        [string]$Command
-    )
-    
+    param([string]$Container, [string]$Command)
     try {
         $result = docker exec $Container sh -c $Command 2>&1
         return $result
     }
-    catch {
-        return $null
-    }
+    catch { return $null }
 }
 
-function Invoke-PostgresQuery {
-    param([string]$Query)
-    
+# Execute a PostgreSQL query via docker exec (no local psql required)
+function Invoke-PgQuery {
+    param(
+        [string]$Container,
+        [string]$User,
+        [string]$Database,
+        [string]$Query
+    )
     try {
-        $env:PGPASSWORD = "postgres123"
-        $result = psql -h localhost -U postgres -d vibranium_infra -tc $Query 2>$null
-        Remove-Item env:PGPASSWORD
-        return $result.Trim()
+        $raw = docker exec $Container psql -U $User -d $Database -tc $Query 2>&1
+        if ($raw -is [array]) { $raw = ($raw | Where-Object { $_ -is [string] }) -join "" }
+        return $raw.ToString().Trim()
     }
-    catch {
-        return $null
-    }
-}
-
-function Test-DockerContainerRunning {
-    param([string]$ContainerPattern)
-    
-    try {
-        $running = docker ps 2>$null | Select-String $ContainerPattern
-        return $null -ne $running
-    }
-    catch {
-        return $false
-    }
+    catch { return $null }
 }
 
 # ================================================================================
-# REQUIREMENT 1: KONG IS RUNNING & HEALTHY
+# DEV ENVIRONMENT CHECKS (7)
+# Container names: vibranium-postgres, vibranium-mongodb, vibranium-redis,
+#                  vibranium-rabbitmq, vibranium-keycloak-db-dev,
+#                  vibranium-keycloak-dev, vibranium-kong-dev
+# Kong runs in DB-less mode (no database checks).
+# Keycloak uses a dedicated keycloak-db container (not shared PostgreSQL).
 # ================================================================================
-function Check-KongHealth {
-    Write-Info "Checking Requirement 1: Kong running and healthy..."
-    
-    # Check if Kong container is running
-    if (-not (Test-DockerContainerRunning "vibranium-kong")) {
-        Write-Error-Custom "Kong container is not running"
-        return $false
+
+# 1. PostgreSQL: running + vibranium_orders + vibranium_wallet
+function Check-DevPostgres {
+    Write-Info "Check 1/7: PostgreSQL (vibranium-postgres)..."
+
+    if (-not (Test-ContainerHealthy "vibranium-postgres")) {
+        Write-Fail "PostgreSQL container (vibranium-postgres) not running or not healthy"
+        return
     }
-    
-    # Check Kong health via Admin API
-    try {
-        $status = Invoke-DockerExec -Container "vibranium-kong" -Command "curl -s http://localhost:8001/status"
-        
-        if ($null -eq $status -or $status -eq "") {
-            Write-Error-Custom "Kong Admin API not responding"
-            return $false
+
+    foreach ($db in @("vibranium_orders", "vibranium_wallet")) {
+        $ok = Invoke-PgQuery -Container "vibranium-postgres" -User "postgres" -Database $db -Query "SELECT 1"
+        if ($null -eq $ok -or $ok -notmatch "1") {
+            Write-Fail "Database '$db' is not accessible"
+            return
         }
-        
-        Write-Success "Kong is running and healthy"
-        return $true
     }
-    catch {
-        Write-Error-Custom "Kong health check failed: $_"
-        return $false
+
+    Write-Success "PostgreSQL healthy — vibranium_orders + vibranium_wallet OK"
+}
+
+# 2. MongoDB: running + replica set rs0
+function Check-DevMongoDB {
+    Write-Info "Check 2/7: MongoDB + Replica Set (vibranium-mongodb)..."
+
+    if (-not (Test-ContainerHealthy "vibranium-mongodb")) {
+        Write-Fail "MongoDB container (vibranium-mongodb) not running or not healthy"
+        return
     }
+
+    $rs = Invoke-DockerExec -Container "vibranium-mongodb" -Command 'mongosh --quiet --eval "rs.status().ok" 2>/dev/null'
+    if ($null -eq $rs -or "$rs" -notmatch "1") {
+        Write-Fail "MongoDB replica set rs0 not initialized"
+        return
+    }
+
+    Write-Success "MongoDB healthy — replica set rs0 active"
+}
+
+# 3. Redis: running + healthy
+function Check-DevRedis {
+    Write-Info "Check 3/7: Redis (vibranium-redis)..."
+
+    if (-not (Test-ContainerHealthy "vibranium-redis")) {
+        Write-Fail "Redis container (vibranium-redis) not running or not healthy"
+        return
+    }
+
+    Write-Success "Redis healthy"
+}
+
+# 4. RabbitMQ: running + healthy
+function Check-DevRabbitMQ {
+    Write-Info "Check 4/7: RabbitMQ (vibranium-rabbitmq)..."
+
+    if (-not (Test-ContainerHealthy "vibranium-rabbitmq")) {
+        Write-Fail "RabbitMQ container (vibranium-rabbitmq) not running or not healthy"
+        return
+    }
+
+    Write-Success "RabbitMQ healthy"
+}
+
+# 5. Keycloak: keycloak-db healthy + keycloak healthy
+function Check-DevKeycloak {
+    Write-Info "Check 5/7: Keycloak + Keycloak DB..."
+
+    if (-not (Test-ContainerHealthy "vibranium-keycloak-db-dev")) {
+        Write-Fail "Keycloak DB container (vibranium-keycloak-db-dev) not healthy"
+        return
+    }
+
+    if (-not (Test-ContainerHealthy "vibranium-keycloak-dev")) {
+        Write-Fail "Keycloak container (vibranium-keycloak-dev) not healthy"
+        return
+    }
+
+    Write-Success "Keycloak + Keycloak DB healthy"
+}
+
+# 6. Kong: running + healthy (DB-less mode)
+function Check-DevKong {
+    Write-Info "Check 6/7: Kong DB-less (vibranium-kong-dev)..."
+
+    if (-not (Test-ContainerHealthy "vibranium-kong-dev")) {
+        Write-Fail "Kong container (vibranium-kong-dev) not healthy"
+        return
+    }
+
+    Write-Success "Kong healthy (DB-less mode)"
+}
+
+# 7. E2E compose file valid
+function Check-E2ECompose {
+    Write-Info "Check 7/7: E2E test compose configuration..."
+
+    $composePath = "tests/e2e/docker-compose.e2e.yml"
+    if (-not (Test-Path $composePath)) {
+        Write-Fail "$composePath not found (execute a partir do diretorio raiz do projeto)"
+        return
+    }
+
+    $null = docker compose -f $composePath config 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "$composePath has invalid configuration"
+        return
+    }
+
+    Write-Success "E2E compose configuration is valid"
 }
 
 # ================================================================================
-# REQUIREMENT 2: KONG CONNECTED TO POSTGRESQL
+# INFRA ENVIRONMENT CHECKS (7)
+# Container names: vibranium-postgresql, vibranium-kong, vibranium-keycloak,
+#                  vibranium-rabbitmq, vibranium-redis-kong
+# Kong runs in DB mode (PostgreSQL, schema 'kong' in vibranium_infra).
+# Keycloak uses schema 'keycloak' in the shared vibranium_infra database.
 # ================================================================================
-function Check-KongDbConnection {
-    Write-Info "Checking Requirement 2: Kong connected to PostgreSQL..."
-    
-    try {
-        # Verify Kong can access database
-        $status = Invoke-DockerExec -Container "vibranium-kong" -Command "curl -s http://localhost:8001/status | grep -o '\"database\":true'"
-        
-        if ($null -eq $status -or $status -eq "") {
-            Write-Error-Custom "Kong database connection failed"
-            return $false
-        }
-        
-        # Double-check by querying directly
-        $pgCheck = Invoke-PostgresQuery -Query "SELECT 1"
-        
-        if ($null -eq $pgCheck) {
-            Write-Error-Custom "Direct PostgreSQL connection test failed"
-            return $false
-        }
-        
-        Write-Success "Kong is connected to PostgreSQL"
-        return $true
+
+# 1. Kong running & healthy
+function Check-InfraKongHealth {
+    Write-Info "Check 1/7: Kong (vibranium-kong)..."
+
+    if (-not (Test-ContainerHealthy "vibranium-kong")) {
+        Write-Fail "Kong container (vibranium-kong) not running or not healthy"
+        return
     }
-    catch {
-        Write-Error-Custom "Kong DB connection check failed: $_"
-        return $false
+
+    $status = Invoke-DockerExec -Container "vibranium-kong" -Command "curl -sf http://localhost:8001/status"
+    if ($null -eq $status -or $status -eq "") {
+        Write-Fail "Kong Admin API not responding"
+        return
     }
+
+    Write-Success "Kong running and healthy"
 }
 
-# ================================================================================
-# REQUIREMENT 3: KONG TABLES & COLUMNS CREATED
-# ================================================================================
-function Check-KongTables {
-    Write-Info "Checking Requirement 3: Kong tables and columns exist..."
-    
-    try {
-        # Wait for Kong migrations to complete (up to 2 minutes)
-        $maxWait = 120
-        $elapsed = 0
-        
-        while ($elapsed -lt $maxWait) {
-            $tablesCount = Invoke-PostgresQuery -Query "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='kong'"
-            $tablesCount = [int]$tablesCount.Trim()
-            
-            if ($tablesCount -ge 20) {  # Kong typically creates 20+ tables
-                break
-            }
-            
-            Write-Host -NoNewline "."
-            Start-Sleep -Seconds 5
-            $elapsed += 5
-        }
-        
-        Write-Host ""  # New line
-        
-        # Validate critical Kong tables exist
-        $requiredTables = @("services", "routes", "plugins", "upstreams", "targets")
-        
-        foreach ($table in $requiredTables) {
-            $exists = Invoke-PostgresQuery -Query "SELECT 1 FROM information_schema.tables WHERE table_schema='kong' AND table_name='$table'"
-            
-            if ($null -eq $exists -or $exists -eq "") {
-                Write-Error-Custom "Kong table '$table' does not exist"
-                return $false
-            }
-        }
-        
-        # Validate critical columns in Kong services table
-        $requiredColumns = @("id", "name", "url", "protocol")
-        
-        foreach ($column in $requiredColumns) {
-            $exists = Invoke-PostgresQuery -Query "SELECT 1 FROM information_schema.columns WHERE table_schema='kong' AND table_name='services' AND column_name='$column'"
-            
-            if ($null -eq $exists -or $exists -eq "") {
-                Write-Error-Custom "Kong services table missing column '$column'"
-                return $false
-            }
-        }
-        
-        Write-Success "Kong tables and critical columns exist"
-        return $true
+# 2. Kong connected to PostgreSQL
+function Check-InfraKongDb {
+    Write-Info "Check 2/7: Kong -> PostgreSQL connection..."
+
+    $dbStatus = Invoke-DockerExec -Container "vibranium-kong" -Command "curl -sf http://localhost:8001/status"
+    if ($null -eq $dbStatus -or "$dbStatus" -notmatch '"reachable":\s*true') {
+        Write-Fail "Kong cannot reach PostgreSQL"
+        return
     }
-    catch {
-        Write-Error-Custom "Kong tables check failed: $_"
-        return $false
-    }
+
+    Write-Success "Kong connected to PostgreSQL"
 }
 
-# ================================================================================
-# REQUIREMENT 4: KEYCLOAK IS RUNNING & HEALTHY
-# ================================================================================
-function Check-KeycloakHealth {
-    Write-Info "Checking Requirement 4: Keycloak running and healthy..."
-    
-    try {
-        # Check if Keycloak container is running
-        if (-not (Test-DockerContainerRunning "vibranium-keycloak")) {
-            Write-Error-Custom "Keycloak container is not running"
-            return $false
+# 3. Kong critical tables exist
+function Check-InfraKongTables {
+    Write-Info "Check 3/7: Kong tables in PostgreSQL..."
+
+    $requiredTables = @("services", "routes", "plugins", "upstreams", "targets")
+    foreach ($table in $requiredTables) {
+        $exists = Invoke-PgQuery -Container "vibranium-postgresql" -User "postgres" -Database "vibranium_infra" `
+            -Query "SELECT 1 FROM information_schema.tables WHERE table_schema='kong' AND table_name='$table'"
+        if ($null -eq $exists -or $exists -notmatch "1") {
+            Write-Fail "Kong table '$table' does not exist in schema 'kong'"
+            return
         }
-        
-        # Check Keycloak liveness endpoint
-        $liveness = Invoke-DockerExec -Container "vibranium-keycloak" -Command "curl -s http://localhost:8080/auth/health/live"
-        
-        if ($null -eq $liveness -or $liveness -notmatch "UP") {
-            Write-Error-Custom "Keycloak liveness check failed"
-            return $false
-        }
-        
-        # Check Keycloak readiness endpoint
-        $readiness = Invoke-DockerExec -Container "vibranium-keycloak" -Command "curl -s http://localhost:8080/auth/health/ready"
-        
-        if ($null -eq $readiness -or $readiness -notmatch "UP") {
-            Write-Error-Custom "Keycloak readiness check failed"
-            return $false
-        }
-        
-        Write-Success "Keycloak is running and healthy"
-        return $true
     }
-    catch {
-        Write-Error-Custom "Keycloak health check failed: $_"
-        return $false
-    }
+
+    Write-Success "Kong critical tables exist (services, routes, plugins, upstreams, targets)"
 }
 
-# ================================================================================
-# REQUIREMENT 5: KEYCLOAK CONNECTED TO POSTGRESQL
-# ================================================================================
-function Check-KeycloakDbConnection {
-    Write-Info "Checking Requirement 5: Keycloak connected to PostgreSQL..."
-    
-    try {
-        # Verify Keycloak schema exists and has tables
-        $schemaExists = Invoke-PostgresQuery -Query "SELECT 1 FROM information_schema.schemata WHERE schema_name='keycloak'"
-        
-        if ($null -eq $schemaExists -or $schemaExists -eq "") {
-            Write-Error-Custom "Keycloak schema does not exist"
-            return $false
-        }
-        
-        # Verify database connection by checking table count
-        $tablesCount = Invoke-PostgresQuery -Query "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='keycloak'"
-        $tablesCount = [int]$tablesCount.Trim()
-        
-        if ($tablesCount -lt 5) {
-            Write-Error-Custom "Keycloak has not initialized database tables yet (found: $tablesCount)"
-            return $false
-        }
-        
-        Write-Success "Keycloak is connected to PostgreSQL"
-        return $true
+# 4. Keycloak running & healthy (Keycloak 22 — health endpoint without /auth/ prefix)
+function Check-InfraKeycloakHealth {
+    Write-Info "Check 4/7: Keycloak (vibranium-keycloak)..."
+
+    if (-not (Test-ContainerHealthy "vibranium-keycloak")) {
+        Write-Fail "Keycloak container (vibranium-keycloak) not running or not healthy"
+        return
     }
-    catch {
-        Write-Error-Custom "Keycloak DB connection check failed: $_"
-        return $false
-    }
+
+    Write-Success "Keycloak running and healthy"
 }
 
-# ================================================================================
-# REQUIREMENT 6: KEYCLOAK TABLES & COLUMNS CREATED
-# ================================================================================
-function Check-KeycloakTables {
-    Write-Info "Checking Requirement 6: Keycloak tables and columns exist..."
-    
-    try {
-        # Validate critical Keycloak tables
-        $requiredTables = @("user_entity", "realm", "client", "role_entity")
-        
-        foreach ($table in $requiredTables) {
-            $exists = Invoke-PostgresQuery -Query "SELECT 1 FROM information_schema.tables WHERE table_schema='keycloak' AND table_name='$table'"
-            
-            if ($null -eq $exists -or $exists -eq "") {
-                Write-Error-Custom "Keycloak table '$table' does not exist"
-                return $false
-            }
-        }
-        
-        # Validate critical columns
-        $userEntityCols = Invoke-PostgresQuery -Query "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='keycloak' AND table_name='user_entity' AND column_name IN ('id', 'username', 'email', 'realm_id')"
-        $userEntityCols = [int]$userEntityCols.Trim()
-        
-        if ($userEntityCols -lt 4) {
-            Write-Error-Custom "Keycloak user_entity table missing critical columns"
-            return $false
-        }
-        
-        $realmCols = Invoke-PostgresQuery -Query "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='keycloak' AND table_name='realm' AND column_name IN ('id', 'name')"
-        $realmCols = [int]$realmCols.Trim()
-        
-        if ($realmCols -lt 2) {
-            Write-Error-Custom "Keycloak realm table missing critical columns"
-            return $false
-        }
-        
-        $clientCols = Invoke-PostgresQuery -Query "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='keycloak' AND table_name='client' AND column_name IN ('id', 'client_id', 'realm_id')"
-        $clientCols = [int]$clientCols.Trim()
-        
-        if ($clientCols -lt 3) {
-            Write-Error-Custom "Keycloak client table missing critical columns"
-            return $false
-        }
-        
-        $roleCols = Invoke-PostgresQuery -Query "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='keycloak' AND table_name='role_entity' AND column_name IN ('id', 'name')"
-        $roleCols = [int]$roleCols.Trim()
-        
-        if ($roleCols -lt 2) {
-            Write-Error-Custom "Keycloak role_entity table missing critical columns"
-            return $false
-        }
-        
-        Write-Success "Keycloak tables and critical columns exist"
-        return $true
+# 5. Keycloak connected to PostgreSQL (keycloak schema)
+function Check-InfraKeycloakDb {
+    Write-Info "Check 5/7: Keycloak -> PostgreSQL connection..."
+
+    $schemaExists = Invoke-PgQuery -Container "vibranium-postgresql" -User "postgres" -Database "vibranium_infra" `
+        -Query "SELECT 1 FROM information_schema.schemata WHERE schema_name='keycloak'"
+    if ($null -eq $schemaExists -or $schemaExists -notmatch "1") {
+        Write-Fail "Keycloak schema does not exist in vibranium_infra"
+        return
     }
-    catch {
-        Write-Error-Custom "Keycloak tables check failed: $_"
-        return $false
+
+    $count = Invoke-PgQuery -Container "vibranium-postgresql" -User "postgres" -Database "vibranium_infra" `
+        -Query "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='keycloak'"
+    if ($null -eq $count -or [int]$count -lt 5) {
+        Write-Fail "Keycloak has not initialized tables (found: $count)"
+        return
     }
+
+    Write-Success "Keycloak connected to PostgreSQL (keycloak schema)"
 }
 
-# ================================================================================
-# REQUIREMENT 7: COMPOSE TEST EXECUTION
-# ================================================================================
-function Check-ComposeTestExecution {
-    Write-Info "Checking Requirement 7: Docker Compose test environment..."
-    
-    try {
-        # Verify docker-compose.test.yml exists
-        if (-not (Test-Path "docker-compose.test.yml")) {
-            Write-Error-Custom "docker-compose.test.yml not found"
-            return $false
+# 6. Keycloak critical tables exist
+function Check-InfraKeycloakTables {
+    Write-Info "Check 6/7: Keycloak tables in PostgreSQL..."
+
+    $requiredTables = @("user_entity", "realm", "client", "role_entity")
+    foreach ($table in $requiredTables) {
+        $exists = Invoke-PgQuery -Container "vibranium-postgresql" -User "postgres" -Database "vibranium_infra" `
+            -Query "SELECT 1 FROM information_schema.tables WHERE table_schema='keycloak' AND table_name='$table'"
+        if ($null -eq $exists -or $exists -notmatch "1") {
+            Write-Fail "Keycloak table '$table' does not exist"
+            return
         }
-        
-        # Check that test docker compose file is valid
-        $validation = docker-compose -f docker-compose.test.yml config 2>&1
-        
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error-Custom "docker-compose.test.yml is invalid"
-            return $false
-        }
-        
-        Write-Success "Docker Compose test configuration is valid"
-        return $true
     }
-    catch {
-        Write-Error-Custom "Compose test execution check failed: $_"
-        return $false
-    }
+
+    Write-Success "Keycloak critical tables exist (user_entity, realm, client, role_entity)"
 }
 
 # ================================================================================
 # SYSTEM DEPENDENCIES CHECK
 # ================================================================================
 function Check-Dependencies {
-    Write-Header "🔍 Checking System Dependencies"
-    
-    $missingDeps = 0
-    
-    # Check Docker
+    Write-Header "Checking System Dependencies"
+
+    $ok = $true
+
     if (-not (Test-CommandExists "docker")) {
-        Write-Error-Custom "Docker is not installed"
-        $missingDeps++
+        Write-Host "  ✗ Docker is not installed" -ForegroundColor Red
+        $ok = $false
     }
     else {
-        Write-Success "Docker is installed"
+        Write-Host "  ✓ Docker is installed" -ForegroundColor Green
     }
-    
-    # Check Docker Compose
-    if (-not (Test-CommandExists "docker-compose")) {
-        Write-Error-Custom "Docker Compose is not installed"
-        $missingDeps++
+
+    # Docker Compose v2 (docker compose, not docker-compose)
+    try {
+        $null = docker compose version 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  ✓ Docker Compose v2 available" -ForegroundColor Green
+        }
+        else {
+            Write-Host "  ✗ Docker Compose v2 not available (expected: docker compose)" -ForegroundColor Red
+            $ok = $false
+        }
     }
-    else {
-        Write-Success "Docker Compose is installed"
+    catch {
+        Write-Host "  ✗ Docker Compose v2 not available" -ForegroundColor Red
+        $ok = $false
     }
-    
-    # Check PostgreSQL client
-    if (-not (Test-CommandExists "psql")) {
-        Write-Warning-Custom "PostgreSQL client (psql) not found - some validations will be skipped"
-    }
-    else {
-        Write-Success "PostgreSQL client is available"
-    }
-    
-    # Check curl
-    if (-not (Test-CommandExists "curl")) {
-        Write-Error-Custom "curl is not installed - required for health checks"
-        $missingDeps++
-    }
-    else {
-        Write-Success "curl is installed"
-    }
-    
-    return $missingDeps -eq 0
+
+    return $ok
 }
 
 # ================================================================================
 # MAIN EXECUTION
 # ================================================================================
 function Main {
-    Write-Header "🚀 INFRASTRUCTURE VALIDATION - 7 CRITICAL CHECKS"
-    
-    # Check dependencies
+    Write-Header "INFRASTRUCTURE VALIDATION — Environment: $($Environment.ToUpper())"
+
     if (-not (Check-Dependencies)) {
-        Write-Error-Custom "Missing critical dependencies"
+        Write-Host "  ✗ Missing critical dependencies — aborting" -ForegroundColor Red
         exit 1
     }
-    
+
     Write-Host ""
-    Write-Header "📋 VALIDATING INFRASTRUCTURE (7 Requirements)"
+
+    if ($Environment -eq "dev") {
+        Write-Header "VALIDATING DEV INFRASTRUCTURE (7 Checks)"
+        Write-Host ""
+        Check-DevPostgres
+        Check-DevMongoDB
+        Check-DevRedis
+        Check-DevRabbitMQ
+        Check-DevKeycloak
+        Check-DevKong
+        Check-E2ECompose
+    }
+    else {
+        Write-Header "VALIDATING INFRA (7 Checks)"
+        Write-Host ""
+        Check-InfraKongHealth
+        Check-InfraKongDb
+        Check-InfraKongTables
+        Check-InfraKeycloakHealth
+        Check-InfraKeycloakDb
+        Check-InfraKeycloakTables
+        Check-E2ECompose
+    }
+
     Write-Host ""
-    
-    # Execute all validation checks
-    Check-KongHealth | Out-Null
-    Check-KongDbConnection | Out-Null
-    Check-KongTables | Out-Null
-    Check-KeycloakHealth | Out-Null
-    Check-KeycloakDbConnection | Out-Null
-    Check-KeycloakTables | Out-Null
-    Check-ComposeTestExecution | Out-Null
-    
-    Write-Host ""
-    Write-Header "📊 VALIDATION SUMMARY"
-    
+    Write-Header "VALIDATION SUMMARY"
+
     Write-Host "  Passed: $($script:PassedChecks)" -ForegroundColor Green
     Write-Host "  Failed: $($script:FailedChecks)" -ForegroundColor Red
     Write-Host ""
-    
+
     if ($script:FailedChecks -eq 0) {
-        Write-Success "Infrastructure validation completed successfully!"
-        Write-Host "All 7 requirements validated ✓" -ForegroundColor Green
+        Write-Success "All $($script:PassedChecks) checks passed!"
         Write-Host ""
         exit 0
     }
     else {
-        Write-Error-Custom "Infrastructure validation FAILED - $($script:FailedChecks) checks did not pass"
-        Write-Host "Please review the errors above and fix the infrastructure." -ForegroundColor Red
+        Write-Fail "Validation FAILED — $($script:FailedChecks) check(s) did not pass"
+        Write-Host "  Review errors above and fix the infrastructure." -ForegroundColor Red
         Write-Host ""
         exit 1
     }

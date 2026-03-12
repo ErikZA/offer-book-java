@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rabbitmq.client.Channel;
 import com.vibranium.walletservice.application.dto.KeycloakEventDto;
 import com.vibranium.walletservice.application.service.WalletService;
+import com.vibranium.walletservice.config.RabbitMQConfig;
 import com.vibranium.walletservice.domain.repository.IdempotencyKeyRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,7 +60,7 @@ public class KeycloakRabbitListener {
      * @param channel     Canal AMQP para ACK/NACK manual.
      * @throws Exception  Propagado apenas para cenários de erro no AMQP channel.
      */
-    @RabbitListener(queues = "wallet.keycloak.events", containerFactory = "rawMessageContainerFactory")
+    @RabbitListener(queues = RabbitMQConfig.QUEUE_KEYCLOAK_EVENTS, containerFactory = "rawMessageContainerFactory")
     public void handleKeycloakEvent(Message message, Channel channel) throws Exception {
         String messageId = message.getMessageProperties().getMessageId();
         long deliveryTag = message.getMessageProperties().getDeliveryTag();

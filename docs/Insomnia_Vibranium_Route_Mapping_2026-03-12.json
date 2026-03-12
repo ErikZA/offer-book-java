@@ -1,0 +1,912 @@
+{
+  "_type": "export",
+  "__export_format": 4,
+  "__export_date": "2026-03-12T03:00:00Z",
+  "__export_source": "insomnia.desktop.app:v2023.1.0",
+  "resources": [
+    {
+      "_id": "wrk_vibranium_route_mapping_20260312",
+      "parentId": null,
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "name": "Vibranium Route Mapping",
+      "description": "Colecao de rotas Kong, gestao de usuarios no Keycloak e endpoints admin dos servicos.",
+      "scope": "collection",
+      "_type": "workspace"
+    },
+    {
+      "_id": "env_vibranium_route_mapping_base",
+      "parentId": "wrk_vibranium_route_mapping_20260312",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "name": "Base Environment",
+      "data": {
+        "kong_base_url": "http://localhost:8000",
+        "order_service_base_url": "http://localhost:8080",
+        "wallet_service_base_url": "http://localhost:8081",
+        "keycloak_base_url": "http://localhost:8180",
+        "realm": "orderbook-realm",
+        "admin_realm": "master",
+        "client_id": "order-client",
+        "admin_client_id": "admin-cli",
+        "admin_username": "admin",
+        "admin_password": "",
+        "username": "tester",
+        "password": "test-password",
+        "access_token": "",
+        "admin_access_token": "",
+        "user_id": "00000000-0000-0000-0000-000000000001",
+        "wallet_id": "11111111-1111-1111-1111-111111111111",
+        "order_id": "22222222-2222-2222-2222-222222222222",
+        "role_name": "USER",
+        "role_id": "preencher-role-id",
+        "new_username": "perf-user-1",
+        "new_email": "perf-user-1@vibranium-perf.com",
+        "new_password": "perf-test-1",
+        "new_first_name": "Perf",
+        "new_last_name": "User",
+        "page": "0",
+        "size": "20",
+        "sort": "createdAt,desc",
+        "until": "2026-03-11T14:00:00Z",
+        "projection_mode": "full"
+      },
+      "dataPropertyOrder": null,
+      "color": null,
+      "isPrivate": false,
+      "metaSortKey": 1773270000000,
+      "_type": "environment"
+    },
+    {
+      "_id": "jar_vibranium_route_mapping_base",
+      "parentId": "wrk_vibranium_route_mapping_20260312",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "name": "Default Jar",
+      "cookies": [],
+      "_type": "cookie_jar"
+    },
+    {
+      "_id": "spc_vibranium_route_mapping",
+      "parentId": "wrk_vibranium_route_mapping_20260312",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "fileName": "Vibranium-Route-Mapping",
+      "contents": "",
+      "contentType": "yaml",
+      "_type": "api_spec"
+    },
+    {
+      "_id": "fld_kong_routes",
+      "parentId": "wrk_vibranium_route_mapping_20260312",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "name": "01 - Kong Routes",
+      "description": "Rotas expostas pelo gateway Kong em infra/kong/kong-init.yml. Inclui payloads e parametros usados pelos controllers reais.",
+      "environment": {},
+      "environmentPropertyOrder": null,
+      "metaSortKey": -3000,
+      "_type": "request_group"
+    },
+    {
+      "_id": "fld_user_management_routes",
+      "parentId": "wrk_vibranium_route_mapping_20260312",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "name": "02 - User Management",
+      "description": "Rotas de criacao e manutencao de usuario via Keycloak. Baseado no uso do projeto e no realm importado.",
+      "environment": {},
+      "environmentPropertyOrder": null,
+      "metaSortKey": -2000,
+      "_type": "request_group"
+    },
+    {
+      "_id": "fld_admin_routes",
+      "parentId": "wrk_vibranium_route_mapping_20260312",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "name": "03 - Admin Routes",
+      "description": "Endpoints /admin/** dos servicos order-service e wallet-service.",
+      "environment": {},
+      "environmentPropertyOrder": null,
+      "metaSortKey": -1000,
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_kong_place_order",
+      "parentId": "fld_kong_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.kong_base_url }}/api/v1/orders",
+      "name": "POST Place Order",
+      "description": "Kong route: place-order-route`nPath params: nenhum`nPayload: walletId, orderType, price, amount`nAuth: Bearer token de usuario.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"walletId\": \"{{ _.wallet_id }}\",\n  \"orderType\": \"BUY\",\n  \"price\": 100.50,\n  \"amount\": 5.25\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_kong_place_order_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.access_token }}",
+          "id": "pair_kong_place_order_auth"
+        },
+        {
+          "name": "Content-Type",
+          "value": "application/json",
+          "id": "pair_kong_place_order_content_type"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -3100.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_kong_list_orders",
+      "parentId": "fld_kong_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.kong_base_url }}/api/v1/orders",
+      "name": "GET List Orders",
+      "description": "Kong route: list-orders-route`nQuery params: page, size`nAuth: Bearer token de usuario.",
+      "method": "GET",
+      "body": {},
+      "parameters": [
+        {
+          "name": "page",
+          "value": "{{ _.page }}"
+        },
+        {
+          "name": "size",
+          "value": "{{ _.size }}"
+        }
+      ],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_kong_list_orders_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.access_token }}",
+          "id": "pair_kong_list_orders_auth"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -3090.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_kong_get_order_by_id",
+      "parentId": "fld_kong_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.kong_base_url }}/api/v1/orders/{{ _.order_id }}",
+      "name": "GET Order By Id",
+      "description": "Kong route: get-order-by-id-route`nPath params: order_id`nAuth: Bearer token de usuario ou admin.",
+      "method": "GET",
+      "body": {},
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_kong_get_order_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.access_token }}",
+          "id": "pair_kong_get_order_auth"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -3080.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_kong_get_wallet_by_user",
+      "parentId": "fld_kong_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.kong_base_url }}/api/v1/wallets/{{ _.user_id }}",
+      "name": "GET Wallet By User",
+      "description": "Kong route: get-wallet-route`nPath params: user_id`nAuth: Bearer token do proprio usuario ou admin.",
+      "method": "GET",
+      "body": {},
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_kong_get_wallet_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.access_token }}",
+          "id": "pair_kong_get_wallet_auth"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -3070.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_kong_list_wallets",
+      "parentId": "fld_kong_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.kong_base_url }}/api/v1/wallets",
+      "name": "GET List Wallets",
+      "description": "Kong route: get-wallet-route`nQuery params: page, size, sort`nAuth: Bearer token com ROLE_ADMIN.",
+      "method": "GET",
+      "body": {},
+      "parameters": [
+        {
+          "name": "page",
+          "value": "{{ _.page }}"
+        },
+        {
+          "name": "size",
+          "value": "{{ _.size }}"
+        },
+        {
+          "name": "sort",
+          "value": "{{ _.sort }}"
+        }
+      ],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_kong_list_wallets_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.access_token }}",
+          "id": "pair_kong_list_wallets_auth"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -3060.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_kong_update_wallet_balance",
+      "parentId": "fld_kong_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.kong_base_url }}/api/v1/wallets/{{ _.wallet_id }}/balance",
+      "name": "PATCH Update Wallet Balance",
+      "description": "Kong route: update-wallet-balance-route`nPath params: wallet_id`nPayload: brlAmount e/ou vibAmount`nAuth: Bearer token do dono da wallet ou admin.",
+      "method": "PATCH",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"brlAmount\": 250.00,\n  \"vibAmount\": -1.50\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_kong_update_wallet_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.access_token }}",
+          "id": "pair_kong_update_wallet_auth"
+        },
+        {
+          "name": "Content-Type",
+          "value": "application/json",
+          "id": "pair_kong_update_wallet_content_type"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -3050.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_user_admin_token",
+      "parentId": "fld_user_management_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.keycloak_base_url }}/realms/{{ _.admin_realm }}/protocol/openid-connect/token",
+      "name": "POST Admin Token",
+      "description": "Obtem token admin do Keycloak para as rotas /admin/realms/**.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/x-www-form-urlencoded",
+        "params": [
+          {
+            "name": "grant_type",
+            "value": "password",
+            "id": "pair_user_admin_token_grant_type"
+          },
+          {
+            "name": "client_id",
+            "value": "{{ _.admin_client_id }}",
+            "id": "pair_user_admin_token_client_id"
+          },
+          {
+            "name": "username",
+            "value": "{{ _.admin_username }}",
+            "id": "pair_user_admin_token_username"
+          },
+          {
+            "name": "password",
+            "value": "{{ _.admin_password }}",
+            "id": "pair_user_admin_token_password"
+          }
+        ]
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/x-www-form-urlencoded",
+          "id": "pair_user_admin_token_content_type"
+        },
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_user_admin_token_accept"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -2100.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_user_login_token",
+      "parentId": "fld_user_management_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.keycloak_base_url }}/realms/{{ _.realm }}/protocol/openid-connect/token",
+      "name": "POST User Token",
+      "description": "Obtem Bearer token de usuario para consumo das rotas de negocio via Kong.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/x-www-form-urlencoded",
+        "params": [
+          {
+            "name": "grant_type",
+            "value": "password",
+            "id": "pair_user_login_token_grant_type"
+          },
+          {
+            "name": "client_id",
+            "value": "{{ _.client_id }}",
+            "id": "pair_user_login_token_client_id"
+          },
+          {
+            "name": "username",
+            "value": "{{ _.username }}",
+            "id": "pair_user_login_token_username"
+          },
+          {
+            "name": "password",
+            "value": "{{ _.password }}",
+            "id": "pair_user_login_token_password"
+          }
+        ]
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/x-www-form-urlencoded",
+          "id": "pair_user_login_token_content_type"
+        },
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_user_login_token_accept"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -2090.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_user_create",
+      "parentId": "fld_user_management_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.keycloak_base_url }}/admin/realms/{{ _.realm }}/users",
+      "name": "POST Create User",
+      "description": "Cria usuario no Keycloak. O projeto usa esse fluxo nos helpers de performance para criar usuarios de teste.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"username\": \"{{ _.new_username }}\",\n  \"email\": \"{{ _.new_email }}\",\n  \"emailVerified\": true,\n  \"enabled\": true,\n  \"firstName\": \"{{ _.new_first_name }}\",\n  \"lastName\": \"{{ _.new_last_name }}\",\n  \"credentials\": [\n    {\n      \"type\": \"password\",\n      \"value\": \"{{ _.new_password }}\",\n      \"temporary\": false\n    }\n  ]\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_user_create_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.admin_access_token }}",
+          "id": "pair_user_create_auth"
+        },
+        {
+          "name": "Content-Type",
+          "value": "application/json",
+          "id": "pair_user_create_content_type"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -2080.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_user_search",
+      "parentId": "fld_user_management_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.keycloak_base_url }}/admin/realms/{{ _.realm }}/users",
+      "name": "GET Search User",
+      "description": "Busca usuario por username. Equivale ao fluxo usado para descobrir o userId apos a criacao.",
+      "method": "GET",
+      "body": {},
+      "parameters": [
+        {
+          "name": "username",
+          "value": "{{ _.new_username }}"
+        },
+        {
+          "name": "exact",
+          "value": "true"
+        }
+      ],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_user_search_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.admin_access_token }}",
+          "id": "pair_user_search_auth"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -2070.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_user_get_by_id",
+      "parentId": "fld_user_management_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.keycloak_base_url }}/admin/realms/{{ _.realm }}/users/{{ _.user_id }}",
+      "name": "GET User By Id",
+      "description": "Consulta usuario especifico pelo path param user_id.",
+      "method": "GET",
+      "body": {},
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_user_get_by_id_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.admin_access_token }}",
+          "id": "pair_user_get_by_id_auth"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -2060.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_user_update",
+      "parentId": "fld_user_management_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.keycloak_base_url }}/admin/realms/{{ _.realm }}/users/{{ _.user_id }}",
+      "name": "PUT Update User",
+      "description": "Manutencao basica do usuario. Permite atualizar nome, email e habilitacao.",
+      "method": "PUT",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"firstName\": \"{{ _.new_first_name }}\",\n  \"lastName\": \"{{ _.new_last_name }} Updated\",\n  \"email\": \"updated-{{ _.new_email }}\",\n  \"enabled\": true,\n  \"emailVerified\": true\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_user_update_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.admin_access_token }}",
+          "id": "pair_user_update_auth"
+        },
+        {
+          "name": "Content-Type",
+          "value": "application/json",
+          "id": "pair_user_update_content_type"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -2050.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_user_reset_password",
+      "parentId": "fld_user_management_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.keycloak_base_url }}/admin/realms/{{ _.realm }}/users/{{ _.user_id }}/reset-password",
+      "name": "PUT Reset Password",
+      "description": "Reseta a senha do usuario no Keycloak.",
+      "method": "PUT",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"type\": \"password\",\n  \"temporary\": false,\n  \"value\": \"{{ _.new_password }}\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_user_reset_password_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.admin_access_token }}",
+          "id": "pair_user_reset_password_auth"
+        },
+        {
+          "name": "Content-Type",
+          "value": "application/json",
+          "id": "pair_user_reset_password_content_type"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -2040.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_user_get_role",
+      "parentId": "fld_user_management_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.keycloak_base_url }}/admin/realms/{{ _.realm }}/roles/{{ _.role_name }}",
+      "name": "GET Realm Role",
+      "description": "Busca o role do realm para obter seu role_id antes de vincular ao usuario.",
+      "method": "GET",
+      "body": {},
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_user_get_role_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.admin_access_token }}",
+          "id": "pair_user_get_role_auth"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -2030.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_user_assign_role",
+      "parentId": "fld_user_management_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.keycloak_base_url }}/admin/realms/{{ _.realm }}/users/{{ _.user_id }}/role-mappings/realm",
+      "name": "POST Assign Realm Role",
+      "description": "Atribui role de realm ao usuario. O projeto usa esse fluxo para associar USER aos usuarios de teste.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "[\n  {\n    \"id\": \"{{ _.role_id }}\",\n    \"name\": \"{{ _.role_name }}\"\n  }\n]"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_user_assign_role_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.admin_access_token }}",
+          "id": "pair_user_assign_role_auth"
+        },
+        {
+          "name": "Content-Type",
+          "value": "application/json",
+          "id": "pair_user_assign_role_content_type"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -2020.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_user_list_roles",
+      "parentId": "fld_user_management_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.keycloak_base_url }}/admin/realms/{{ _.realm }}/users/{{ _.user_id }}/role-mappings/realm",
+      "name": "GET User Realm Roles",
+      "description": "Lista os roles de realm atualmente associados ao usuario.",
+      "method": "GET",
+      "body": {},
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_user_list_roles_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.admin_access_token }}",
+          "id": "pair_user_list_roles_auth"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -2010.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_admin_order_events",
+      "parentId": "fld_admin_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.order_service_base_url }}/admin/events",
+      "name": "GET Order Admin Events",
+      "description": "Order-service admin route. Query params: aggregateId e until opcional. Requer ROLE_ADMIN.",
+      "method": "GET",
+      "body": {},
+      "parameters": [
+        {
+          "name": "aggregateId",
+          "value": "{{ _.order_id }}"
+        },
+        {
+          "name": "until",
+          "value": "{{ _.until }}"
+        }
+      ],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_admin_order_events_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.access_token }}",
+          "id": "pair_admin_order_events_auth"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -1100.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_admin_projection_rebuild",
+      "parentId": "fld_admin_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.order_service_base_url }}/admin/projections/rebuild",
+      "name": "POST Projection Rebuild",
+      "description": "Order-service admin route para rebuild do read model MongoDB. Query param: mode=full|incremental. Requer ROLE_ADMIN.",
+      "method": "POST",
+      "body": {},
+      "parameters": [
+        {
+          "name": "mode",
+          "value": "{{ _.projection_mode }}"
+        }
+      ],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_admin_projection_rebuild_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.access_token }}",
+          "id": "pair_admin_projection_rebuild_auth"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -1090.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_admin_wallet_events",
+      "parentId": "fld_admin_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.wallet_service_base_url }}/admin/events",
+      "name": "GET Wallet Admin Events",
+      "description": "Wallet-service admin route. Query params: aggregateId e until opcional. Requer ROLE_ADMIN.",
+      "method": "GET",
+      "body": {},
+      "parameters": [
+        {
+          "name": "aggregateId",
+          "value": "{{ _.wallet_id }}"
+        },
+        {
+          "name": "until",
+          "value": "{{ _.until }}"
+        }
+      ],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_admin_wallet_events_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.access_token }}",
+          "id": "pair_admin_wallet_events_auth"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -1080.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    }
+  ]
+}

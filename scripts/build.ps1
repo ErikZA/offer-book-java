@@ -29,6 +29,16 @@ function Show-Banner {
     Write-Host ""
 }
 
+function Assert-EnvFile {
+    if (-not (Test-Path ".env")) {
+        Write-Host "${RED}ERROR: .env file not found!${NC}"
+        Write-Host "${YELLOW}Copie .env.example para .env e preencha os valores:${NC}"
+        Write-Host "  Copy-Item .env.example .env" -ForegroundColor Cyan
+        Write-Host "  Veja .env.example para detalhes das variaveis obrigatorias." -ForegroundColor Cyan
+        exit 1
+    }
+}
+
 function Show-Help {
     Show-Banner
     Write-Host "${YELLOW}🐳 Docker Development (with hotreload):$NC"
@@ -63,8 +73,9 @@ switch ($Command.ToLower()) {
 
     "docker-dev-up" {
         Show-Banner
+        Assert-EnvFile
         Write-Host "${YELLOW}🚀 Starting development environment with hotreload...${NC}"
-        docker compose -f infra/docker-compose.dev.yml up -d 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose --env-file .env -f infra/docker-compose.dev.yml up -d 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
         Write-Host "${GREEN}✓ Dev environment started${NC}"
         Write-Host "${BLUE}Services:${NC}"
         Write-Host "  Order Service: http://localhost:8080 (Debug: 5005)" -ForegroundColor Cyan
@@ -75,7 +86,7 @@ switch ($Command.ToLower()) {
     "docker-dev-down" {
         Show-Banner
         Write-Host "${YELLOW}🛑 Stopping development environment...${NC}"
-        docker compose -f infra/docker-compose.dev.yml down 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose --env-file .env -f infra/docker-compose.dev.yml down 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
         Write-Host "${GREEN}✓ Dev environment stopped${NC}"
     }
 
@@ -87,7 +98,7 @@ switch ($Command.ToLower()) {
             exit 1
         }
         Write-Host "${YELLOW}📋 Showing logs for $Service...${NC}"
-        docker compose -f infra/docker-compose.dev.yml logs -f $Service
+        docker compose --env-file .env -f infra/docker-compose.dev.yml logs -f $Service
     }
 
     "docker-test" {
@@ -101,8 +112,9 @@ switch ($Command.ToLower()) {
 
     "docker-prod-up" {
         Show-Banner
+        Assert-EnvFile
         Write-Host "${YELLOW}🚀 Starting production environment...${NC}"
-        docker compose -f infra/docker-compose.yml up -d 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose --env-file .env -f infra/docker-compose.yml up -d 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
         Write-Host "${GREEN}✓ Production environment started${NC}"
         Write-Host "${BLUE}Containers:${NC}"
         docker ps | Select-String "vibranium" | ForEach-Object { Write-Host "  $_" -ForegroundColor Cyan }
@@ -111,7 +123,7 @@ switch ($Command.ToLower()) {
     "docker-prod-down" {
         Show-Banner
         Write-Host "${YELLOW}🛑 Stopping production environment...${NC}"
-        docker compose -f infra/docker-compose.yml down 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose --env-file .env -f infra/docker-compose.yml down 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
         Write-Host "${GREEN}✓ Production environment stopped${NC}"
     }
 
@@ -124,9 +136,9 @@ switch ($Command.ToLower()) {
     "docker-clean" {
         Show-Banner
         Write-Host "${YELLOW}🧹 Cleaning Docker artifacts...${NC}"
-        docker compose -f infra/docker-compose.dev.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose --env-file .env -f infra/docker-compose.dev.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
         docker compose -f tests/e2e/docker-compose.e2e.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
-        docker compose -f infra/docker-compose.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        docker compose --env-file .env -f infra/docker-compose.yml down -v 2>&1 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
         Write-Host "${GREEN}✓ Clean completed${NC}"
     }
 

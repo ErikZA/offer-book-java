@@ -76,7 +76,7 @@ public class OrderMatchingValidationSimulation extends Simulation {
     private static final int SETTLE_PAUSE_SECONDS = intEnv("SETTLE_PAUSE_SECONDS", 10);
 
     /** Tempo de espera final para liquidação de todas as ordens (segundos) */
-    private static final int FINAL_SETTLE_WAIT_SECONDS = intEnv("FINAL_SETTLE_WAIT_SECONDS", 240);
+    private static final int FINAL_SETTLE_WAIT_SECONDS = intEnv("FINAL_SETTLE_WAIT_SECONDS", 60);
 
     // ─── URLs dos serviços ───
 
