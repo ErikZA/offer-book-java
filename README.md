@@ -1,3 +1,7 @@
+<p align="center">
+<img width="360" height="200" alt="image" src="https://github.com/user-attachments/assets/969e3210-8390-476d-be30-a7a47d3bb863" />
+</p>
+
 # Vibranium Order Book Platform
 
 Plataforma de trading orientada a eventos, com microsserviços Spring Boot e fluxo Docker-first.
@@ -89,3 +93,4 @@ A versão anterior completa deste README foi preservada em:
 
 - Status: `canônico`
 - Última consolidação: 2026-03-09
+
