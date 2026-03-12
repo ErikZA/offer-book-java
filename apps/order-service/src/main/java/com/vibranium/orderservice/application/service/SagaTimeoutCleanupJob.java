@@ -158,9 +158,15 @@ public class SagaTimeoutCleanupJob {
                 stale.size(), cutoff);
 
         for (Order order : stale) {
-            // 1. Transita para CANCELLED com motivo padronizado
+            // Captura o status PRE-cancelamento: determina se fundos já foram reservados.
+            // PENDING indica que os fundos ainda não foram reservados (Saga em andamento).
+            boolean fundsAlreadyReserved = (order.getStatus() == OrderStatus.OPEN
+                    || order.getStatus() == OrderStatus.PARTIAL);
+            
+                    // 1. Transita para CANCELLED com motivo padronizado
             order.cancel("SAGA_TIMEOUT");
             orderRepository.save(order);
+            
 
             // 2. Persiste OrderCancelledEvent no outbox (relay eventual pelo OrderOutboxPublisherService)
             //    O Outbox Pattern garante que o evento não seja perdido mesmo se o broker estiver
@@ -196,8 +202,10 @@ public class SagaTimeoutCleanupJob {
             //    PENDING pode já ter fundos bloqueados. O wallet-service trata
             //    InsufficientLockedFundsException graciosamente: se os fundos nunca foram
             //    reservados, o release é um no-op idempotente.
-            emitReleaseFundsCommand(order);
-
+             if (fundsAlreadyReserved) {
+                emitReleaseFundsCommand(order);
+             }
+             
             // 4. Log de auditoria estruturado — calcula time usando o clock abstrato
             //    (AT-09.2: nunca usa Instant.now() diretamente no job)
             long ageMinutes = Duration.between(order.getCreatedAt(), clock.instant()).toMinutes();
