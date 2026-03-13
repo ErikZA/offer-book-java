@@ -739,6 +739,9 @@ services:
         container_name: vibranium-keycloak-a1m
         ports:
             - '8180:8080'
+        entrypoint:
+            - /bin/sh
+            - /opt/keycloak/data/configure-admin-token.sh
         command:
             - start
             - --optimized
@@ -771,6 +774,7 @@ services:
             KK_TO_RMQ_USE_TLS: 'false'
         volumes:
             - keycloak_a1m_data:/opt/keycloak/data
+            - ../../infra/keycloak/configure-admin-token.sh:/opt/keycloak/data/configure-admin-token.sh:ro
             - ../../infra/keycloak/realm-export.json:/opt/keycloak/data/import/realm.json:ro
         depends_on:
             keycloak-db:

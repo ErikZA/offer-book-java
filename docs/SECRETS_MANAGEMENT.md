@@ -96,7 +96,7 @@ docker compose -f infra/docker-compose.staging.yml up -d
 docker compose -f infra/docker-compose.yml up -d
 
 # Desenvolvimento local (continua usando .env — sem mudanças)
-docker compose -f infra/docker-compose.dev.yml --env-file .env up -d
+docker compose --env-file .env -f infra/docker-compose.dev.yml up -d
 ```
 
 ## Fallback para Desenvolvimento Local

@@ -40,7 +40,7 @@ make docker-test
 ### Compose direto
 
 ```bash
-docker compose -f infra/docker-compose.dev.yml up -d
+docker compose --env-file .env -f infra/docker-compose.dev.yml up -d
 docker compose -f tests/e2e/docker-compose.e2e.yml up --abort-on-container-exit
 ```
 

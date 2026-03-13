@@ -35,7 +35,7 @@ Este diretório contém os Dockerfiles para o Wallet Service em diferentes ambie
 ### Desenvolvimento (com hotreload)
 
 ```bash
-docker compose -f infra/docker-compose.dev.yml up wallet-service
+docker compose --env-file .env -f infra/docker-compose.dev.yml up wallet-service
 
 # Via scripts
 make docker-dev-up     (Linux/Mac)

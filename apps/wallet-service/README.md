@@ -38,7 +38,7 @@ src/main/java/com/vibranium/walletservice/
 
 ```bash
 # Ambiente completo (infra + serviços)
-docker compose -f infra/docker-compose.dev.yml up -d
+docker compose --env-file .env -f infra/docker-compose.dev.yml up -d
 
 # Ou via comandos do projeto
 # Windows

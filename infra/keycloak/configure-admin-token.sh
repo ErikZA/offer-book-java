@@ -1,0 +1,76 @@
+#!/bin/sh
+
+set -eu
+
+KCADM_CONFIG="${KCADM_CONFIG:-/tmp/kcadm.config}"
+export KCADM_CONFIG
+
+resolve_secret() {
+    value="${1:-}"
+    file_path="${2:-}"
+
+    if [ -n "$value" ]; then
+        printf '%s' "$value"
+        return 0
+    fi
+
+    if [ -n "$file_path" ] && [ -r "$file_path" ]; then
+        cat "$file_path"
+        return 0
+    fi
+
+    return 1
+}
+
+ADMIN_USER="${KEYCLOAK_ADMIN:-${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}}"
+ADMIN_PASSWORD="$(
+    resolve_secret "${KEYCLOAK_ADMIN_PASSWORD:-}" "${KEYCLOAK_ADMIN_PASSWORD_FILE:-}" ||
+    resolve_secret "${KC_BOOTSTRAP_ADMIN_PASSWORD:-}" "${KC_BOOTSTRAP_ADMIN_PASSWORD_FILE:-}" ||
+    true
+)"
+
+cleanup() {
+    rm -f "$KCADM_CONFIG"
+}
+
+trap cleanup EXIT
+
+/opt/keycloak/bin/kc.sh "$@" &
+KEYCLOAK_PID=$!
+
+if [ -z "$ADMIN_PASSWORD" ]; then
+    echo "Skipping master realm admin token lifespan setup: admin password not available." >&2
+    wait "$KEYCLOAK_PID"
+    exit $?
+fi
+
+login_deadline=60
+attempt=0
+lifetime_updated=0
+
+while [ "$attempt" -lt "$login_deadline" ]; do
+    if ! kill -0 "$KEYCLOAK_PID" 2>/dev/null; then
+        wait "$KEYCLOAK_PID"
+        exit $?
+    fi
+
+    if [ -n "$ADMIN_PASSWORD" ] && /opt/keycloak/bin/kcadm.sh config credentials \
+        --server http://127.0.0.1:8080 \
+        --realm master \
+        --user "$ADMIN_USER" \
+        --password "$ADMIN_PASSWORD" >/dev/null 2>&1; then
+        /opt/keycloak/bin/kcadm.sh update realms/master -s accessTokenLifespan=1800 >/dev/null
+        echo "Configured master realm admin access token lifespan to 1800 seconds."
+        lifetime_updated=1
+        break
+    fi
+
+    attempt=$((attempt + 1))
+    sleep 2
+done
+
+if [ "$lifetime_updated" -eq 0 ]; then
+    echo "Unable to update master realm admin access token lifespan during startup." >&2
+fi
+
+wait "$KEYCLOAK_PID"

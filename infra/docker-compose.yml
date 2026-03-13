@@ -7,8 +7,8 @@ version: '3.8'
 # Para desenvolvimento local use: docker-compose.dev.yml
 # Para staging com réplicas use:  docker-compose.staging.yml
 #
-# Subir: docker compose -f infra/docker-compose.yml up -d
-# Parar: docker compose -f infra/docker-compose.yml down
+# Subir: docker compose --env-file .env -f infra/docker-compose.yml up -d
+# Parar: docker compose --env-file .env -f infra/docker-compose.yml down
 #
 # SEGURANÇA (SecOps):
 # - Isolamento de rede Docker
@@ -258,6 +258,9 @@ services:
                     cpus: '0.5'
                     memory: 512M
 
+        entrypoint:
+            - /bin/sh
+            - /opt/keycloak/data/configure-admin-token.sh
         command:
             - start-dev
             - --import-realm
@@ -300,6 +303,7 @@ services:
 
         volumes:
             - keycloak_data:/opt/keycloak/data
+            - ./keycloak/configure-admin-token.sh:/opt/keycloak/data/configure-admin-token.sh:ro
             # Realm importado automaticamente via --import-realm
             - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm.json:ro
 

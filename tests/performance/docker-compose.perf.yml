@@ -814,6 +814,9 @@ services:
         container_name: vibranium-keycloak-perf
         ports:
             - '8180:8080'
+        entrypoint:
+            - /bin/sh
+            - /opt/keycloak/data/configure-admin-token.sh
         command:
             - start
             - --optimized
@@ -846,6 +849,7 @@ services:
             KK_TO_RMQ_USE_TLS: 'false'
         volumes:
             - keycloak_perf_data:/opt/keycloak/data
+            - ../../infra/keycloak/configure-admin-token.sh:/opt/keycloak/data/configure-admin-token.sh:ro
             - ../../infra/keycloak/realm-export.json:/opt/keycloak/data/import/realm.json:ro
         depends_on:
             keycloak-db:

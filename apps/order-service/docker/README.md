@@ -35,7 +35,7 @@ Este diretório contém os Dockerfiles para o Order Service em diferentes ambien
 ### Desenvolvimento (com hotreload)
 
 ```bash
-docker compose -f infra/docker-compose.dev.yml up order-service
+docker compose --env-file .env -f infra/docker-compose.dev.yml up order-service
 
 # Via scripts
 make docker-dev-up     (Linux/Mac)

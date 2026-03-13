@@ -54,11 +54,11 @@ infra/
 ### Desenvolvimento (infra + aplicações com hot-reload)
 ```bash
 # Subir tudo
-docker compose -f infra/docker-compose.dev.yml up -d
+docker compose --env-file .env -f infra/docker-compose.dev.yml up -d
 
 # Subir apenas infraestrutura (sem apps)
 # mongo-rs-init é obrigatório: inicializa o replica set rs0 antes que os serviços conectem
-docker compose -f infra/docker-compose.dev.yml up -d postgres redis rabbitmq mongodb mongo-rs-init keycloak-db keycloak kong jaeger
+docker compose --env-file .env -f infra/docker-compose.dev.yml up -d postgres redis rabbitmq mongodb mongo-rs-init keycloak-db keycloak kong jaeger
 ```
 
 > **Jaeger UI** disponível em `http://localhost:16686` após subir o ambiente dev.
@@ -66,7 +66,7 @@ docker compose -f infra/docker-compose.dev.yml up -d postgres redis rabbitmq mon
 
 ### Infra isolada (sem aplicações)
 ```bash
-docker compose -f infra/docker-compose.yml up -d
+docker compose --env-file .env -f infra/docker-compose.yml up -d
 ```
 
 ### Redis Cluster HA (AT-15)
