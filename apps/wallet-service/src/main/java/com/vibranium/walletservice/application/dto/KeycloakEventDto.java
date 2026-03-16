@@ -34,8 +34,20 @@ public record KeycloakEventDto(
 
         String clientId,
 
+        /** Campo preenchido pelo Keycloak em eventos de erro (null/blank em sucesso). */
+        String error,
+
         /** UUID do usuário no Keycloak — torna-se o {@code userId} da carteira. */
         UUID userId,
 
-        String ipAddress
+        String ipAddress,
+
+        /** Tipo da operação para Admin Events (ex: "CREATE"). */
+        String operationType,
+
+        /** Tipo do recurso para Admin Events (ex: "USER"). */
+        String resourceType,
+
+        /** Caminho do recurso para Admin Events (ex: "users/73e69050-71e8-..."). Usado para extrair o ID. */
+        String resourcePath
 ) {}

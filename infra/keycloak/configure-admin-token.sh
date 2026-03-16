@@ -59,11 +59,38 @@ while [ "$attempt" -lt "$login_deadline" ]; do
         --realm master \
         --user "$ADMIN_USER" \
         --password "$ADMIN_PASSWORD" >/dev/null 2>&1; then
+
+        # ── master realm: aumenta lifespan do token admin ──────────────────────
         /opt/keycloak/bin/kcadm.sh update realms/master -s accessTokenLifespan=1800 >/dev/null
         echo "Configured master realm admin access token lifespan to 1800 seconds."
+
+        # ── orderbook-realm: garante auto-registro e eventos habilitados ────────
+        # Usa 'get' + 'update' idempotente: não falha se o realm já estiver correto.
+        if /opt/keycloak/bin/kcadm.sh get realms/orderbook-realm >/dev/null 2>&1; then
+
+            /opt/keycloak/bin/kcadm.sh update realms/orderbook-realm \
+                -s registrationAllowed=true \
+                -s registrationEmailAsUsername=false \
+                -s resetPasswordAllowed=true \
+                -s verifyEmail=false \
+                -s loginWithEmailAllowed=true \
+                -s duplicateEmailsAllowed=false \
+                -s eventsEnabled=true \
+                -s adminEventsEnabled=true \
+                -s adminEventsDetailsEnabled=true \
+                -s 'eventsListeners=["jboss-logging","keycloak-to-rabbitmq"]' \
+                >/dev/null 2>&1 && \
+                echo "orderbook-realm: registro e eventos Keycloak configurados com sucesso." || \
+                echo "AVISO: Falha ao configurar orderbook-realm — verifique os logs do Keycloak." >&2
+
+        else
+            echo "orderbook-realm ainda não existe — será criado via --import-realm." >&2
+        fi
+
         lifetime_updated=1
         break
     fi
+
 
     attempt=$((attempt + 1))
     sleep 2

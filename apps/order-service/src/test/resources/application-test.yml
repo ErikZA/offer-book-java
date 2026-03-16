@@ -83,7 +83,7 @@ app:
             funds-failed: wallet.funds.failed
             match-executed: order.match.executed
             book-added: order.book.added
-            keycloak-register: 'KK.EVENT.CLIENT.orderbook-realm.REGISTER'
+            keycloak-register: 'KK.EVENT.CLIENT.orderbook-realm.SUCCESS.*.REGISTER'
     redis:
         keys:
             # Espelha o formato de produção com hash tags {vibranium}.

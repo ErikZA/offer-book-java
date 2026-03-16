@@ -1,6 +1,7 @@
 package com.vibranium.walletservice.integration;
 
 import com.vibranium.walletservice.AbstractIntegrationTest;
+import com.vibranium.walletservice.config.RabbitMQConfig;
 import com.vibranium.walletservice.domain.repository.WalletRepository;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -32,7 +33,9 @@ class KeycloakUserCreationIntegrationTest extends AbstractIntegrationTest {
 
     /** Exchange built-in do RabbitMQ usada pelo plugin aznamier do Keycloak. */
     private static final String KEYCLOAK_EXCHANGE = "amq.topic";
-    private static final String KEYCLOAK_ROUTING_KEY = "KK.EVENT.CLIENT.vibranium-realm.SUCCESS.CLIENT.REGISTER";
+    private static final String KEYCLOAK_REGISTER_ROUTING_KEY = RabbitMQConfig.RK_KEYCLOAK_REGISTER_SUCCESS;
+    private static final String KEYCLOAK_LOGIN_ROUTING_KEY =
+            "KK.EVENT.CLIENT.orderbook-realm.SUCCESS.orderbook-ui.LOGIN";
 
     @Autowired
     private WalletRepository walletRepository;
@@ -49,14 +52,15 @@ class KeycloakUserCreationIntegrationTest extends AbstractIntegrationTest {
     void shouldCreateWalletWithZeroBalanceOnKeycloakRegisterEvent() throws Exception {
         // Arrange — monta o payload do plugin aznamier
         UUID userId = UUID.randomUUID();
-        String keycloakPayload = buildKeycloakRegisterPayload(userId, "REGISTER");
+        String eventId = UUID.randomUUID().toString();
+        String keycloakPayload = buildKeycloakRegisterPayload(userId, "REGISTER", eventId);
 
         // Act — publica na exchange do Keycloak como o plugin faria
         MessageProperties props = new MessageProperties();
         props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
-        props.setMessageId(UUID.randomUUID().toString());
+        props.setHeader("x-event-id", eventId);
         Message message = new Message(keycloakPayload.getBytes(StandardCharsets.UTF_8), props);
-        rabbitTemplate.send(KEYCLOAK_EXCHANGE, KEYCLOAK_ROUTING_KEY, message);
+        rabbitTemplate.send(KEYCLOAK_EXCHANGE, KEYCLOAK_REGISTER_ROUTING_KEY, message);
 
         // Assert — Awaitility aguarda o processamento assíncrono (até 10s)
         await()
@@ -79,15 +83,16 @@ class KeycloakUserCreationIntegrationTest extends AbstractIntegrationTest {
     void shouldPersistWalletCreatedEventInOutbox() throws Exception {
         // Arrange
         UUID userId = UUID.randomUUID();
-        String payload = buildKeycloakRegisterPayload(userId, "REGISTER");
+        String eventId = UUID.randomUUID().toString();
+        String payload = buildKeycloakRegisterPayload(userId, "REGISTER", eventId);
 
         MessageProperties props = new MessageProperties();
         props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
-        props.setMessageId(UUID.randomUUID().toString());
+        props.setHeader("x-event-id", eventId);
         Message message = new Message(payload.getBytes(StandardCharsets.UTF_8), props);
 
         // Act
-        rabbitTemplate.send(KEYCLOAK_EXCHANGE, KEYCLOAK_ROUTING_KEY, message);
+        rabbitTemplate.send(KEYCLOAK_EXCHANGE, KEYCLOAK_REGISTER_ROUTING_KEY, message);
 
         // Assert — verifica que o Outbox recebeu o evento de domínio.
         // Não filtra por processed=false: o OutboxPublisherService pode marcar o evento
@@ -113,16 +118,16 @@ class KeycloakUserCreationIntegrationTest extends AbstractIntegrationTest {
     void shouldNotCreateDuplicateWalletOnDuplicateKeycloakEvent() throws Exception {
         // Arrange
         UUID userId = UUID.randomUUID();
-        String messageId = UUID.randomUUID().toString();
-        String payload = buildKeycloakRegisterPayload(userId, "REGISTER");
+        String eventId = UUID.randomUUID().toString();
+        String payload = buildKeycloakRegisterPayload(userId, "REGISTER", eventId);
 
-        // Act — envia o mesmo messageId duas vezes (simula at-least-once)
+        // Act — envia o mesmo eventId duas vezes (simula at-least-once)
         for (int i = 0; i < 2; i++) {
             MessageProperties props = new MessageProperties();
             props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
-            props.setMessageId(messageId); // mesmo ID!
+            props.setHeader("x-event-id", eventId); // mesmo ID!
             Message message = new Message(payload.getBytes(StandardCharsets.UTF_8), props);
-            rabbitTemplate.send(KEYCLOAK_EXCHANGE, KEYCLOAK_ROUTING_KEY, message);
+            rabbitTemplate.send(KEYCLOAK_EXCHANGE, KEYCLOAK_REGISTER_ROUTING_KEY, message);
         }
 
         // Assert — apenas 1 carteira deve existir após a idempotência
@@ -140,15 +145,16 @@ class KeycloakUserCreationIntegrationTest extends AbstractIntegrationTest {
     void shouldIgnoreNonRegisterKeycloakEvents() throws Exception {
         // Arrange — evento de LOGIN não deve criar carteira
         UUID userId = UUID.randomUUID();
-        String payload = buildKeycloakRegisterPayload(userId, "LOGIN");
+        String eventId = UUID.randomUUID().toString();
+        String payload = buildKeycloakRegisterPayload(userId, "LOGIN", eventId);
 
         MessageProperties props = new MessageProperties();
         props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
-        props.setMessageId(UUID.randomUUID().toString());
+        props.setHeader("x-event-id", eventId);
         Message message = new Message(payload.getBytes(StandardCharsets.UTF_8), props);
 
         // Act
-        rabbitTemplate.send(KEYCLOAK_EXCHANGE, KEYCLOAK_ROUTING_KEY, message);
+        rabbitTemplate.send(KEYCLOAK_EXCHANGE, KEYCLOAK_LOGIN_ROUTING_KEY, message);
 
         // Assert — Nenhuma carteira deve ser criada para este userId
         await()
@@ -169,18 +175,19 @@ class KeycloakUserCreationIntegrationTest extends AbstractIntegrationTest {
     void shouldCreateWalletWhenMessageHasTypeIdHeader() throws Exception {
         // Arrange — mensagem com __TypeId__ como o plugin aznamier envia
         UUID userId = UUID.randomUUID();
-        String payload = buildKeycloakRegisterPayload(userId, "REGISTER");
+        String eventId = UUID.randomUUID().toString();
+        String payload = buildKeycloakRegisterPayload(userId, "REGISTER", eventId);
 
         MessageProperties props = new MessageProperties();
         props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
-        props.setMessageId(UUID.randomUUID().toString());
+        props.setHeader("x-event-id", eventId);
         // O plugin aznamier seta este header em todas as mensagens publicadas
         props.setHeader("__TypeId__",
                 "com.github.aznamier.keycloak.event.provider.EventClientNotificationMqMsg");
         Message message = new Message(payload.getBytes(StandardCharsets.UTF_8), props);
 
         // Act
-        rabbitTemplate.send(KEYCLOAK_EXCHANGE, KEYCLOAK_ROUTING_KEY, message);
+        rabbitTemplate.send(KEYCLOAK_EXCHANGE, KEYCLOAK_REGISTER_ROUTING_KEY, message);
 
         // Assert — wallet deve ser criada mesmo com __TypeId__ desconhecido
         await()
@@ -197,17 +204,18 @@ class KeycloakUserCreationIntegrationTest extends AbstractIntegrationTest {
     void shouldIgnoreLoginWithTypeIdHeaderGracefully() throws Exception {
         // Arrange — LOGIN com __TypeId__ (cenário real do Keycloak)
         UUID userId = UUID.randomUUID();
-        String payload = buildKeycloakRegisterPayload(userId, "LOGIN");
+        String eventId = UUID.randomUUID().toString();
+        String payload = buildKeycloakRegisterPayload(userId, "LOGIN", eventId);
 
         MessageProperties props = new MessageProperties();
         props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
-        props.setMessageId(UUID.randomUUID().toString());
+        props.setHeader("x-event-id", eventId);
         props.setHeader("__TypeId__",
                 "com.github.aznamier.keycloak.event.provider.EventClientNotificationMqMsg");
         Message message = new Message(payload.getBytes(StandardCharsets.UTF_8), props);
 
         // Act
-        rabbitTemplate.send(KEYCLOAK_EXCHANGE, KEYCLOAK_ROUTING_KEY, message);
+        rabbitTemplate.send(KEYCLOAK_EXCHANGE, KEYCLOAK_LOGIN_ROUTING_KEY, message);
 
         // Assert — nenhuma carteira criada Y evento ignorado gracefully
         await()
@@ -227,20 +235,54 @@ class KeycloakUserCreationIntegrationTest extends AbstractIntegrationTest {
      * Monta o payload JSON no formato do plugin {@code aznamier/keycloak-event-listener-rabbitmq}.
      * O campo {@code type} distingue REGISTER de LOGIN, LOGOUT, etc.
      */
-    private String buildKeycloakRegisterPayload(UUID userId, String type) {
+    private String buildKeycloakRegisterPayload(UUID userId, String type, String eventId) {
         return """
                 {
                   "id": "%s",
                   "time": %d,
                   "type": "%s",
-                  "realmId": "vibranium-realm",
-                  "clientId": "vibranium-app",
+                  "realmId": "orderbook-realm",
+                  "clientId": "orderbook-ui",
                   "userId": "%s",
                   "ipAddress": "127.0.0.1",
                   "details": {
                     "username": "testuser@vibranium.io"
                   }
                 }
-                """.formatted(UUID.randomUUID(), System.currentTimeMillis(), type, userId);
+                """.formatted(eventId, System.currentTimeMillis(), type, userId);
+    }
+
+    @Test
+    @DisplayName("Deve criar carteira via evento ADMIN CREATE (criação via Keycloak Admin API)")
+    void shouldCreateWalletOnAdminCreateEvent() throws Exception {
+        UUID userId = UUID.randomUUID();
+        String eventId = UUID.randomUUID().toString();
+        String adminPayload = """
+                {
+                  "id": "%s",
+                  "time": %d,
+                  "operationType": "CREATE",
+                  "resourceType": "USER",
+                  "resourcePath": "users/%s",
+                  "realmId": "orderbook-realm"
+                }
+                """.formatted(eventId, System.currentTimeMillis(), userId);
+
+        String adminRoutingKey = "KK.EVENT.ADMIN.orderbook-realm.SUCCESS.CREATE.USER";
+        MessageProperties props = new MessageProperties();
+        props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
+        props.setHeader("x-event-id", eventId);
+        Message message = new Message(adminPayload.getBytes(StandardCharsets.UTF_8), props);
+        rabbitTemplate.send(KEYCLOAK_EXCHANGE, adminRoutingKey, message);
+
+        await()
+                .atMost(10, TimeUnit.SECONDS)
+                .pollInterval(500, TimeUnit.MILLISECONDS)
+                .untilAsserted(() -> {
+                    var wallet = walletRepository.findByUserId(userId);
+                    assertThat(wallet)
+                            .as("Wallet deve ser criada para usuário registrado via Admin API")
+                            .isPresent();
+                });
     }
 }

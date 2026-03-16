@@ -54,7 +54,7 @@ docker-compose up wallet-service  # Usa imagem pré-built
 - `./apps/wallet-service` → `/app/apps/wallet-service`
 - `./libs` → `/app/libs`
 - `./pom.xml` → `/app/pom.xml`
-- `m2_cache` → `/root/.m2` (Maven cache persistente)
+- `m2_repository_cache` → `/root/.m2/repository` (Maven cache persistente)
 
 ## Variáveis de Ambiente (Dev)
 

@@ -1,292 +1,62 @@
 # ==============================================================================
-# Kong 3.4 — Configuração Declarativa (decK format v3.0)
-# Aplicada pelo serviço `kong-init` via Admin API (http://kong:8001)
-#
-# Topologia:
-#   order-service (upstream):
-#     - Route POST /api/v1/orders           (place-order-route)   — Commands (escrita)
-#     - Route GET  /api/v1/orders           (list-orders-route)   — Query Side CQRS (leitura)
-#     - Route GET  /api/v1/orders/{orderId} (get-order-by-id-route) — Query Side CQRS (leitura)
-#     - Plugin jwt       : valida assinatura RS256 do Keycloak; key_claim_name=iss
-#     - Plugin rate-limiting: 100 req/s POST (escrita) | 200 req/s GET (leitura)
-#     - Plugin cors       : headers permissivos para dev
-#
-#   wallet-service (upstream):
-#     - Route GET   /api/v1/wallets              (get-wallet-route)            — Consulta carteira
-#     - Route PATCH /api/v1/wallets/{id}/balance (update-wallet-balance-route) — Atualiza saldo
-#     - Plugin jwt, rate-limiting (200 req/s), cors
-#
-# RATE LIMITING DISTRIBUÍDO:
-#   policy=redis garante que todos os nós Kong compartilhem o mesmo contador.
-#   Sem isso, em cluster de 3 nós com limite=100 req/s, na prática seriam
-#   300 req/s efetivos (cada nó manteria contador independente).
-#   redis_database=1 isola contadores de rate-limiting dos dados da aplicação (db=0).
-#
-# A credencial RSA do plugin JWT (chave pública do Keycloak) é provisionada
-# dinamicamente pelo script `kong-setup.sh` após o Keycloak estar disponível.
+# Kong 3.4 — Configuração Declarativa Estática (Fix Final - RSA Public Key)
 # ==============================================================================
 
 _format_version: '3.0'
 _transform: true
 
 services:
-    # ---------------------------------------------------------------------------
-    # order-service: upstream do microsserviço Spring Boot na rede Docker interna
-    # ---------------------------------------------------------------------------
     - name: order-service
       url: http://order-service:8080
-      connect_timeout: 5000 # ms — falha rápida se o pod não responder
-      read_timeout: 10000 # ms — tempo máximo de resposta do upstream
-      write_timeout: 10000 # ms — tempo máximo de escrita
-      retries: 0 # sem retry em operações de comando (não-idempotentes)
-
       routes:
-          # -----------------------------------------------------------------------
-          # Rota de Commands: aceita apenas requisições POST autenticadas
-          # Qualquer outro método é rejeitado com 405 Method Not Allowed pelo Kong
-          # -----------------------------------------------------------------------
           - name: place-order-route
-            paths:
-                - /api/v1/orders
-            methods:
-                - POST
-                - OPTIONS # necessário para preflight CORS
-            strip_path: false # preserva o path completo ao encaminhar ao upstream
-            preserve_host: false
-
-          # -----------------------------------------------------------------------
-          # Rota de Query: GET /api/v1/orders — lista paginada de ordens (CQRS Query Side)
-          # Endpoint: OrderQueryController.listOrders() — leitura do MongoDB
-          # -----------------------------------------------------------------------
+            paths: [/api/v1/orders]
+            methods: [POST, OPTIONS]
           - name: list-orders-route
-            paths:
-                - /api/v1/orders
-            methods:
-                - GET
-                - OPTIONS
-            strip_path: false
-            preserve_host: false
-            plugins:
-                # Rate-limiting de leitura: 200 req/s (sobrescreve service-level 100 req/s)
-                - name: rate-limiting
-                  config:
-                      second: 200
-                      minute: 10000
-                      policy: redis
-                      redis_host: redis-kong
-                      redis_port: 6379
-                      redis_database: 1
-                      redis_password: ${REDIS_KONG_PASSWORD}
-                      limit_by: ip
-                      hide_client_headers: false
-                      fault_tolerant: true
-
-          # -----------------------------------------------------------------------
-          # Rota de Query: GET /api/v1/orders/{orderId} — detalhe de uma ordem
-          # Regex path: captura qualquer segmento após /api/v1/orders/ (UUID)
-          # Endpoint: OrderQueryController.getOrder() — leitura do MongoDB
-          # -----------------------------------------------------------------------
-          - name: get-order-by-id-route
-            paths:
-                - ~/api/v1/orders/[^/]+$
-            methods:
-                - GET
-                - OPTIONS
-            strip_path: false
-            preserve_host: false
-            plugins:
-                # Rate-limiting de leitura: 200 req/s (sobrescreve service-level 100 req/s)
-                - name: rate-limiting
-                  config:
-                      second: 200
-                      minute: 10000
-                      policy: redis
-                      redis_host: redis-kong
-                      redis_port: 6379
-                      redis_database: 1
-                      redis_password: ${REDIS_KONG_PASSWORD}
-                      limit_by: ip
-                      hide_client_headers: false
-                      fault_tolerant: true
-
+            paths: [/api/v1/orders]
+            methods: [GET, OPTIONS]
       plugins:
-          # -----------------------------------------------------------------------
-          # Plugin JWT (Kong CE): valida tokens RS256 emitidos pelo Keycloak
-          #
-          # Fluxo de validação:
-          #   1. Extrai o token do header `Authorization: Bearer <token>`
-          #   2. Usa o campo `iss` (key_claim_name) para localizar o consumer
-          #      e sua credencial RSA associada (provisionada pelo kong-setup.sh)
-          #   3. Verifica assinatura RS256 com a chave pública do Keycloak
-          #   4. Verifica claim `exp` (expiração)
-          #
-          # IMPORTANTE: o campo `key` da credencial JWT do consumer deve ser
-          # idêntico ao valor de `iss` no JWT emitido pelo Keycloak.
-          # Ex: "http://localhost:8080/realms/orderbook-realm"
-          # -----------------------------------------------------------------------
           - name: jwt
             config:
-                uri_param_names: [] # não aceitar JWT via query param (segurança)
-                cookie_names: [] # não aceitar JWT via cookie
-                header_names:
-                    - Authorization # padrão Bearer token
-                claims_to_verify:
-                    - exp # rejeita tokens expirados
-                key_claim_name: iss # mapeia consumer pelo campo `iss` do payload
-                maximum_expiration: 3600 # rejeita tokens com expiração > 1h no futuro
-                secret_is_base64: false # chave RSA em formato PEM, não base64
-                run_on_preflight: false # permite OPTIONS sem token (CORS preflight)
+                key_claim_name: iss
+                claims_to_verify: [exp]
 
-          # -----------------------------------------------------------------------
-          # Plugin Rate-Limiting (POST — escrita): 100 req/s por IP
-          #
-          # Limites de escrita (mais restritivo):
-          #   second: 100 req/s — limite de burst por IP
-          #   minute: 5000      — janela de 1 minuto para uso sustentado
-          #
-          # Limites de leitura (GET routes) são configurados por rota individual
-          # com 200 req/s (mais permissivo). Plugins no nível de service aplicam
-          # como fallback padrão.
-          #
-          # policy=redis: contadores compartilhados via Redis (redis-kong, db=1).
-          # Em cluster Kong com N nós, todos compartilham o mesmo contador
-          # garantindo que o limite seja global, não multiplicado por nó.
-          # fault_tolerant=true: Kong não bloqueia tráfego se Redis cair.
-          # -----------------------------------------------------------------------
-          - name: rate-limiting
-            config:
-                second: 100
-                minute: 5000
-                policy: redis # global: contadores compartilhados entre todos os nós Kong
-                redis_host: redis-kong # Redis dedicado ao rate-limiting (não da aplicação)
-                redis_port: 6379
-                redis_database: 1 # db=1 para isolar de dados de aplicação (db=0)
-                redis_password: ${REDIS_KONG_PASSWORD}
-                limit_by: ip
-                hide_client_headers: false # expõe X-RateLimit-* headers ao cliente
-                fault_tolerant: true # não bloqueia requisições se o rate-limiter falhar
-
-          # -----------------------------------------------------------------------
-          # Plugin CORS: permissivo para ambiente de desenvolvimento
-          # Em produção, restringir `origins` ao domínio do frontend
-          # -----------------------------------------------------------------------
-          - name: cors
-            config:
-                origins:
-                    - '*'
-                methods:
-                    - GET
-                    - POST
-                    - OPTIONS
-                headers:
-                    - Accept
-                    - Authorization
-                    - Content-Type
-                    - X-Requested-With
-                    - X-Correlation-ID
-                exposed_headers:
-                    - X-Auth-Token
-                    - X-Correlation-ID
-                credentials: false # false quando origins = "*"
-                max_age: 3600
-                preflight_continue: false # Kong responde ao preflight, não encaminha
-
-    # ---------------------------------------------------------------------------
-    # wallet-service: upstream do microsserviço Spring Boot na rede Docker interna
-    # ---------------------------------------------------------------------------
     - name: wallet-service
       url: http://wallet-service:8081
-      connect_timeout: 5000
-      read_timeout: 10000
-      write_timeout: 10000
-      retries: 0 # PATCH de saldo não é retentado automaticamente (não-idempotente)
-
       routes:
-          # -----------------------------------------------------------------------
-          # Rota de Consulta: GET /api/v1/wallets/{userId}
-          # Retorna id da carteira, id do usuário, saldos BRL e VIB disponíveis/bloqueados.
-          # Aceita apenas GET — cliente autenticado via Bearer JWT (Keycloak RS256).
-          # -----------------------------------------------------------------------
           - name: get-wallet-route
-            paths:
-                - /api/v1/wallets
-            methods:
-                - GET
-                - OPTIONS
-            strip_path: false
-            preserve_host: false
-
-          # -----------------------------------------------------------------------
-          # Rota de Atualização de Saldo: PATCH /api/v1/wallets/{walletId}/balance
-          # Atualiza brlAvailable e/ou vibAvailable da carteira.
-          # Regra de negócio (validada no wallet-service): saldo não pode ficar negativo.
-          # PATCH é usado porque a operação é parcial (pode atualizar apenas um asset).
-          # -----------------------------------------------------------------------
-          - name: update-wallet-balance-route
-            paths:
-                - ~/api/v1/wallets/[^/]+/balance
-            methods:
-                - PATCH
-                - OPTIONS
-            strip_path: false
-            preserve_host: false
-
+            paths: [/api/v1/wallets]
+            methods: [GET, OPTIONS]
       plugins:
-          # -----------------------------------------------------------------------
-          # Plugin JWT (Kong CE): valida tokens RS256 emitidos pelo Keycloak.
-          # Mesma configuração do order-service — consumer compartilhado (keycloak-realm-consumer).
-          # -----------------------------------------------------------------------
           - name: jwt
             config:
-                uri_param_names: []
-                cookie_names: []
-                header_names:
-                    - Authorization
-                claims_to_verify:
-                    - exp
                 key_claim_name: iss
-                maximum_expiration: 3600
-                secret_is_base64: false
-                run_on_preflight: false
+                claims_to_verify: [exp]
 
-          # -----------------------------------------------------------------------
-          # Rate-Limiting: mais permissivo que orders (operação de leitura + atualização
-          # administrativa). Em produção ajustar por consumer (não só por IP).
-          # policy=redis: mesmo Redis compartilhado (redis-kong, db=1).
-          # -----------------------------------------------------------------------
-          - name: rate-limiting
-            config:
-                second: 200
-                minute: 10000
-                policy: redis # global: contador compartilhado entre todos os nós Kong
-                redis_host: redis-kong
-                redis_port: 6379
-                redis_database: 1
-                redis_password: ${REDIS_KONG_PASSWORD}
-                limit_by: ip
-                hide_client_headers: false
-                fault_tolerant: true
-
-          # -----------------------------------------------------------------------
-          # CORS: mesmo padrão do order-service (permissivo para dev)
-          # -----------------------------------------------------------------------
-          - name: cors
-            config:
-                origins:
-                    - '*'
-                methods:
-                    - GET
-                    - PATCH
-                    - OPTIONS
-                headers:
-                    - Accept
-                    - Authorization
-                    - Content-Type
-                    - X-Requested-With
-                    - X-Correlation-ID
-                exposed_headers:
-                    - X-Auth-Token
-                    - X-Correlation-ID
-                credentials: false
-                max_age: 3600
-                preflight_continue: false
+consumers:
+    - username: keycloak-realm-consumer
+      jwt_secrets:
+          - key: "http://keycloak:8080/realms/orderbook-realm"
+            algorithm: RS256
+            rsa_public_key: |
+              -----BEGIN PUBLIC KEY-----
+              MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA9eifVbu0B1fm+Pa/xwzu
+              uhqwLjof4yaIcpSiEU0GuIv+M+qNkb3wWa6Pn76kKmPKEzE1s2yOuFP+tb4ShKD8
+              JJX2OcjN548hDUpm35050uQCz07/2ARHx8961YHjxD7NTeal+Qi4gKrfSX+iVcml
+              tLYfe2flhiKmNVVjnEirmb3mDemSnjbEm7jjIU3aA44zfV2jWgURusVBpPnYMygt
+              M6QUlrJfgqsflftpwqcMeoC1MNREV7GTeEtLeAzPgkTY5O67iEBX1YIN8kMLR+dI
+              rd42ssw2+WLzT11coJktIZ1x6Iq0RA4cVdnv0tEWq3lcOpVwcCNjoq2R6NQP767B
+              VQIDAQAB
+              -----END PUBLIC KEY-----
+          - key: "BhUNo0PtUXhAuYU3g43MUr22Sr-igi37_J3MtVa4kMo"
+            algorithm: RS256
+            rsa_public_key: |
+              -----BEGIN PUBLIC KEY-----
+              MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA9eifVbu0B1fm+Pa/xwzu
+              uhqwLjof4yaIcpSiEU0GuIv+M+qNkb3wWa6Pn76kKmPKEzE1s2yOuFP+tb4ShKD8
+              JJX2OcjN548hDUpm35050uQCz07/2ARHx8961YHjxD7NTeal+Qi4gKrfSX+iVcml
+              tLYfe2flhiKmNVVjnEirmb3mDemSnjbEm7jjIU3aA44zfV2jWgURusVBpPnYMygt
+              M6QUlrJfgqsflftpwqcMeoC1MNREV7GTeEtLeAzPgkTY5O67iEBX1YIN8kMLR+dI
+              rd42ssw2+WLzT11coJktIZ1x6Iq0RA4cVdnv0tEWq3lcOpVwcCNjoq2R6NQP767B
+              VQIDAQAB
+              -----END PUBLIC KEY-----
