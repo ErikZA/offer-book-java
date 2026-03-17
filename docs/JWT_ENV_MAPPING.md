@@ -20,18 +20,6 @@
 | **staging** | `http://keycloak:8080/realms/orderbook-realm/protocol/openid-connect/certs` | `http://keycloak:8080/realms/orderbook-realm` | Dentro da rede Docker `vibranium-staging-network` |
 | **prod** | Configurar via secrets management | Configurar via secrets management | Nunca hardcodar — usar Vault, AWS Secrets Manager, etc. |
 
-## Kong 3.4 DB-less & RS256
-
-No modo **DB-less** do Kong 3.4, a validação de tokens RS256 exige que a chave pública RSA seja fornecida explicitamente na configuração declarativa (`jwt_secrets`).
-
-O script `infra/kong/kong-setup.sh` automatiza esse processo:
-1. Busca o **JWKS** do Keycloak.
-2. Extrai o certificado `x5c` da chave correta.
-3. Formata como chave PEM pública.
-4. Gera o payload JSON e aplica via endpoint `/config` do Kong Admin API.
-
-Se estiver editando o `kong-init.yml` manualmente, certifique-se de que o campo `rsa_public_key` está preenchido no consumer correspondente.
-
 ## Consistência Issuer ↔ Token
 
 O campo `iss` no token JWT **DEVE** coincidir exatamente com o `issuer-uri` configurado no Spring Security.

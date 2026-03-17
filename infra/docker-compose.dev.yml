@@ -134,23 +134,6 @@ services:
             retries: 5
 
     # ================================================================================
-    # Redis-Kong — Redis dedicado para rate-limiting distribuído do Kong (dev)
-    # Isolado do Redis de aplicação. appendonly=no: contadores voláteis por design.
-    # ================================================================================
-    redis-kong:
-        image: redis:7-alpine
-        container_name: vibranium-redis-kong-dev
-        # requirepass via env var — senha diferente do Redis de aplicação
-        command: ['redis-server', '--appendonly', 'no', '--save', '', '--requirepass', '${REDIS_KONG_PASSWORD:?REDIS_KONG_PASSWORD is required — copie .env.example para .env}']
-        networks:
-            - vibranium-network-dev
-        healthcheck:
-            test: ['CMD', 'redis-cli', '-a', '${REDIS_KONG_PASSWORD}', 'ping']
-            interval: 10s
-            timeout: 5s
-            retries: 5
-
-    # ================================================================================
     # RabbitMQ 3.13 — Message broker para eventos de domínio e auth (Keycloak plugin)
     # ================================================================================
     rabbitmq:
@@ -399,17 +382,12 @@ services:
             KONG_PROXY_LISTEN: 0.0.0.0:8000
             KONG_PROXY_UI_LISTEN: 0.0.0.0:8002
             KONG_LOG_LEVEL: warn
-            # Senha do Redis Kong injetada para interpolação no kong-init.yml declarativo
-            REDIS_KONG_PASSWORD: ${REDIS_KONG_PASSWORD}
         ports:
             - '8000:8000'
             - '8001:8001'
             - '8002:8002'
         volumes:
             - ./kong/kong-init.yml:/etc/kong/kong.yml:ro
-        depends_on:
-            redis-kong:
-                condition: service_healthy
         networks:
             - vibranium-network-dev
         healthcheck:
@@ -418,32 +396,6 @@ services:
             timeout: 5s
             retries: 10
             start_period: 20s
-
-    # ================================================================================
-    # Kong-init — Provisiona JWT consumer com a chave pública do Keycloak
-    # Executa após Kong e Keycloak estarem healthy via kong-setup.sh
-    # ================================================================================
-    kong-init:
-        image: alpine:3.19
-        container_name: vibranium-kong-init-dev
-        environment:
-            KONG_ADMIN_URL: http://kong:8001
-            KEYCLOAK_URL: http://keycloak:8080
-            KEYCLOAK_REALM: orderbook-realm
-            KONG_CONSUMER_NAME: keycloak-realm-consumer
-            KEYCLOAK_ISSUER: http://keycloak:8080/realms/orderbook-realm
-            REDIS_KONG_PASSWORD: ${REDIS_KONG_PASSWORD}
-        volumes:
-            - ./kong/kong-setup.sh:/kong-setup.sh:ro
-            - ./kong/kong-init.yml:/kong-init.yml:ro
-        command: ["sh", "-c", "apk add --no-cache curl && curl -sL https://github.com/kong/deck/releases/download/v1.39.4/deck_1.39.4_linux_amd64.tar.gz | tar xz -C /usr/local/bin deck && sh /kong-setup.sh"]
-        depends_on:
-            kong:
-                condition: service_healthy
-            keycloak:
-                condition: service_healthy
-        networks:
-            - vibranium-network-dev
 
     # ================================================================================
     # order-service — Microsserviço Spring Boot com hot reload (dev)

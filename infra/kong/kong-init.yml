@@ -9,12 +9,12 @@ services:
     - name: order-service
       url: http://order-service:8080
       routes:
-          - name: place-order-route
+          - name: order-api-route
             paths: [/api/v1/orders]
-            methods: [POST, OPTIONS]
-          - name: list-orders-route
-            paths: [/api/v1/orders]
-            methods: [GET, OPTIONS]
+            strip_path: false
+          - name: order-admin-route
+            paths: [/order-service/admin]
+            strip_path: true
       plugins:
           - name: jwt
             config:
@@ -24,9 +24,12 @@ services:
     - name: wallet-service
       url: http://wallet-service:8081
       routes:
-          - name: get-wallet-route
+          - name: wallet-api-route
             paths: [/api/v1/wallets]
-            methods: [GET, OPTIONS]
+            strip_path: false
+          - name: wallet-admin-route
+            paths: [/wallet-service/admin]
+            strip_path: true
       plugins:
           - name: jwt
             config:
@@ -40,13 +43,13 @@ consumers:
             algorithm: RS256
             rsa_public_key: |
               -----BEGIN PUBLIC KEY-----
-              MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA9eifVbu0B1fm+Pa/xwzu
-              uhqwLjof4yaIcpSiEU0GuIv+M+qNkb3wWa6Pn76kKmPKEzE1s2yOuFP+tb4ShKD8
-              JJX2OcjN548hDUpm35050uQCz07/2ARHx8961YHjxD7NTeal+Qi4gKrfSX+iVcml
-              tLYfe2flhiKmNVVjnEirmb3mDemSnjbEm7jjIU3aA44zfV2jWgURusVBpPnYMygt
-              M6QUlrJfgqsflftpwqcMeoC1MNREV7GTeEtLeAzPgkTY5O67iEBX1YIN8kMLR+dI
-              rd42ssw2+WLzT11coJktIZ1x6Iq0RA4cVdnv0tEWq3lcOpVwcCNjoq2R6NQP767B
-              VQIDAQAB
+              MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArazAYGBIuiuzGNkxEjDq
+              FGG9Wh3yEYwcLfdKkkUfhYP2snxl//2odvJODXEduvWNGEcLZ6Od0qdTTOLF0yC9
+              7+kzfuE43iTGJqV/Yf4DVG/NFY9aT04LFwbVPJuG3pzLTK50Sh8tJxwZ/7cMsOE7
+              ErDgcHr1yCzKjuu/2XMy+VmWRPtRnxaE1NkUi4dsdB0g9MFyY/q2j3YT0fg4RTvw
+              DVZ/ZYxACrf2yBs5zt6NWeVLDIibVtCbJbRdw7NuTLCb1W6koSnRMbsEeTm6NrRe
+              BMgmvjGdvvSuQ6AV3J/5BXQJLfL0w7CCcGk8ARyocTTwDskEv8NGrLZ6rsrrityK
+              mQIDAQAB
               -----END PUBLIC KEY-----
           - key: "BhUNo0PtUXhAuYU3g43MUr22Sr-igi37_J3MtVa4kMo"
             algorithm: RS256

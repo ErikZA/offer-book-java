@@ -25,7 +25,6 @@ infra/
 │   └── keycloak-to-rabbit-3.0.5.jar  # Plugin: eventos Keycloak → RabbitMQ
 ├── kong/
 │   ├── kong-init.yml               # Configuração declarativa (services, routes, plugins)
-│   ├── kong-setup.sh               # Provisiona consumer JWT + credential Keycloak JWKS (one-shot)
 │   ├── jwks-rotation.sh            # ⭐ Script idempotente de rotação JWKS (AT-13.1)
 │   ├── jwks-rotator-entrypoint.sh  # ⭐ Entrypoint loop 6h do sidecar (AT-13.1)
 │   └── kong-config.md              # Documentação das rotas configuradas

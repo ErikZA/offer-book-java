@@ -15,7 +15,7 @@
 #   - jq  : parsing JSON confiável para extrair kid, x5c e credential IDs
 #          (alpine gr usa busybox grep/sed que não suportam JSON complexo)
 #
-# Build context: infra/ (kong-setup.sh e scripts estão em infra/kong/)
+# Build context: infra/ (scripts estão em infra/kong/)
 # ==============================================================================
 FROM alpine:3.19
 
