@@ -1,4 +1,4 @@
-# ADR-001 — Debezium Embedded: Suportado Apenas em Deployment Single-Instance
+# (DEPRECIADO) ADR-001 — Debezium Embedded: Suportado Apenas em Deployment Single-Instance
 
 | Campo       | Valor                                 |
 |-------------|---------------------------------------|
@@ -306,3 +306,4 @@ SELECT pg_drop_replication_slot('wallet_outbox_slot');
 - `apps/wallet-service/src/main/java/com/vibranium/walletservice/infrastructure/outbox/DebeziumOutboxEngine.java`
 - `apps/wallet-service/src/main/resources/application.yaml` — seção `app.outbox.debezium`
 - ADR relacionado: AT-08.1 — JdbcOffsetBackingStore para persistência de offset
+
