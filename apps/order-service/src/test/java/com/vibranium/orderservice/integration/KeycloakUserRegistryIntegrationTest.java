@@ -1,7 +1,9 @@
 package com.vibranium.orderservice.integration;
 
 import com.vibranium.orderservice.config.RabbitMQConfig;
+import com.vibranium.orderservice.domain.model.EventStoreEntry;
 import com.vibranium.orderservice.domain.model.UserRegistry;
+import com.vibranium.orderservice.domain.repository.EventStoreRepository;
 import com.vibranium.orderservice.domain.repository.UserRegistryRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -165,7 +167,7 @@ class KeycloakUserRegistryIntegrationTest extends AbstractIntegrationTest {
         await().atMost(8, SECONDS)
                 .untilAsserted(() -> {
                     // Verifica que a mensagem chegou na DLQ via polling
-                    Message dlq = rabbitTemplate.receive("order.dead-letter", 1000);
+                    Message dlq = rabbitTemplate.receive("order.keycloak.events.dlq", 1000);
                     assertThat(dlq)
                             .as("Mensagem malformada deve estar na DLQ após falha no listener")
                             .isNotNull();
