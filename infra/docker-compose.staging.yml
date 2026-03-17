@@ -1109,7 +1109,6 @@ services:
     # ================== Kong Init (Staging) ==================
     # Container de curta duração: provisiona services, routes, plugins JWT RS256,
     # rate-limiting Redis e credencial JWKS no Kong via Admin API.
-    # Executa kong/kong-setup.sh (264 linhas, 100% idempotente via PUT).
     # Equivalente ao kong-init do compose de produção (infra/docker-compose.yml L348).
     kong-init:
         build:

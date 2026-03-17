@@ -8,7 +8,7 @@ Dois modos de operação são suportados:
 | Ambiente | Modo         | Arquivo de Config       | Descrição                                    |
 | :------- | :----------- | :---------------------- | :------------------------------------------- |
 | Dev      | DB-less      | `kong-init.yml`         | Configuração declarativa (decK v3.0)         |
-| Staging  | DB mode      | `kong-setup.sh`         | Provisionamento via Admin API (imperativo)   |
+| Staging  | DB mode      | `kong-init.yml`         | Provisionamento via Admin API (imperativo)   |
 
 ## Services (Upstreams)
 
@@ -92,7 +92,6 @@ Dois modos de operação são suportados:
 | Arquivo                  | Ambiente | Descrição                                          |
 | :----------------------- | :------- | :------------------------------------------------- |
 | `kong-init.yml`          | Dev      | Configuração declarativa DB-less (decK v3.0)       |
-| `kong-setup.sh`          | Staging  | Provisionamento via Admin API (imperativo)         |
 | `kong-config.md`         | —        | Esta documentação de referência                    |
 
 ## Validação

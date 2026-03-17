@@ -5,6 +5,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpMethod;
 import org.springframework.core.convert.converter.Converter;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -33,6 +34,7 @@ import java.util.Map;
 @Configuration
 @EnableWebSecurity
 // Ativo em todos os perfis exceto 'e2e' (usado apenas em testes — E2eSecurityConfig está em src/test)
+@EnableMethodSecurity
 @Profile("!e2e")
 public class SecurityConfig {
 

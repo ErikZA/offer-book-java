@@ -76,7 +76,6 @@
 | **Redis `requirepass`** (AT-04) | ✅ | Autenticação habilitada em todos os Redis (app + kong) em todos os ambientes |
 | **`REDIS_PASSWORD` / `REDIS_KONG_PASSWORD`** (AT-04) | ✅ | Senhas via env vars (nunca hardcoded); `${REDIS_PASSWORD:?}` exige definição |
 | **`redis-kong`** separado (AT-04) | ✅ | Redis dedicado ao Kong rate-limiting em dev com `requirepass` próprio |
-| **`kong-init.yml` + `kong-setup.sh`** (AT-04) | ✅ | `redis_password` propagado para todos os plugins `rate-limiting` |
 | **`application.yaml`** (AT-04) | ✅ | `spring.data.redis.password: ${REDIS_PASSWORD:}` com fallback vazio para dev local |
 | **Testcontainers Redis auth** (AT-04) | ✅ | `--requirepass testpass` em AbstractIntegrationTest + testes isolados |
 | **`RedisAuthenticationIntegrationTest`** (AT-04) | ✅ 3/3 GREEN | Conexão com senha correta, sem senha (NOAUTH), senha errada (ERR) |

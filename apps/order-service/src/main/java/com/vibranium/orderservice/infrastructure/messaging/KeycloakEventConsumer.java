@@ -1,9 +1,10 @@
 package com.vibranium.orderservice.infrastructure.messaging;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.vibranium.orderservice.application.dto.KeycloakEventDto;
 import com.vibranium.orderservice.config.RabbitMQConfig;
+import com.vibranium.orderservice.application.service.UserRegistryService;
 import com.vibranium.orderservice.domain.model.UserRegistry;
 import com.vibranium.orderservice.domain.repository.UserRegistryRepository;
 import com.rabbitmq.client.Channel;
@@ -12,6 +13,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Component;
+
+import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 
 /**
  * Consumidor de eventos do Keycloak publicados pelo plugin
@@ -30,20 +34,6 @@ import org.springframework.stereotype.Component;
  * <p>Processamento é <strong>idempotente</strong>: verifica existência antes
  * de inserir — o UNIQUE constraint em {@code keycloak_id} é a segunda linha
  * de defesa, mas a verificação prévia evita exception de constraint violation.</p>
- *
- * <p>Payload do plugin aznamier (simplificado):</p>
- * <pre>{@code
- * {
- *   "id": "uuid",
- *   "time": 1234567890000,
- *   "type": "REGISTER",
- *   "realmId": "orderbook-realm",
- *   "clientId": "order-client",
- *   "userId": "uuid-do-usuario",
- *   "ipAddress": "127.0.0.1",
- *   "details": { "email": "...", "username": "..." }
- * }
- * }</pre>
  */
 @Component
 public class KeycloakEventConsumer {
@@ -53,32 +43,20 @@ public class KeycloakEventConsumer {
     /** Tipo de evento Keycloak que dispara o registro do usuário. */
     private static final String EVENT_TYPE_REGISTER = "REGISTER";
 
-    private final UserRegistryRepository userRegistryRepository;
+    private final UserRegistryService userRegistryService;
     private final ObjectMapper objectMapper;
 
-    public KeycloakEventConsumer(UserRegistryRepository userRegistryRepository,
+    public KeycloakEventConsumer(UserRegistryService userRegistryService,
                                  ObjectMapper objectMapper) {
-        this.userRegistryRepository = userRegistryRepository;
-        this.objectMapper           = objectMapper;
+        this.userRegistryService = userRegistryService;
+        this.objectMapper        = objectMapper;
     }
 
     /**
      * Processa mensagens da fila do Keycloak.
      *
      * <p>O payload é JSON bruto (não um objeto Java serializado pelo Spring AMQP),
-     * por isso o parâmetro é {@code String} — desserializamos manualmente.</p>
-     *
-     * <p>Mensagens malformadas ou que causam falha no processamento são NACKed
-     * sem requeue, sendo roteadas para a DLQ. Mensagens processadas com sucesso
-     * são ACKed.</p>
-     *
-     * <p>O parâmetro é {@code Message} (AMQP nativo) em vez de {@code @Payload byte[]}
-     * ou {@code @Payload String} para que o {@code Jackson2JsonMessageConverter} global
-     * seja completamente ignorado. Receber o {@code Message} diretamente faz o
-     * Spring AMQP entregar o objeto sem nenhuma conversão, evitando o
-     * {@code MismatchedInputException} que ocorre quando o converter tenta
-     * desserializar JSON Object como scalar String ou byte[].
-     * A conversão para String é feita manualmente com UTF-8.</p>
+     * por isso o parâmetro é {@code Message} — desserializamos manualmente.</p>
      *
      * @param amqpMessage   Mensagem AMQP nativa com bytes JSON brutos no body.
      * @param channel       Canal AMQP para ACK/NACK manual.
@@ -90,22 +68,35 @@ public class KeycloakEventConsumer {
         String routingKey = amqpMessage.getMessageProperties().getReceivedRoutingKey();
         logger.debug("Evento Keycloak recebido: routingKey={}", routingKey);
 
+        KeycloakEventDto event;
+        String body;
+
         try {
-            String payload = new String(amqpMessage.getBody(), java.nio.charset.StandardCharsets.UTF_8);
-            JsonNode tree = objectMapper.readTree(payload);
-            if (tree.isTextual()) {
-                // Compatibilidade com publishers que serializam JSON como string literal
-                tree = objectMapper.readTree(tree.asText());
+            body = new String(amqpMessage.getBody(), StandardCharsets.UTF_8);
+            
+            // Tenta desserializar diretamente. Se falhar, tenta como String literal (compatibilidade).
+            try {
+                event = objectMapper.readValue(body, KeycloakEventDto.class);
+            } catch (Exception e) {
+                // Tenta extrair como string literal (caso o publisher tenha escapado o JSON)
+                String unescaped = objectMapper.readValue(body, String.class);
+                event = objectMapper.readValue(unescaped, KeycloakEventDto.class);
             }
-            processEvent(tree);
+
+            if (event == null) {
+                logger.error("Payload Keycloak resultou em null — enviando para DLQ");
+                channel.basicNack(deliveryTag, false, false);
+                return;
+            }
+
+            processEvent(event, body);
             channel.basicAck(deliveryTag, false);
         } catch (JsonProcessingException e) {
-            // JSON malformado — NACK sem requeue (envia para DLQ)
-            logger.error("Payload Keycloak malformado — enviando para DLQ: error={}",
-                    e.getMessage());
+            // JSON genuinamente malformado ou incompatível com o DTO
+            logger.error("Payload Keycloak malformado — enviando para DLQ: error={}", e.getMessage());
             channel.basicNack(deliveryTag, false, false);
         } catch (Exception e) {
-            // Falha inesperada — NACK sem requeue para evitar poison pill
+            // Falha inesperada (ex: DB fora) — NACK sem requeue para evitar poison pill
             logger.error("Falha ao processar evento Keycloak: {}", e.getMessage(), e);
             channel.basicNack(deliveryTag, false, false);
         }
@@ -116,92 +107,51 @@ public class KeycloakEventConsumer {
     // -------------------------------------------------------------------------
 
     /**
-     * Processa o payload JSON decodificado:
-     * <ol>
-     *   <li>Ignora eventos que não sejam {@code REGISTER}.</li>
-     *   <li>Ignora eventos de erro ({@code error} preenchido).</li>
-     *   <li>Extrai {@code userId}; ignora se ausente ou vazio.</li>
-     *   <li>Verifica idempotência e persiste.</li>
-     * </ol>
+     * Processa o payload DTO decodificado.
      *
-     * @param tree Nó JSON raiz do evento.
+     * @param event DTO do evento Keycloak.
+     * @param body  JSON bruto do evento.
      */
-    void processEvent(JsonNode tree) {
-        // Filtro de realm removido: o binding na exchange amq.topic já garante
-        // que apenas eventos do realm correto (orderbook-realm) cheguem a esta fila.
-        // O plugin aznamier envia realmId como UUID interno do Keycloak
-        // (ex: 7628dd2f-df86-4fe6-b298-03b98b905fb0), não como nome legível.
-
-        String eventType     = tree.path("type").asText("");
-        String operationType = tree.path("operationType").asText("");
-        String resourceType  = tree.path("resourceType").asText("");
-
+    private void processEvent(KeycloakEventDto event, String body) {
         // Evento CLIENT (auto-cadastro via form de registro)
-        boolean isClientRegister = EVENT_TYPE_REGISTER.equalsIgnoreCase(eventType);
+        boolean isClientRegister = EVENT_TYPE_REGISTER.equalsIgnoreCase(event.type());
 
         // Evento ADMIN (criação de usuário via Keycloak Admin API / console)
-        // Payload: { "operationType": "CREATE", "resourceType": "USER", "resourcePath": "users/{uuid}" }
-        boolean isAdminCreateUser = "CREATE".equalsIgnoreCase(operationType)
-                && "USER".equalsIgnoreCase(resourceType);
+        boolean isAdminCreateUser = "CREATE".equalsIgnoreCase(event.operationType())
+                && "USER".equalsIgnoreCase(event.resourceType());
 
         if (!isClientRegister && !isAdminCreateUser) {
             logger.debug("Evento Keycloak ignorado: type={}, operationType={}, resourceType={}",
-                         eventType, operationType, resourceType);
+                         event.type(), event.operationType(), event.resourceType());
             return;
         }
 
-        // Verifica campo error (presente em eventos de FALHA — não deve criar registro)
-        JsonNode errorNode = tree.path("error");
-        if (!errorNode.isMissingNode() && !errorNode.isNull()) {
-            String error = errorNode.asText("");
-            if (!error.isBlank()) {
-                logger.warn("Evento Keycloak REGISTER/CREATE de erro ignorado: error={}", error);
-                return;
-            }
+        // Verifica campo error (presente em eventos de FALHA)
+        if (event.error() != null && !event.error().isBlank()) {
+            logger.warn("Evento Keycloak de erro ignorado: error={}", event.error());
+            return;
         }
 
-        String userId;
-
+        String userId = null;
         if (isClientRegister) {
-            // Eventos CLIENT sempre carregam userId no campo raiz
-            JsonNode userIdNode = tree.path("userId");
-            if (userIdNode.isNull() || userIdNode.isMissingNode()) {
-                logger.warn("Evento REGISTER sem userId (null/ausente) — descartando: payload={}", tree);
-                return;
+            if (event.userId() != null) {
+                userId = event.userId().toString();
             }
-            userId = userIdNode.asText("");
         } else {
-            // Eventos ADMIN carregam o userId no resourcePath: "users/{uuid}"
-            String resourcePath = tree.path("resourcePath").asText("");
-            if (resourcePath.startsWith("users/")) {
+            String resourcePath = event.resourcePath();
+            if (resourcePath != null && resourcePath.startsWith("users/")) {
                 userId = resourcePath.substring("users/".length());
-            } else {
-                // Fallback: alguns eventos admin também trazem userId no campo raiz
-                JsonNode userIdNode = tree.path("userId");
-                if (!userIdNode.isNull() && !userIdNode.isMissingNode()) {
-                    userId = userIdNode.asText("");
-                } else {
-                    logger.warn("Evento ADMIN CREATE sem resourcePath ou userId válido — descartando: payload={}", tree);
-                    return;
-                }
+            } else if (event.userId() != null) {
+                userId = event.userId().toString();
             }
         }
 
         if (userId == null || userId.isBlank()) {
-            logger.warn("Evento Keycloak sem userId válido (vazio) — descartando: payload={}", tree);
+            logger.warn("Evento Keycloak sem userId válido — descartando.");
             return;
         }
 
-        // Idempotência: evita inserção duplicada do mesmo usuário
-        if (userRegistryRepository.existsByKeycloakId(userId)) {
-            logger.debug("Usuário já registrado (idempotente): keycloakId={}", userId);
-            return;
-        }
-
-        UserRegistry registry = new UserRegistry(userId);
-        userRegistryRepository.save(registry);
-
-        logger.info("Usuário registrado no order-service: keycloakId={} (via {})",
-                userId, isClientRegister ? "CLIENT/REGISTER" : "ADMIN/CREATE");
+        // Delega para o serviço de registro (transacional: UserRegistry + EventStore)
+        userRegistryService.registerUser(userId, event, body);
     }
 }

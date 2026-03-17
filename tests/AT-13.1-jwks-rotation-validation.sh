@@ -164,7 +164,7 @@ if [ "$CONSUMER_STATUS" = "200" ]; then
     pass "Consumer '${KONG_CONSUMER}' registrado no Kong"
 else
     fail "Consumer '${KONG_CONSUMER}' não encontrado (HTTP ${CONSUMER_STATUS})"
-    fail "  Execute o kong-init (kong-setup.sh) antes do teste"
+    fail "  Execute o kong-init (kong-init.yml) antes do teste"
 fi
 
 JWT_CREDS=$(curl -sf "${KONG_ADMIN_URL}/consumers/${KONG_CONSUMER}/jwt" 2>/dev/null || echo '{"data":[]}')

@@ -76,13 +76,11 @@ vibranium-orderbook/
 │   ├── docker/
 │   │   ├── Dockerfile              # Imagem do test-runner Maven
 │   │   ├── Dockerfile.keycloak     # Keycloak com plugin RabbitMQ
-│   │   ├── Dockerfile.kong-init    # Init one-shot (kong-setup.sh)
 │   │   └── Dockerfile.jwks-rotator # ⭐ Sidecar rotação JWKS (AT-13.1)
 │   ├── postgres/
 │   │   └── init-postgres.sql
 │   ├── kong/
 │   │   ├── kong-config.md
-│   │   ├── kong-setup.sh           # Provisionamento inicial (one-shot)
 │   │   ├── jwks-rotation.sh        # ⭐ Script idempotente de rotação JWKS (AT-13.1)
 │   │   └── jwks-rotator-entrypoint.sh  # ⭐ Loop 6h do sidecar rotator (AT-13.1)
 │   ├── redis/                        # ⭐ AT-15 — Redis Cluster HA

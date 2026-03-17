@@ -236,7 +236,6 @@ if [ "$FAIL" -gt 0 ]; then
     echo ""
     echo "  Execute as correções em:"
     echo "    infra/kong/kong-init.yml"
-    echo "    infra/kong/kong-setup.sh"
     echo "    infra/docker-compose.yml"
     echo "    infra/docker-compose.staging.yml"
     echo ""
