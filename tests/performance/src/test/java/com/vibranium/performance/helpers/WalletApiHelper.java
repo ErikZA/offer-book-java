@@ -90,31 +90,32 @@ public final class WalletApiHelper {
      * Publica um evento REGISTER na exchange {@code amq.topic} via RabbitMQ Management API.
      *
      * <p>Necessário porque usuários criados via Keycloak Admin API não geram eventos
-     * {@code KK.EVENT.CLIENT.<realm>.REGISTER}. Este método simula o payload publicado
+     * {@code KK.EVENT.CLIENT.<realm>.<SUCCESS|ERROR>.<clientId>.REGISTER}. Este método simula o payload publicado
      * pelo plugin {@code aznamier/keycloak-event-listener-rabbitmq}.</p>
      *
      * @param user  Usuário de teste (deve ter keycloakId preenchido).
      * @param realm Nome do realm Keycloak.
      */
     public void publishRegisterEvent(TestUser user, String realm) {
-        String messageId = UUID.randomUUID().toString();
-        String routingKey = "KK.EVENT.CLIENT." + realm + ".REGISTER";
+        String eventId = UUID.randomUUID().toString();
+        String clientId = "order-client";
+        String routingKey = "KK.EVENT.CLIENT." + realm + ".SUCCESS." + clientId + ".REGISTER";
 
         // Payload no formato exato do plugin aznamier
         String eventPayload = String.format("""
                 {
-                  "@class": "com.github.aznamier.keycloak.event.provider.EventClientNotificationMqMsg",
+                  "id": "%s",
                   "time": %d,
                   "type": "REGISTER",
                   "realmId": "%s",
-                  "clientId": "account",
+                  "clientId": "%s",
                   "userId": "%s",
                   "ipAddress": "127.0.0.1",
                   "details": {
                     "username": "%s",
                     "email": "%s@vibranium-perf.com"
                   }
-                }""", System.currentTimeMillis(), realm, user.getKeycloakId(),
+                }""", eventId, System.currentTimeMillis(), realm, clientId, user.getKeycloakId(),
                 user.getUsername(), user.getUsername());
 
         // Envelope da Management API: /api/exchanges/{vhost}/{exchange}/publish
@@ -125,7 +126,9 @@ public final class WalletApiHelper {
         ObjectNode publishNode = MAPPER.createObjectNode();
         ObjectNode propsNode = publishNode.putObject("properties");
         propsNode.put("content_type", "application/json");
-        propsNode.put("message_id", messageId);
+        ObjectNode headersNode = propsNode.putObject("headers");
+        headersNode.put("x-event-id", eventId);
+        headersNode.put("__TypeId__", "com.github.aznamier.keycloak.event.provider.EventClientNotificationMqMsg");
         publishNode.put("routing_key", routingKey);
         publishNode.put("payload", eventPayload);
         publishNode.put("payload_encoding", "string");
@@ -146,8 +149,8 @@ public final class WalletApiHelper {
                 throw new RuntimeException("Failed to publish REGISTER event for " + user.getUsername()
                         + " (HTTP " + response.statusCode() + "): " + response.body());
             }
-            logger.info("Published REGISTER event for user {} (messageId={}, routingKey={})",
-                    user.getUsername(), messageId, routingKey);
+            logger.info("Published REGISTER event for user {} (eventId={}, routingKey={})",
+                    user.getUsername(), eventId, routingKey);
         } catch (IOException | InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Failed to publish REGISTER event for " + user.getUsername(), e);

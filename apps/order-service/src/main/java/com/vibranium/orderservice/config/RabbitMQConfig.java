@@ -21,6 +21,7 @@ import org.springframework.amqp.rabbit.connection.RabbitAccessor;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
+import org.springframework.amqp.support.converter.SimpleMessageConverter;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import java.lang.reflect.Field;
@@ -52,6 +53,43 @@ public class RabbitMQConfig {
     // Nomes das exchanges e filas (espelham application.yaml para consistência)
     // -------------------------------------------------------------------------
 
+     /**
+     * Fila que recebe eventos de criação de usuário publicados pelo plugin Keycloak.
+     * Promovida a constante para que testes e bindings referenciem sem strings literais.
+     */
+    public static final String QUEUE_KEYCLOAK_EVENTS = "order.keycloak.events";
+
+    /**
+     * Dead Letter Queue para eventos Keycloak não processáveis.
+     * Recebe mensagens NACKed com {@code requeue=false} da fila principal,
+     * garantindo rastreabilidade de falhas de registro de usuário.
+     */
+    public static final String QUEUE_KEYCLOAK_EVENTS_DLQ = "order.keycloak.events.dlq";
+
+    /**
+     * Routing key do plugin aznamier para evento de sucesso de criação de usuário
+     * no realm {@code orderbook-realm}.
+     *
+     * <p>Formato oficial do plugin:
+     * {@code KK.EVENT.CLIENT.<realm>.<SUCCESS|ERROR>.<#>}. # é todo tipo de evento  de sucesso</p>
+     */
+    public static final String RK_KEYCLOAK_REGISTER_SUCCESS =
+            "KK.EVENT.*.*.SUCCESS.#";
+
+    /**
+     * Alias para compatibilidade com testes existentes.
+     * Aponta para {@link #RK_KEYCLOAK_REGISTER_SUCCESS}.
+     */
+    public static final String RK_KEYCLOAK_REGISTER = RK_KEYCLOAK_REGISTER_SUCCESS;
+
+    /**
+     * Alias para compatibilidade com testes existentes.
+     * Aponta para {@link #QUEUE_KEYCLOAK_EVENTS}.
+     */
+    public static final String QUEUE_KEYCLOAK_REG = QUEUE_KEYCLOAK_EVENTS;
+
+
+
     /** Exchange de comandos (direct) — order-service → wallet-service. */
     public static final String COMMANDS_EXCHANGE     = "vibranium.commands";
 
@@ -67,7 +105,6 @@ public class RabbitMQConfig {
     // Filas consumidas pelo order-service
     public static final String QUEUE_FUNDS_RESERVED  = "order.events.funds-reserved";
     public static final String QUEUE_FUNDS_FAILED    = "order.events.funds-failed";
-    public static final String QUEUE_KEYCLOAK_REG    = "order.keycloak.user-register";
     public static final String QUEUE_DEAD_LETTER     = "order.dead-letter";
 
     // Filas publicadas pelo order-service (declaradas para que o broker as crie)
@@ -83,7 +120,6 @@ public class RabbitMQConfig {
     // Routing keys usadas pelos consumidores
     public static final String RK_FUNDS_RESERVED     = "wallet.events.funds-reserved";
     public static final String RK_FUNDS_FAILED       = "wallet.events.funds-reservation-failed";
-    public static final String RK_KEYCLOAK_REGISTER  = "KK.EVENT.CLIENT.orderbook-realm.REGISTER";
 
     /**
      * Routing key do {@code FundsSettlementFailedEvent} publicado pelo wallet-service
@@ -197,6 +233,19 @@ public class RabbitMQConfig {
     }
 
     /**
+     * Exchange topic built-in do RabbitMQ usada pelo plugin {@code aznamier/keycloak-event-listener-rabbitmq}.
+     * O plugin publica nesta exchange com routing keys no formato:
+     * {@code KK.EVENT.CLIENT.<realm>.<SUCCESS|ERROR>.<clientId>.<eventType>}.
+     *
+     * <p>Usa {@code amq.topic} (built-in) conforme configuração {@code KK_TO_RMQ_EXCHANGE}
+     * do plugin Keycloak. Não é um exchange customizado — o RabbitMQ já o mantém.</p>
+     */
+    @Bean
+    public TopicExchange keycloakEventsExchange() {
+        return new TopicExchange("amq.topic", true, false);
+    }
+
+    /**
      * Re-declara a exchange do wallet-service para comandos de liquidação.
      * Idempotente — garante que o order-service possa publicar {@code SettleFundsCommand}
      * mesmo se inicializar antes do wallet-service.
@@ -234,6 +283,7 @@ public class RabbitMQConfig {
                 .to(dlqExchange)
                 .with(QUEUE_DEAD_LETTER);
     }
+
 
     // -------------------------------------------------------------------------
     // Fila de FundsReservedEvent (wallet → order: fundos bloqueados)
@@ -284,27 +334,80 @@ public class RabbitMQConfig {
     // Fila de eventos Keycloak (plugin aznamier → amq.topic)
     // -------------------------------------------------------------------------
 
+    /**
+     * Liga a exchange do Keycloak à fila principal de eventos do order-service.
+     *
+     * <p>Captura todos os eventos de sucesso de todos os realms:
+     * {@code KK.EVENT.*.*.SUCCESS.#}. Isso inclui tanto eventos Client
+     * (self-registration via form) quanto Admin Events (criação via API).</p>
+     */
     @Bean
-    Queue keycloakRegisterQueue() {
-        return QueueBuilder.durable(QUEUE_KEYCLOAK_REG)
-                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
-                .withArgument("x-dead-letter-routing-key", QUEUE_DEAD_LETTER)
-                .build();
+    public Binding keycloakEventsBinding(
+            @Qualifier("orderKeycloakEventsQueue") Queue orderKeycloakEventsQueue,
+            @Qualifier("keycloakEventsExchange")   TopicExchange keycloakEventsExchange) {
+        return BindingBuilder
+                .bind(orderKeycloakEventsQueue)
+                .to(keycloakEventsExchange)
+                .with(RK_KEYCLOAK_REGISTER_SUCCESS);
     }
 
     /**
-     * Bind para o amq.topic built-in do RabbitMQ.
-     * O roteamento usa os routing keys do plugin aznamier:
-     * {@code KK.EVENT.CLIENT.orderbook-realm.REGISTER}.
+     * Liga o exchange DLX à Dead Letter Queue de eventos Keycloak.
+     *
+     * <p>O {@link DirectExchange} {@value DLQ_EXCHANGE} roteia via routing key exata.
+     * A routing key {@value QUEUE_KEYCLOAK_EVENTS_DLQ} corresponde ao valor declarado
+     * em {@code x-dead-letter-routing-key} da fila {@value QUEUE_KEYCLOAK_EVENTS},
+     * garantindo que apenas mensagens mortas desta fila específica cheguem aqui.</p>
      */
     @Bean
-    Binding keycloakRegisterBinding(
-            @Qualifier("keycloakRegisterQueue") Queue keycloakRegisterQueue) {
+    public Binding orderKeycloakEventsDlqBinding(
+            @Qualifier("orderKeycloakEventsDlQueue") Queue orderKeycloakEventsDlQueue,
+            @Qualifier("dlqExchange")                 DirectExchange dlqExchange) {
         return BindingBuilder
-                .bind(keycloakRegisterQueue)
-                .to(new TopicExchange(KEYCLOAK_EXCHANGE))
-                .with(RK_KEYCLOAK_REGISTER);
+                .bind(orderKeycloakEventsDlQueue)
+                .to(dlqExchange)
+                .with(QUEUE_KEYCLOAK_EVENTS_DLQ);
     }
+
+
+    /**
+     * Fila que recebe eventos de criação de usuário publicados pelo plugin
+     * {@code aznamier/keycloak-event-listener-rabbitmq}.
+     *
+     * <p>Configurada com DLX para garantir que eventos de registro com falha permanente
+     * (ex: falha de banco, estado de wallet inválido) não sejam silenciosamente descartados.
+     * O {@link com.vibranium.walletservice.infrastructure.messaging.KeycloakRabbitListener}
+     * executa {@code basicNack(tag, false, false)} nesses casos; sem DLX, a mensagem
+     * seria perdida, impedindo criação de wallet e auditoria posterior.</p>
+     *
+     * <p>Usa a mesma estratégia de DLQ por declaração explícita (em vez de policy)
+     * adotada nas filas de comandos — versionada em código, reproduzível em qualquer
+     * ambiente sem configuração manual no broker.</p>
+     */
+    @Bean
+    public Queue orderKeycloakEventsQueue() {
+        return QueueBuilder.durable(QUEUE_KEYCLOAK_EVENTS)
+                // Encaminha NACKs definitivos (requeue=false) para o exchange DLX
+                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
+                // Routing key determinística na DLQ — identifica a fila de origem
+                .withArgument("x-dead-letter-routing-key", QUEUE_KEYCLOAK_EVENTS_DLQ)
+                .build();
+    }
+
+        /**
+     * Dead Letter Queue para eventos Keycloak não processáveis.
+     *
+     * <p>Mensagens aqui representam usuários cujas wallets não puderam ser criadas.
+     * Requerem análise operacional e possível reprocessamento manual supervisionado.</p>
+     *
+     * <p>Declarada como fila simples durable — sem TTL nem retry automático,
+     * para evitar loops infinitos em mensagens genuinamente inválidas (poison pill).</p>
+     */
+    @Bean
+    public Queue orderKeycloakEventsDlQueue() {
+        return QueueBuilder.durable(QUEUE_KEYCLOAK_EVENTS_DLQ).build();
+    }
+
 
     // -------------------------------------------------------------------------
     // Nota de topologia: as filas wallet.commands.reserve-funds e
@@ -793,6 +896,44 @@ public class RabbitMQConfig {
         // mensagem na fila indefinidamente. Com false, a mensagem é rejeitada e roteada para
         // a DLX configurada em cada fila de projeção.
         factory.setDefaultRequeueRejected(false);
+        return factory;
+    }
+
+    // -------------------------------------------------------------------------
+    // Container Factory — Raw Message (sem conversão Jackson para Keycloak)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Container factory que utiliza {@link SimpleMessageConverter} em vez de
+     * {@link Jackson2JsonMessageConverter}, entregando a mensagem AMQP crua
+     * ao listener sem tentar desserializar o payload.
+     *
+     * <p><b>Motivação:</b> o plugin {@code aznamier/keycloak-event-listener-rabbitmq}
+     * seta o header {@code __TypeId__} com a classe
+     * {@code com.github.aznamier.keycloak.event.provider.EventClientNotificationMqMsg},
+     * que não existe no classpath do order-service. O {@link Jackson2JsonMessageConverter}
+     * global tenta resolver essa classe e lança {@code MessageConversionException}
+     * ("Class not found") <b>antes</b> do handler method ser invocado.</p>
+     *
+     * <p>O {@link SimpleMessageConverter} ignora completamente o {@code __TypeId__}
+     * e entrega os bytes brutos, permitindo que o
+     * {@link com.vibranium.orderservice.infrastructure.messaging.KeycloakEventConsumer}
+     * faça o parse manual com {@code ObjectMapper}.</p>
+     *
+     * @param connectionFactory Conexão AMQP gerenciada pelo Spring Boot.
+     */
+    @Bean
+    SimpleRabbitListenerContainerFactory rawMessageContainerFactory(
+            ConnectionFactory connectionFactory) {
+        SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
+        factory.setConnectionFactory(connectionFactory);
+        // SimpleMessageConverter: não tenta resolver __TypeId__ nem desserializar JSON
+        factory.setMessageConverter(new SimpleMessageConverter());
+        // MANUAL: alinhado com ACK/NACK explícito no KeycloakEventConsumer
+        factory.setAcknowledgeMode(AcknowledgeMode.MANUAL);
+        factory.setPrefetchCount(10);
+        factory.setConcurrentConsumers(1);
+        factory.setMaxConcurrentConsumers(5);
         return factory;
     }
 

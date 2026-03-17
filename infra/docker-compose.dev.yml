@@ -3,8 +3,8 @@ version: '3.8'
 # ================================================================================
 # AMBIENTE DE DESENVOLVIMENTO — Vibranium Platform
 # ================================================================================
-# Subir: docker compose -f infra/docker-compose.dev.yml up -d
-# Parar:  docker compose -f infra/docker-compose.dev.yml down -v
+# Subir: docker compose --env-file .env -f infra/docker-compose.dev.yml up -d
+# Parar:  docker compose --env-file .env -f infra/docker-compose.dev.yml down -v
 #
 # Regra de inicialização dos bancos:
 #   O PostgreSQL executa `infra/postgres/init-app-databases.sh` no PRIMEIRO boot,
@@ -333,6 +333,9 @@ services:
         container_name: vibranium-keycloak-dev
         ports:
             - '8180:8080'
+        entrypoint:
+            - /bin/sh
+            - /opt/keycloak/data/configure-admin-token.sh
         command:
             - start-dev
             - --import-realm
@@ -364,6 +367,7 @@ services:
             KK_TO_RMQ_USE_TLS: 'false'
         volumes:
             - keycloak_dev_data:/opt/keycloak/data
+            - ./keycloak/configure-admin-token.sh:/opt/keycloak/data/configure-admin-token.sh:ro
             # Realm importado automaticamente via --import-realm na subida
             - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm.json:ro
         depends_on:
@@ -427,11 +431,12 @@ services:
             KEYCLOAK_URL: http://keycloak:8080
             KEYCLOAK_REALM: orderbook-realm
             KONG_CONSUMER_NAME: keycloak-realm-consumer
-            KEYCLOAK_ISSUER: http://localhost:8180/realms/orderbook-realm
+            KEYCLOAK_ISSUER: http://keycloak:8080/realms/orderbook-realm
             REDIS_KONG_PASSWORD: ${REDIS_KONG_PASSWORD}
         volumes:
             - ./kong/kong-setup.sh:/kong-setup.sh:ro
-        command: ['sh', '/kong-setup.sh']
+            - ./kong/kong-init.yml:/kong-init.yml:ro
+        command: ["sh", "-c", "apk add --no-cache curl && curl -sL https://github.com/kong/deck/releases/download/v1.39.4/deck_1.39.4_linux_amd64.tar.gz | tar xz -C /usr/local/bin deck && sh /kong-setup.sh"]
         depends_on:
             kong:
                 condition: service_healthy
@@ -485,12 +490,13 @@ services:
             - ../libs:/app/libs
             - ../tests:/app/tests
             - ../pom.xml:/app/pom.xml
-            - m2_cache:/root/.m2
+            # Volume dedicado ao repositório local Maven para evitar conflito com cache legado corrompido.
+            - m2_repository_cache:/root/.m2/repository
         working_dir: /app
         command: >-
             bash -c "mvn install -N -DskipTests -q
             && mvn install -pl libs/common-contracts,libs/common-utils -DskipTests -q
-            && mvn spring-boot:run -pl apps/order-service -Dspring-boot.run.fork=false"
+            && mvn spring-boot:run -pl apps/order-service -Dspring-boot.run.fork=false -Dmaven.test.skip=true"
         depends_on:
             # postgres healthy = vibranium_orders E vibranium_wallet existem e respondem
             postgres:
@@ -548,12 +554,13 @@ services:
             - ../libs:/app/libs
             - ../tests:/app/tests
             - ../pom.xml:/app/pom.xml
-            - m2_cache:/root/.m2
+            # Volume dedicado ao repositório local Maven para evitar conflito com cache legado corrompido.
+            - m2_repository_cache:/root/.m2/repository
         working_dir: /app
         command: >-
             bash -c "mvn install -N -DskipTests -q
             && mvn install -pl libs/common-contracts,libs/common-utils -DskipTests -q
-            && mvn spring-boot:run -pl apps/wallet-service -Dspring-boot.run.fork=false"
+            && mvn spring-boot:run -pl apps/wallet-service -Dspring-boot.run.fork=false -Dmaven.test.skip=true"
         depends_on:
             postgres:
                 condition: service_healthy
@@ -585,4 +592,4 @@ volumes:
     keycloak_dev_data:
     prometheus_data:
     grafana_data:
-    m2_cache:
+    m2_repository_cache:

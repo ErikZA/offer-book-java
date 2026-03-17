@@ -53,7 +53,7 @@ import static org.mockito.Mockito.doThrow;
  * <p>O {@code KeycloakRabbitListener} usa ACK manual e executa
  * {@code channel.basicNack(tag, false, false)} nas seguintes situações:
  * <ul>
- *   <li>Mensagem sem {@code messageId} — não há como garantir idempotência.</li>
+ *   <li>Mensagem sem identificador do evento ({@code x-event-id/id/messageId}).</li>
  *   <li>Exceção inesperada no processamento (ex: falha de banco, estado inválido).</li>
  * </ul>
  * Com DLX configurado, o RabbitMQ encaminha automaticamente para {@code vibranium.dlq}
@@ -90,7 +90,7 @@ class KeycloakDlqIntegrationTest extends AbstractIntegrationTest {
     private static final String DLQ_EXCHANGE              = "vibranium.dlq";
     private static final String KEYCLOAK_EXCHANGE         = "amq.topic";
     private static final String KEYCLOAK_ROUTING_KEY      =
-            "KK.EVENT.CLIENT.vibranium-realm.SUCCESS.CLIENT.REGISTER";
+            RabbitMQConfig.RK_KEYCLOAK_REGISTER_SUCCESS;
 
     /**
      * Mock do WalletService para simular falha permanente no processamento.
@@ -193,7 +193,7 @@ class KeycloakDlqIntegrationTest extends AbstractIntegrationTest {
     /**
      * [RED → GREEN] Verifica o fluxo completo de dead-letter para o evento Keycloak:
      * <ol>
-     *   <li>Publica evento REGISTER válido com {@code messageId} na exchange do Keycloak.</li>
+     *   <li>Publica evento REGISTER válido com {@code x-event-id} na exchange do Keycloak.</li>
      *   <li>O {@code WalletService} mockado lança {@link RuntimeException} — simula poison pill.</li>
      *   <li>O listener executa {@code basicNack(tag, false, false)} — sem requeue.</li>
      *   <li>O RabbitMQ roteia para {@code vibranium.dlq} com routing key {@code wallet.keycloak.events.dlq}.</li>
@@ -218,25 +218,25 @@ class KeycloakDlqIntegrationTest extends AbstractIntegrationTest {
 
         // Monta payload no formato do plugin aznamier/keycloak-event-listener-rabbitmq
         UUID userId    = UUID.randomUUID();
-        String messageId = UUID.randomUUID().toString();
+        String eventId = UUID.randomUUID().toString();
         String payload = """
                 {
                   "id": "%s",
                   "time": %d,
                   "type": "REGISTER",
-                  "realmId": "vibranium-realm",
-                  "clientId": "vibranium-app",
+                  "realmId": "orderbook-realm",
+                  "clientId": "orderbook-ui",
                   "userId": "%s",
                   "ipAddress": "127.0.0.1",
                   "details": { "username": "testuser@vibranium.io" }
                 }
-                """.formatted(UUID.randomUUID(), System.currentTimeMillis(), userId);
+                """.formatted(eventId, System.currentTimeMillis(), userId);
 
-        // Mensagem com messageId presente — o listener consegue garantir idempotência
+        // Mensagem com x-event-id presente — o listener consegue garantir idempotência
         // e segue até createWallet, onde o mock força o RuntimeException → NACK
         MessageProperties props = new MessageProperties();
         props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
-        props.setMessageId(messageId);
+        props.setHeader("x-event-id", eventId);
         Message message = new Message(payload.getBytes(StandardCharsets.UTF_8), props);
 
         // Act — publica na exchange do Keycloak como o plugin faria

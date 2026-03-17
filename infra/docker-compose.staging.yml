@@ -913,6 +913,9 @@ services:
         ports:
             # Porta 8180 no host para evitar conflito com order-service-1 (8080)
             - '8180:8080'
+        entrypoint:
+            - /bin/sh
+            - /opt/keycloak/data/configure-admin-token.sh
         # start --optimized aproveita o build otimizado feito no Dockerfile
         # --import-realm importa automaticamente JSONs de /opt/keycloak/data/import/
         command:
@@ -962,6 +965,7 @@ services:
             - rabbitmq_password
         volumes:
             - keycloak_staging_data:/opt/keycloak/data
+            - ./keycloak/configure-admin-token.sh:/opt/keycloak/data/configure-admin-token.sh:ro
             # Realm importado automaticamente na subida
             - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm.json:ro
         depends_on:

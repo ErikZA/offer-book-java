@@ -107,7 +107,7 @@ groups:
             for: 5m
             annotations:
                 summary: 'Taxa de erro HTTP 5xx acima de 5% no {{ $labels.job }}'
-                description: 'O serviço {{ $labels.job }} está com {{ $values.A | humanizePercentage }} de taxa de erro (5xx). Investigar logs e traces no Jaeger.'
+                description: 'O serviço {{ $labels.job }} ultrapassou o limite de 5% de taxa de erro HTTP 5xx no período avaliado. Investigue logs e traces no Jaeger.'
                 runbook_url: ''
             labels:
                 severity: critical
@@ -148,9 +148,10 @@ groups:
 
           # ------------------------------------------------------------------
           # ALERTA 3: Circuit Breaker Open
-          # Resilience4j state: 0=CLOSED, 1=OPEN, 2=HALF_OPEN
-          # Se state >= 1 por mais de 1 min, dispara alerta.
-          # Circuit breaker aberto impede chamadas ao Redis match engine.
+          # Resilience4j exporta uma série por estado; para um dado circuit breaker,
+          # apenas o estado ativo vale 1. O alerta filtra explicitamente state="open"
+          # para evitar falso positivo quando state="closed" = 1.
+          # Circuit breaker aberto impede chamadas ao recurso downstream associado.
           # ------------------------------------------------------------------
           - uid: vibranium-circuit-breaker-open
             title: 'Circuit Breaker Open'
@@ -158,7 +159,7 @@ groups:
             for: 1m
             annotations:
                 summary: 'Circuit breaker "{{ $labels.name }}" está OPEN no {{ $labels.job }}'
-                description: 'O circuit breaker {{ $labels.name }} está aberto, bloqueando chamadas ao serviço downstream. Verificar saúde do Redis e logs do order-service.'
+                description: 'O circuit breaker {{ $labels.name }} está aberto, bloqueando chamadas ao recurso downstream associado. Verifique a dependência correspondente (Redis, PostgreSQL, MongoDB ou RabbitMQ), as métricas de saúde e os logs do order-service.'
                 runbook_url: ''
             labels:
                 severity: warning
@@ -170,7 +171,7 @@ groups:
                       to: 0
                   datasourceUid: prometheus
                   model:
-                      expr: 'resilience4j_circuitbreaker_state{job="order-service"}'
+                      expr: 'max by (job, name) (resilience4j_circuitbreaker_state{job="order-service",state="open"})'
                       legendFormat: '{{ name }}'
                       refId: A
                 - refId: B
@@ -194,5 +195,5 @@ groups:
                       conditions:
                           - evaluator:
                                 type: gt
-                                params: [0]
+                                params: [0.5]
                       refId: C

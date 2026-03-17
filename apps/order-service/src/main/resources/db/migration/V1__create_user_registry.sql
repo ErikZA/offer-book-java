@@ -5,7 +5,7 @@
 -- ao Keycloak. O order-service rejeita ordens de userId não presente aqui.
 --
 -- Populado via: KeycloakUserRabbitListener consome evento REGISTER do plugin
--- aznamier (amq.topic routing key KK.EVENT.CLIENT.orderbook-realm.REGISTER).
+-- aznamier (amq.topic routing key KK.EVENT.CLIENT.orderbook-realm.SUCCESS.*.REGISTER).
 -- ==============================================================================
 
 CREATE TABLE IF NOT EXISTS tb_user_registry (

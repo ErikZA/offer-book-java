@@ -65,4 +65,4 @@ A versão anterior, extensa e histórica, foi preservada em:
 ## Estado do Documento
 
 - Status: `canônico`
-- Última atualização: 2026-03-09
+- Última atualização: 2026-03-16

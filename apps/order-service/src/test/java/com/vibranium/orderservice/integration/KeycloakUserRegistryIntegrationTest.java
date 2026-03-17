@@ -1,6 +1,5 @@
 package com.vibranium.orderservice.integration;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vibranium.orderservice.config.RabbitMQConfig;
 import com.vibranium.orderservice.domain.model.UserRegistry;
 import com.vibranium.orderservice.domain.repository.UserRegistryRepository;
@@ -12,7 +11,7 @@ import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageProperties;
 import org.springframework.beans.factory.annotation.Autowired;
 
-import java.util.Map;
+import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -27,17 +26,12 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  * <p>Fluxo testado:</p>
  * <pre>
  *   Keycloak (plugin aznamier)
- *     → amq.topic  (routing key: KK.EVENT.CLIENT.orderbook-realm.REGISTER)
+ *     → amq.topic  (routing key: KK.EVENT.CLIENT.orderbook-realm.SUCCESS.*.REGISTER)
  *       → order.keycloak.user-register (queue)
- *         → KeycloakUserRabbitListener  [RED — não implementado]
+ *         → KeycloakEventConsumer
  *           → UserRegistryRepository.save()
  *             → tb_user_registry (PostgreSQL)
  * </pre>
- *
- * <p><strong>Estado RED:</strong> As classes {@code KeycloakUserRabbitListener} e
- * {@code UserRegistryRepository} ainda não existem. Todos os testes falham
- * por falha de compilação ou por {@code NoSuchBeanDefinitionException} ao subir
- * o contexto. Isso é esperado na Fase RED do TDD.</p>
  */
 @DisplayName("Keycloak User Registry — Integração RabbitMQ → PostgreSQL")
 class KeycloakUserRegistryIntegrationTest extends AbstractIntegrationTest {
@@ -46,15 +40,14 @@ class KeycloakUserRegistryIntegrationTest extends AbstractIntegrationTest {
     private static final String KC_EXCHANGE   = "amq.topic";
     /**
      * Routing key gerada pelo plugin aznamier para eventos de tipo REGISTER.
-     * Formato: KK.EVENT.CLIENT.{realm}.{eventType}
+     * Formato: KK.EVENT.CLIENT.{realm}.{SUCCESS|ERROR}.{clientId}.{eventType}
      */
-    private static final String KC_ROUTING_KEY = "KK.EVENT.CLIENT.orderbook-realm.REGISTER";
+    private static final String KC_ROUTING_KEY = RabbitMQConfig.RK_KEYCLOAK_REGISTER_SUCCESS;
+    private static final String KC_LOGIN_ROUTING_KEY =
+            "KK.EVENT.CLIENT.orderbook-realm.SUCCESS.order-client.LOGIN";
 
     @Autowired
     private UserRegistryRepository userRegistryRepository;
-
-    @Autowired
-    private ObjectMapper objectMapper;
 
     @BeforeEach
     void cleanDatabase() throws InterruptedException {
@@ -63,7 +56,7 @@ class KeycloakUserRegistryIntegrationTest extends AbstractIntegrationTest {
         //    são auto-acked; mas mensagens ainda na fila seriam processadas
         //    DEPOIS do deleteAll, criando registros “stale” que quebram
         //    os asserts dos testes subsequentes.
-        while (rabbitTemplate.receive(RabbitMQConfig.QUEUE_KEYCLOAK_REG, 200) != null) {
+        while (rabbitTemplate.receive(RabbitMQConfig.QUEUE_KEYCLOAK_EVENTS, 200) != null) {
             // descarta mensagens residuais
         }
         // 2. Aguarda consumidores em-voo (já com a mensagem, antes do ack) concluírem.
@@ -86,7 +79,7 @@ class KeycloakUserRegistryIntegrationTest extends AbstractIntegrationTest {
 
         // --- ACT ---
         // Simula o Keycloak (plugin aznamier) publicando na exchange amq.topic
-        rabbitTemplate.convertAndSend(KC_EXCHANGE, KC_ROUTING_KEY, payload);
+        publishRawEvent(KC_ROUTING_KEY, payload);
 
         // --- ASSERT ---
         // O listener deve consumir e salvar assincronamente; Awaitility aguarda até 8s
@@ -114,7 +107,7 @@ class KeycloakUserRegistryIntegrationTest extends AbstractIntegrationTest {
 
         // --- ACT --- Publica 3 vezes o mesmo userId
         for (int i = 0; i < 3; i++) {
-            rabbitTemplate.convertAndSend(KC_EXCHANGE, KC_ROUTING_KEY, payload);
+            publishRawEvent(KC_ROUTING_KEY, payload);
         }
 
         // --- ASSERT --- Deve existir EXATAMENTE 1 registro para o userId
@@ -137,11 +130,10 @@ class KeycloakUserRegistryIntegrationTest extends AbstractIntegrationTest {
     void whenLoginEventArrives_thenUserIsNotSavedInRegistry() throws Exception {
         // --- ARRANGE ---
         UUID userId = UUID.randomUUID();
-        String loginRoutingKey = "KK.EVENT.CLIENT.orderbook-realm.LOGIN";
         String payload = buildKeycloakRegisterEvent(userId, "LOGIN");
 
         // --- ACT ---
-        rabbitTemplate.convertAndSend(KC_EXCHANGE, loginRoutingKey, payload);
+        publishRawEvent(KC_LOGIN_ROUTING_KEY, payload);
 
         // --- ASSERT --- Após 3s, o usuário NÃO deve aparecer no registry
         // (a queue está binding apenas para REGISTER)
@@ -201,7 +193,7 @@ class KeycloakUserRegistryIntegrationTest extends AbstractIntegrationTest {
                 """.formatted(UUID.randomUUID(), System.currentTimeMillis());
 
         // --- ACT --- Não lança exceção ou para o context (expectativas negativas)
-        rabbitTemplate.convertAndSend(KC_EXCHANGE, KC_ROUTING_KEY, payloadSemUserId);
+        publishRawEvent(KC_ROUTING_KEY, payloadSemUserId);
 
         // --- ASSERT --- Após 3s, nenhum registro deve ter sido criado
         Thread.sleep(3_000);
@@ -227,8 +219,7 @@ class KeycloakUserRegistryIntegrationTest extends AbstractIntegrationTest {
 
         // --- ACT ---
         for (UUID uid : userIds) {
-            rabbitTemplate.convertAndSend(KC_EXCHANGE, KC_ROUTING_KEY,
-                    buildKeycloakRegisterEvent(uid, "REGISTER"));
+            publishRawEvent(KC_ROUTING_KEY, buildKeycloakRegisterEvent(uid, "REGISTER"));
         }
 
         // --- ASSERT ---
@@ -273,5 +264,12 @@ class KeycloakUserRegistryIntegrationTest extends AbstractIntegrationTest {
                 userId.toString().substring(0, 8),
                 userId.toString().substring(0, 8)
         );
+    }
+
+    private void publishRawEvent(String routingKey, String payload) {
+        MessageProperties props = new MessageProperties();
+        props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
+        Message message = new Message(payload.getBytes(StandardCharsets.UTF_8), props);
+        rabbitTemplate.send(KC_EXCHANGE, routingKey, message);
     }
 }

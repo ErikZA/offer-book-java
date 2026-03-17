@@ -29,7 +29,7 @@ import java.lang.reflect.Field;
  * <p>Topologia:</p>
  * <pre>
  *   Exchange: amq.topic (built-in topic — Keycloak plugin aznamier)
- *     └─ Binding: KK.EVENT.CLIENT.# → Queue: wallet.keycloak.events
+ *     └─ Binding: KK.EVENT.CLIENT.orderbook-realm.SUCCESS.*.REGISTER → Queue: wallet.keycloak.events
  *          └─ DLX: vibranium.dlq → wallet.keycloak.events.dlq
  *
  *   Exchange: wallet.commands (topic)
@@ -77,6 +77,16 @@ public class RabbitMQConfig {
      * garantindo rastreabilidade de falhas de registro de usuário.
      */
     public static final String QUEUE_KEYCLOAK_EVENTS_DLQ = "wallet.keycloak.events.dlq";
+
+    /**
+     * Routing key do plugin aznamier para evento de sucesso de criação de usuário
+     * no realm {@code orderbook-realm}.
+     *
+     * <p>Formato oficial do plugin:
+     * {@code KK.EVENT.CLIENT.<realm>.<SUCCESS|ERROR>.<#>}. # é todo tipo de evento  de sucesso</p>
+     */
+    public static final String RK_KEYCLOAK_REGISTER_SUCCESS =
+            "KK.EVENT.*.*.SUCCESS.#";
 
     /**
      * Exchange DLX (Dead Letter Exchange) centralizado para o wallet-service.
@@ -170,7 +180,7 @@ public class RabbitMQConfig {
     /**
      * Exchange topic built-in do RabbitMQ usada pelo plugin {@code aznamier/keycloak-event-listener-rabbitmq}.
      * O plugin publica nesta exchange com routing keys no formato:
-     * {@code KK.EVENT.CLIENT.<realm>.<eventType>}.
+     * {@code KK.EVENT.CLIENT.<realm>.<SUCCESS|ERROR>.<clientId>.<eventType>}.
      *
      * <p>Usa {@code amq.topic} (built-in) conforme configuração {@code KK_TO_RMQ_EXCHANGE}
      * do plugin Keycloak. Não é um exchange customizado — o RabbitMQ já o mantém.</p>
@@ -389,7 +399,8 @@ public class RabbitMQConfig {
 
     /**
      * Liga a exchange do Keycloak à fila de eventos.
-     * O wildcard {@code KK.EVENT.CLIENT.#} captura todos os eventos de todos os realms.
+     * O binding captura apenas eventos de sucesso do tipo REGISTER
+     * no realm {@code orderbook-realm}.
      */
     @Bean
     public Binding keycloakEventsBinding(
@@ -398,7 +409,7 @@ public class RabbitMQConfig {
         return BindingBuilder
                 .bind(walletKeycloakEventsQueue)
                 .to(keycloakEventsExchange)
-                .with("KK.EVENT.CLIENT.#");
+                .with(RK_KEYCLOAK_REGISTER_SUCCESS);
     }
 
     /**
@@ -453,7 +464,7 @@ public class RabbitMQConfig {
         return BindingBuilder
                 .bind(reserveFundsQueue)
                 .to(vibraniumCommandsExchange)
-                .with("wallet.commands.reserve-funds");
+                .with(QUEUE_RESERVE_FUNDS);
     }
 
     /**
@@ -471,7 +482,7 @@ public class RabbitMQConfig {
         return BindingBuilder
                 .bind(releaseFundsQueue)
                 .to(vibraniumCommandsExchange)
-                .with("wallet.commands.release-funds");
+                .with(QUEUE_RELEASE_FUNDS);
     }
 
     /**

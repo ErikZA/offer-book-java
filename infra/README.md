@@ -54,11 +54,11 @@ infra/
 ### Desenvolvimento (infra + aplicações com hot-reload)
 ```bash
 # Subir tudo
-docker compose -f infra/docker-compose.dev.yml up -d
+docker compose --env-file .env -f infra/docker-compose.dev.yml up -d
 
 # Subir apenas infraestrutura (sem apps)
 # mongo-rs-init é obrigatório: inicializa o replica set rs0 antes que os serviços conectem
-docker compose -f infra/docker-compose.dev.yml up -d postgres redis rabbitmq mongodb mongo-rs-init keycloak-db keycloak kong jaeger
+docker compose --env-file .env -f infra/docker-compose.dev.yml up -d postgres redis rabbitmq mongodb mongo-rs-init keycloak-db keycloak kong jaeger
 ```
 
 > **Jaeger UI** disponível em `http://localhost:16686` após subir o ambiente dev.
@@ -66,7 +66,7 @@ docker compose -f infra/docker-compose.dev.yml up -d postgres redis rabbitmq mon
 
 ### Infra isolada (sem aplicações)
 ```bash
-docker compose -f infra/docker-compose.yml up -d
+docker compose --env-file .env -f infra/docker-compose.yml up -d
 ```
 
 ### Redis Cluster HA (AT-15)
@@ -90,87 +90,6 @@ docker compose -f infra/docker-compose.staging.yml up mongo-rs-init
 # Apenas infra base (recomendado para validação sem apps)
 docker compose -f infra/docker-compose.staging.yml up -d \
   mongodb-1 mongodb-2 mongodb-3 mongo-rs-init \
-  postgres-primary redis-1 rabbitmq-1 keycloak-db keycloak kong-database kong-migration redis-kong kong kong-init
-
-# Stack completo (requer imagens pré-buildadas: order-service:latest, wallet-service:latest)
-docker compose -f infra/docker-compose.staging.yml up -d
-```
-
-> **Kong Init (AT-5.1.4)** — Em staging, o serviço `kong-init` (container de curta duração) provisiona
-> automaticamente 2 services (`order-service`, `wallet-service`), 3 routes e 9 plugins
-> (`jwt` + `rate-limiting` + `cors` × 3 rotas) via `kong-setup.sh` (idempotente via PUT).
-> Aguarda `kong`, `keycloak` e `redis-kong` estarem `healthy` antes de executar.
-> Rate-limiting usa `redis-kong:6379 db=1`. Consumer `keycloak-realm-consumer` registrado
-> com credencial JWT RS256 (JWKS do Keycloak). Após subir: `curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/api/v1/orders` deve retornar `401` (não `404`).
->
-> **PostgreSQL Streaming Replication (AT-5.1.3)** — Em staging, `postgres-primary` opera com
-> `wal_level=replica` e cria o usuário `replicator`. As réplicas (`postgres-replica-1/2`) usam
-> `pg-replica-entrypoint.sh` para clonar o primary via `pg_basebackup` e iniciar como
-> `hot_standby` (somente leitura). Todos os `wallet-service` (1, 2 e 3) apontam para
-> `postgres-primary` para escrita — a `condition: service_healthy` no `depends_on` garante
-> que o `initdb` + scripts de init + schema `vibranium` estejam prontos antes do Flyway conectar.
-> Para validar: `bash tests/AT-5.1.3-pg-streaming-replication-validation.sh`.
->
-> **⚠️ Primeiro boot:** apague os volumes das réplicas antes de subir:
-> ```bash
-> docker volume rm infra_postgres_replica_1_data infra_postgres_replica_2_data
-> # ou use: docker compose -f infra/docker-compose.staging.yml down -v
-```
-
-## 🐳 Portas expostas (dev)
-
-| Serviço          | Porta                        |
-|------------------|------------------------------|
-| PostgreSQL       | 5432                         |
-| MongoDB          | 27017                        |
-| Redis            | 6379                         |
-| RabbitMQ         | 5672 / 15672 (UI)            |
-| Keycloak         | 8080                         |
-| Kong Proxy       | 8000 / 8443                  |
-| Kong Admin       | 8001 / 8444                  |
-| Jaeger UI        | 16686                        |
-| Jaeger OTLP HTTP | 4318 (apps → Jaeger spans)   |
-| Jaeger OTLP gRPC | 4317                         |
-| Redis Cluster    | 6379–6384 (AT-15, redis-cluster) |
-
-> **Redis-Kong** (`redis-kong` / `vibranium-redis-kong`) **não expõe porta pública**.
-> Acessível somente internamente via `vibranium-infra`. Serve exclusivamente ao plugin
-> `rate-limiting` do Kong com `policy: redis` — contadores de rate-limiting globais (db=1).
-
-## ⚙️ Rate Limiting Distribuído (Kong + Redis)
-
-O plugin `rate-limiting` do Kong está configurado com `policy: redis` em todas as rotas.
-Isso garante que, em cluster Kong com múltiplos nós, o contador de requisições seja
-**compartilhado globalmente** — sem isso, cada nó manteria contador independente,
-multiplicando o limite efetivo pelo número de nós.
-
-| Configuração | Valor | Motivo |
-|---|---|---|
-| `policy` | `redis` | contador global entre todos os nós Kong |
-| `redis_host` | `redis-kong` | Redis dedicado (não o Redis de aplicação) |
-| `redis_port` | `6379` | porta padrão Redis |
-| `redis_database` | `1` | namespace isolado (app usa db=0) |
-| `redis_password` | `${REDIS_KONG_PASSWORD}` | autenticação `requirepass` (AT-04) |
-| `fault_tolerant` | `true` | Kong não bloqueia se Redis cair |
-
-Script de validação: `tests/AT-12.1-rate-limiting-redis-validation.sh`
-
-```bash
-KONG_ADMIN_URL=http://localhost:8001 ./tests/AT-12.1-rate-limiting-redis-validation.sh
-```
-
-## ⚠️ Observações técnicas
-
-- **Keycloak**: imagem customizada com `keycloak-to-rabbit-3.0.5.jar` compilada via `kc.sh build --db=postgres --health-enabled=true`. O modo `start --optimized` (staging) exige essas flags no build-time.
-- **Kong 3.4**: não possui `curl` na imagem — healthcheck usa `kong health`.
-- **Redis-Kong**: Redis standalone dedicado ao Kong rate-limiting. Os redis de aplicação (`redis-1/2/3`) usam cluster mode — incompatível com o plugin rate-limiting do Kong 3.x (requer standalone ou Sentinel). Dados efêmeros por design (`appendonly no`).
-- **Redis Cluster HA (AT-15)**: `docker-compose.redis-cluster.yml` provisiona 6 nós (3 masters + 3 replicas) com failover automático em < 10s (`cluster-node-timeout 5000`, `cluster-require-full-coverage no`). Todas as keys do Order Book usam hash tag `{vibranium}` para garantir mesmo slot CRC16. O profile Spring `cluster` ativa `spring.data.redis.cluster.nodes` com Lettuce adaptive topology refresh. Documentação completa: `docs/architecture/redis-cluster-setup.md`.
-- **MongoDB 7.0 — Replica Set Staging (AT-1.3.2)**: `docker-compose.staging.yml` usa 3 nós (`mongodb-1/2/3`) com `--replSet rs0 --keyFile /etc/mongod-keyfile`. Diferente do dev (keyFile aleatório por boot, safe para single-node), em staging o `docker-entrypoint-override-staging.sh` grava `MONGO_REPLICA_KEY` (env var FIXA e IDÊNTICA nos 3 nós) como keyFile — necessário para intra-cluster auth. O serviço `mongo-rs-init` executa `rs.initiate({_id:'rs0', members:[mongodb-1,mongodb-2,mongodb-3]})` após `service_healthy` nos 3 nós e aguarda eleicão do PRIMARY antes de sair com código 0. Os `order-services` usam `service_completed_successfully` em `mongo-rs-init`.
-- **MongoDB 7.0 — Replica Set (AT-1.3.1)**: `MongoTransactionManager` exige replica set para criar sessões de transação. O serviço `mongodb` sobe com `--replSet rs0 --keyFile /etc/mongod-keyfile` (MongoDB 7 exige keyFile quando `--auth + --replSet` estão ativos). O `docker-entrypoint-override.sh` gera o keyFile via `openssl rand -base64 756` em cada boot (seguro para single-node dev). O serviço `mongo-rs-init` executa `rs.initiate()` após o healthcheck pass e aguarda `stateStr === 'PRIMARY'` antes de sair com código 0. O `order-service` usa `depends_on: mongo-rs-init: service_completed_successfully`.
-- **init-app-databases.sh**: usa heredoc para passar `\gexec` ao `psql` (metacomando não funciona com `--command`).
-
-
-| Serviço | Porta | Uso |
 |---------|-------|-----|
 | PostgreSQL | 5432 | Banco de dados principal |
 | MongoDB | 27017 | Audit/cache (opcional) |

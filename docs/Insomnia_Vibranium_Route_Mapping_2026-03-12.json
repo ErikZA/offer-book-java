@@ -28,6 +28,7 @@
         "realm": "orderbook-realm",
         "admin_realm": "master",
         "client_id": "order-client",
+        "order_client_uuid": "d5b0814e-de41-46ae-976f-0bb247e61b32",
         "admin_client_id": "admin-cli",
         "admin_username": "admin",
         "admin_password": "",
@@ -899,6 +900,129 @@
       ],
       "authentication": {},
       "metaSortKey": -1080.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_keycloak_enable_registration",
+      "parentId": "fld_user_management_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.keycloak_base_url }}/admin/realms/{{ _.realm }}",
+      "name": "PUT Enable Registration",
+      "description": "Habilita self-registration no realm.",
+      "method": "PUT",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"registrationAllowed\": true\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_kc_enable_reg_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.admin_access_token }}",
+          "id": "pair_kc_enable_reg_auth"
+        },
+        {
+          "name": "Content-Type",
+          "value": "application/json",
+          "id": "pair_kc_enable_reg_content_type"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -2005.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_keycloak_get_client_id",
+      "parentId": "fld_user_management_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.keycloak_base_url }}/admin/realms/{{ _.realm }}/clients",
+      "name": "GET Client By ClientId",
+      "description": "Busca o client (ex: order-client) para descobrir seu UUID interno no Keycloak.",
+      "method": "GET",
+      "body": {},
+      "parameters": [
+        {
+          "name": "clientId",
+          "value": "{{ _.client_id }}"
+        }
+      ],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_kc_get_client_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.admin_access_token }}",
+          "id": "pair_kc_get_client_auth"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -2004.0,
+      "isPrivate": false,
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "_type": "request"
+    },
+    {
+      "_id": "req_keycloak_update_client",
+      "parentId": "fld_user_management_routes",
+      "modified": 1773270000000,
+      "created": 1773270000000,
+      "url": "{{ _.keycloak_base_url }}/admin/realms/{{ _.realm }}/clients/{{ _.order_client_uuid }}",
+      "name": "PUT Update Client",
+      "description": "Atualiza configuracoes publicas do client, como webOrigins e redirectUris.",
+      "method": "PUT",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"redirectUris\": [\"*\"],\n  \"webOrigins\": [\"*\"],\n  \"clientId\": \"{{ _.client_id }}\"\n}"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Accept",
+          "value": "application/json",
+          "id": "pair_kc_update_client_accept"
+        },
+        {
+          "name": "Authorization",
+          "value": "Bearer {{ _.admin_access_token }}",
+          "id": "pair_kc_update_client_auth"
+        },
+        {
+          "name": "Content-Type",
+          "value": "application/json",
+          "id": "pair_kc_update_client_content_type"
+        }
+      ],
+      "authentication": {},
+      "metaSortKey": -2003.0,
       "isPrivate": false,
       "settingStoreCookies": true,
       "settingSendCookies": true,

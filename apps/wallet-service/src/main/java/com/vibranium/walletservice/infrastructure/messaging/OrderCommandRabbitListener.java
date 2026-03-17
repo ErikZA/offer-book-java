@@ -189,10 +189,10 @@ public class OrderCommandRabbitListener {
                 // ReserveFundsCommand, pois ambos têm campos JSON idênticos (walletId, asset, amount).
                 String consumerQueue = message.getMessageProperties().getConsumerQueue();
 
-                if ("wallet.commands.release-funds".equals(consumerQueue)) {
+                if (RabbitMQConfig.QUEUE_RELEASE_FUNDS.equals(consumerQueue)) {
                     ReleaseFundsCommand cmd = objectMapper.readValue(body, ReleaseFundsCommand.class);
                     walletService.releaseFunds(cmd, messageId);
-                } else if ("wallet.commands.reserve-funds".equals(consumerQueue)
+                } else if (RabbitMQConfig.QUEUE_RESERVE_FUNDS.equals(consumerQueue)
                         || (body.contains("\"walletId\"") && body.contains("\"asset\""))) {
                     ReserveFundsCommand cmd = objectMapper.readValue(body, ReserveFundsCommand.class);
                     walletService.reserveFunds(cmd, messageId);
