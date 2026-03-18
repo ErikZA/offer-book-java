@@ -17,10 +17,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 /**
- * Testa o {@code KeycloakEventConsumer} do order-service.
+ * Testa o {@code KeycloakRabbitListener} do order-service.
  *
  * <p>Valida o processamento de eventos REGISTER publicados pelo plugin
- * aznamier do Keycloak via RabbitMQ. Simula o envio de bytes JSON brutos
+ * aznamier del Keycloak via RabbitMQ. Simula o envio de bytes JSON brutos
  * (como o plugin Keycloak realmente faz), incluindo o header
  * {@code __TypeId__} que causa {@code MessageConversionException} quando
  * o consumer usa {@code Jackson2JsonMessageConverter} em vez de
@@ -30,8 +30,8 @@ import static org.awaitility.Awaitility.await;
  * como UUID interno do Keycloak (ex: {@code 7628dd2f-...}), não como o
  * nome legível do realm. Isso reproduz o comportamento real do plugin.</p>
  */
-@DisplayName("[Integration] KeycloakEventConsumer — Registro de usuários via Keycloak")
-class KeycloakEventConsumerIntegrationTest extends AbstractIntegrationTest {
+@DisplayName("[Integration] KeycloakRabbitListener — Registro de usuários via Keycloak")
+class KeycloakRabbitListenerIntegrationTest extends AbstractIntegrationTest {
 
     private static final String KEYCLOAK_EXCHANGE = "amq.topic";
     private static final String KEYCLOAK_REGISTER_ROUTING_KEY = RabbitMQConfig.RK_KEYCLOAK_REGISTER_SUCCESS;
