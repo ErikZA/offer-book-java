@@ -284,7 +284,7 @@ public class OrderCommandRabbitListener {
     private void publishToRetryQueue(Message message, int retryCount) {
         message.getMessageProperties().setHeader("x-settle-retry-count", retryCount);
         rabbitTemplate.send(
-                RabbitMQConfig.DLQ_EXCHANGE,
+                RabbitMQConfig.VIBRANIUM_DLQ_EXCHANGE,
                 RabbitMQConfig.QUEUE_SETTLE_RETRY,
                 message
         );

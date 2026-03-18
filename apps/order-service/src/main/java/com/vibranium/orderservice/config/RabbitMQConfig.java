@@ -1,299 +1,131 @@
 package com.vibranium.orderservice.config;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import io.micrometer.observation.ObservationRegistry;
-import io.micrometer.tracing.Tracer;
-import io.micrometer.tracing.TraceContext;
-import io.micrometer.tracing.propagation.Propagator;
-import io.micrometer.tracing.handler.PropagatingSenderTracingObservationHandler;
-import org.springframework.amqp.core.AcknowledgeMode;
-import org.springframework.amqp.core.Binding;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.amqp.core.BindingBuilder;
-import org.springframework.amqp.core.DirectExchange;
-import org.springframework.amqp.core.Queue;
-import org.springframework.amqp.core.QueueBuilder;
-import org.springframework.amqp.core.TopicExchange;
-import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
-import org.springframework.amqp.rabbit.connection.ConnectionFactory;
-import org.springframework.amqp.rabbit.connection.RabbitAccessor;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
-import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
-import org.springframework.amqp.support.converter.MessageConverter;
-import org.springframework.amqp.support.converter.SimpleMessageConverter;
+import com.vibranium.utils.messaging.BaseRabbitMQConfig;
+import org.springframework.amqp.core.*;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.SmartInitializingSingleton;
-import java.lang.reflect.Field;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
  * Declaração de toda a topologia do RabbitMQ do order-service.
- *
- * <p>Exchanges declaradas:</p>
- * <ul>
- *   <li>{@code vibranium.commands} — direct exchange para comandos entre serviços.</li>
- *   <li>{@code vibranium.events}   — topic exchange para eventos de domínio.</li>
- *   <li>{@code vibranium.dlq}      — direct exchange para dead-letter queue.</li>
- * </ul>
- *
- * <p>Todas as filas são {@code durable=true}: sobrevivem a restart do broker.</p>
- * <p>Filas principais têm DLX configurado para {@code vibranium.dlq} para
- * capturar mensagens rejeitadas após o número máximo de tentativas.</p>
+ * Estende {@link BaseRabbitMQConfig} para herdar conversão JSON e rastreabilidade.
  */
 @Configuration
-public class RabbitMQConfig {
-
-    private static final Logger logger = LoggerFactory.getLogger(RabbitMQConfig.class);
-
+public class RabbitMQConfig extends BaseRabbitMQConfig {
+    
     // -------------------------------------------------------------------------
-    // Nomes das exchanges e filas (espelham application.yaml para consistência)
+    // Order Publishing Routing Keys
     // -------------------------------------------------------------------------
-
-     /**
-     * Fila que recebe eventos de criação de usuário publicados pelo plugin Keycloak.
-     * Promovida a constante para que testes e bindings referenciem sem strings literais.
-     */
-    public static final String QUEUE_KEYCLOAK_EVENTS = "order.keycloak.events";
-
-    /**
-     * Dead Letter Queue para eventos Keycloak não processáveis.
-     * Recebe mensagens NACKed com {@code requeue=false} da fila principal,
-     * garantindo rastreabilidade de falhas de registro de usuário.
-     */
-    public static final String QUEUE_KEYCLOAK_EVENTS_DLQ = "order.keycloak.events.dlq";
-
-    /**
-     * Routing key do plugin aznamier para evento de sucesso de criação de usuário
-     * no realm {@code orderbook-realm}.
-     *
-     * <p>Formato oficial do plugin:
-     * {@code KK.EVENT.CLIENT.<realm>.<SUCCESS|ERROR>.<#>}. # é todo tipo de evento  de sucesso</p>
-     */
-    public static final String RK_KEYCLOAK_REGISTER_SUCCESS =
-            "KK.EVENT.*.*.SUCCESS.#";
-
-    /**
-     * Alias para compatibilidade com testes existentes.
-     * Aponta para {@link #RK_KEYCLOAK_REGISTER_SUCCESS}.
-     */
-    public static final String RK_KEYCLOAK_REGISTER = RK_KEYCLOAK_REGISTER_SUCCESS;
-
-    /**
-     * Alias para compatibilidade com testes existentes.
-     * Aponta para {@link #QUEUE_KEYCLOAK_EVENTS}.
-     */
-    public static final String QUEUE_KEYCLOAK_REG = QUEUE_KEYCLOAK_EVENTS;
-
-
-
-    /** Exchange de comandos (direct) — order-service → wallet-service. */
-    public static final String COMMANDS_EXCHANGE     = "vibranium.commands";
-
-    /** Exchange de eventos de domínio (topic) — compartilhada por todos os serviços. */
-    public static final String EVENTS_EXCHANGE       = "vibranium.events";
-
-    /** Exchange para mensagens na Dead Letter Queue. */
-    public static final String DLQ_EXCHANGE          = "vibranium.dlq";
-
-    /** Exchange built-in do RabbitMQ para eventos do Keycloak (plugin aznamier). */
-    public static final String KEYCLOAK_EXCHANGE     = "amq.topic";
-
-    // Filas consumidas pelo order-service
-    public static final String QUEUE_FUNDS_RESERVED  = "order.events.funds-reserved";
-    public static final String QUEUE_FUNDS_FAILED    = "order.events.funds-failed";
-    public static final String QUEUE_DEAD_LETTER     = "order.dead-letter";
-
-    // Filas publicadas pelo order-service (declaradas para que o broker as crie)
-    public static final String QUEUE_RESERVE_FUNDS   = "wallet.commands.reserve-funds";
-
-    /**
-     * Fila de {@code ReleaseFundsCommand} — compensação da Saga publicada pelo order-service
-     * quando uma ordem com fundos já reservados é cancelada (timeout OPEN/PARTIAL ou
-     * falha de liquidação). Consumida pelo wallet-service para desbloquear o saldo.
-     */
-    public static final String QUEUE_RELEASE_FUNDS   = "wallet.commands.release-funds";
-
-    // Routing keys usadas pelos consumidores
-    public static final String RK_FUNDS_RESERVED     = "wallet.events.funds-reserved";
-    public static final String RK_FUNDS_FAILED       = "wallet.events.funds-reservation-failed";
-
-    /**
-     * Routing key do {@code FundsSettlementFailedEvent} publicado pelo wallet-service
-     * quando a liquidação de um trade falha após um match bem-sucedido.
-     * O order-service consome este evento para emitir {@code ReleaseFundsCommand}
-     * compensatório para ambas as carteiras (buyer + seller) — AT-1.1.4.
-     */
-    public static final String RK_FUNDS_SETTLEMENT_FAILED = "wallet.events.funds-settlement-failed";
-
-    /**
-     * Fila do order-service para consumir {@code FundsSettlementFailedEvent}.
-     * Bound à {@code EVENTS_EXCHANGE} com routing key {@code RK_FUNDS_SETTLEMENT_FAILED}.
-     */
-    public static final String QUEUE_FUNDS_SETTLEMENT_FAILED = "order.events.funds-settlement-failed";
-
-    /**
-     * Routing key do {@code FundsReleaseFailedEvent} publicado pelo wallet-service
-     * quando a liberação de fundos bloqueados falha após um {@code ReleaseFundsCommand}.
-     * O order-service consome este evento para cancelar a ordem e alertar operações.
-     */
-    public static final String RK_FUNDS_RELEASE_FAILED = "wallet.events.funds-release-failed";
-
-    /**
-     * Fila do order-service para consumir {@code FundsReleaseFailedEvent}.
-     * Bound à {@code EVENTS_EXCHANGE} com routing key {@code RK_FUNDS_RELEASE_FAILED}.
-     */
-    public static final String QUEUE_FUNDS_RELEASE_FAILED = "order.events.funds-release-failed";
-
-    /** DLQ para mensagens tóxicas da fila {@code order.events.funds-release-failed}. */
-    public static final String QUEUE_FUNDS_RELEASE_FAILED_DLQ = "order.events.funds-release-failed.dlq";
-
-    // -------------------------------------------------------------------------
-    // Filas do Read Model (projeção MongoDB — Query Side US-003)
-    // Fanout pattern: cada fila abaixo recebe uma cópia do evento via topic exchange.
-    // Garante que o Read Model seja atualizado de forma assíncrona e independente
-    // do fluxo de Command Side, sem acoplamento entre os consumers.
-    // -------------------------------------------------------------------------
-
-    /** Fila de projeção para {@code OrderReceivedEvent} → cria documento PENDING no Mongo. */
-    public static final String QUEUE_ORDER_PROJECTION_RECEIVED  = "order.projection.received";
-
-    /** Fila de projeção para {@code FundsReservedEvent} → appenda FUNDS_RESERVED; status → OPEN. */
-    public static final String QUEUE_ORDER_PROJECTION_FUNDS     = "order.projection.funds-reserved";
-
-    /** Fila de projeção para {@code MatchExecutedEvent} → appenda MATCH_EXECUTED; status → FILLED/PARTIAL. */
-    public static final String QUEUE_ORDER_PROJECTION_MATCH     = "order.projection.match-executed";
-
-    /** Fila de projeção para {@code OrderCancelledEvent} → appenda ORDER_CANCELLED; status → CANCELLED. */
-    public static final String QUEUE_ORDER_PROJECTION_CANCELLED = "order.projection.cancelled";
-
-    // Dead Letter Queues das filas de projeção (AT-2.2.1)
-    // Mensagens rejeitadas após desserialização inválida ou erro fatal são roteadas para estas filas.
-
-    /** DLQ para mensagens tóxicas da fila {@code order.projection.received}. */
-    public static final String QUEUE_ORDER_PROJECTION_RECEIVED_DLQ  = "order.projection.received.dlq";
-
-    /** DLQ para mensagens tóxicas da fila {@code order.projection.funds-reserved}. */
-    public static final String QUEUE_ORDER_PROJECTION_FUNDS_DLQ     = "order.projection.funds-reserved.dlq";
-
-    /** DLQ para mensagens tóxicas da fila {@code order.projection.match-executed}. */
-    public static final String QUEUE_ORDER_PROJECTION_MATCH_DLQ     = "order.projection.match-executed.dlq";
-
-    /** DLQ para mensagens tóxicas da fila {@code order.projection.cancelled}. */
-    public static final String QUEUE_ORDER_PROJECTION_CANCELLED_DLQ = "order.projection.cancelled.dlq";
-
-    // Routing keys dos eventos publicados pelo order-service (usadas nas projection bindings)
-    /** Routing key do {@code OrderReceivedEvent} — publicado em {@code OrderCommandService.placeOrder()}. */
-    public static final String RK_ORDER_RECEIVED    = "order.events.order-received";
-    /** Routing key do {@code MatchExecutedEvent} — publicado em {@code FundsReservedEventConsumer}. */
-    public static final String RK_MATCH_EXECUTED        = "order.events.match-executed";
-    /** Routing key do {@code OrderAddedToBookEvent} — publicado em {@code FundsReservedEventConsumer}. */
-    public static final String RK_ORDER_ADDED_TO_BOOK   = "order.events.order-added-to-book";
-    /** Routing key do {@code OrderCancelledEvent} — publicado em {@code FundsReservedEventConsumer}. */
-    public static final String RK_ORDER_CANCELLED           = "order.events.order-cancelled";
-    /** Routing key do {@code OrderFilledEvent} — publicado em {@code FundsReservedEventConsumer} quando match total. */
-    public static final String RK_ORDER_FILLED              = "order.events.order-filled";
-    /** Routing key do {@code OrderPartiallyFilledEvent} — publicado em {@code FundsReservedEventConsumer} quando match parcial. */
-    public static final String RK_ORDER_PARTIALLY_FILLED    = "order.events.order-partially-filled";
-
-    /**
-     * Exchange dedicada do wallet-service para comandos de liquidação.
-     * Re-declarada aqui idempotentemente para garantir existência no broker
-     * mesmo se o order-service inicializar antes do wallet-service.
-     */
-    public static final String WALLET_COMMANDS_EXCHANGE = "wallet.commands";
-
-    /**
-     * Routing key para {@code SettleFundsCommand} — publicado pelo order-service
-     * após o Motor de Match confirmar o cruzamento. Consumido pelo wallet-service
-     * na fila {@code wallet.commands}.
-     */
+    public static final String RK_ORDER_ADDED_TO_BOOK = "order.events.order-added-to-book";
+    public static final String RK_ORDER_FILLED = "order.events.order-filled";
+    public static final String RK_ORDER_PARTIALLY_FILLED = "order.events.order-partially-filled";
     public static final String RK_SETTLE_FUNDS = "wallet.command.settle-funds";
 
     // -------------------------------------------------------------------------
-    // Exchanges
+    // External Services (e.g. Wallet) queues used for publishing
+    // -------------------------------------------------------------------------
+    public static final String QUEUE_RESERVE_FUNDS = "wallet.commands.reserve-funds";
+    public static final String QUEUE_RELEASE_FUNDS = "wallet.commands.release-funds";
+
+    // -------------------------------------------------------------------------
+    // Global Topology & Exchanges
     // -------------------------------------------------------------------------
 
+    public static final String COMMANDS_EXCHANGE     = VIBRANIUM_COMMANDS_EXCHANGE;
+    public static final String EVENTS_EXCHANGE       = VIBRANIUM_EVENTS_EXCHANGE;
+    public static final String DLQ_EXCHANGE          = VIBRANIUM_DLQ_EXCHANGE;
+    public static final String KEYCLOAK_EXCHANGE     = AMQ_TOPIC_EXCHANGE;
+
     @Bean
-    DirectExchange commandsExchange() {
-        return new DirectExchange(COMMANDS_EXCHANGE, true, false);
+    DirectExchange vibraniumDlqExchange() {
+        return new DirectExchange(VIBRANIUM_DLQ_EXCHANGE, true, false);
     }
 
     @Bean
-    TopicExchange eventsExchange() {
-        return new TopicExchange(EVENTS_EXCHANGE, true, false);
+    DirectExchange vibraniumCommandsExchange() {
+        return new DirectExchange(VIBRANIUM_COMMANDS_EXCHANGE, true, false);
     }
 
     @Bean
-    DirectExchange dlqExchange() {
-        return new DirectExchange(DLQ_EXCHANGE, true, false);
+    TopicExchange vibraniumEventsExchange() {
+        return new TopicExchange(VIBRANIUM_EVENTS_EXCHANGE, true, false);
     }
 
-    /**
-     * Exchange topic built-in do RabbitMQ usada pelo plugin {@code aznamier/keycloak-event-listener-rabbitmq}.
-     * O plugin publica nesta exchange com routing keys no formato:
-     * {@code KK.EVENT.CLIENT.<realm>.<SUCCESS|ERROR>.<clientId>.<eventType>}.
-     *
-     * <p>Usa {@code amq.topic} (built-in) conforme configuração {@code KK_TO_RMQ_EXCHANGE}
-     * do plugin Keycloak. Não é um exchange customizado — o RabbitMQ já o mantém.</p>
-     */
-    @Bean
-    public TopicExchange keycloakEventsExchange() {
-        return new TopicExchange("amq.topic", true, false);
-    }
-
-    /**
-     * Re-declara a exchange do wallet-service para comandos de liquidação.
-     * Idempotente — garante que o order-service possa publicar {@code SettleFundsCommand}
-     * mesmo se inicializar antes do wallet-service.
-     */
     @Bean
     TopicExchange walletCommandsExchange() {
         return new TopicExchange(WALLET_COMMANDS_EXCHANGE, true, false);
     }
 
+    @Bean
+    TopicExchange keycloakEventsExchange() {
+        return new TopicExchange(AMQ_TOPIC_EXCHANGE, true, false);
+    }
+
     // -------------------------------------------------------------------------
-    // Dead Letter Queue
+    // Global Dead Letter Queue (Shared by most command/event queues)
     // -------------------------------------------------------------------------
+    public static final String QUEUE_DEAD_LETTER = "order.dead-letter";
 
     @Bean
     Queue orderDeadLetterQueue() {
-        // DLQ sem TTL — mensagens ficam aqui até intervenção manual
         return QueueBuilder.durable(QUEUE_DEAD_LETTER).build();
     }
 
-    /**
-     * Binding obrigatório: {@code vibranium.dlq} exchange → {@code order.dead-letter} queue.
-     *
-     * <p>Sem este binding, as filas configuradas com
-     * {@code x-dead-letter-exchange=vibranium.dlq} e
-     * {@code x-dead-letter-routing-key=order.dead-letter} descartariam as
-     * mensagens silenciosamente (unroutable), pois a exchange não teria
-     * destino declarado para essa routing key.</p>
-     */
     @Bean
     Binding deadLetterBinding(
             @Qualifier("orderDeadLetterQueue") Queue orderDeadLetterQueue,
-            @Qualifier("dlqExchange")          DirectExchange dlqExchange) {
-        return BindingBuilder
-                .bind(orderDeadLetterQueue)
-                .to(dlqExchange)
-                .with(QUEUE_DEAD_LETTER);
+            @Qualifier("vibraniumDlqExchange")          DirectExchange vibraniumDlqExchange) {
+        return BindingBuilder.bind(orderDeadLetterQueue).to(vibraniumDlqExchange).with(QUEUE_DEAD_LETTER);
     }
 
+    // -------------------------------------------------------------------------
+    // Keycloak Events
+    // -------------------------------------------------------------------------
+    public static final String QUEUE_KEYCLOAK_EVENTS = "order.keycloak.events";
+    public static final String QUEUE_KEYCLOAK_EVENTS_DLQ = "order.keycloak.events.dlq";
+    public static final String RK_KEYCLOAK_REGISTER_SUCCESS = "KK.EVENT.*.*.SUCCESS.#";
+
+    // Aliases for compatibility
+    public static final String RK_KEYCLOAK_REGISTER = RK_KEYCLOAK_REGISTER_SUCCESS;
+    public static final String QUEUE_KEYCLOAK_REG = QUEUE_KEYCLOAK_EVENTS;
+
+    @Bean
+    Queue orderKeycloakEventsQueue() {
+        return QueueBuilder.durable(QUEUE_KEYCLOAK_EVENTS)
+                .withArgument("x-dead-letter-exchange", VIBRANIUM_DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-routing-key", QUEUE_KEYCLOAK_EVENTS_DLQ)
+                .build();
+    }
+
+    @Bean
+    Binding keycloakEventsBinding(
+            @Qualifier("orderKeycloakEventsQueue") Queue orderKeycloakEventsQueue,
+            @Qualifier("keycloakEventsExchange")   TopicExchange keycloakEventsExchange) {
+        return BindingBuilder.bind(orderKeycloakEventsQueue).to(keycloakEventsExchange).with(RK_KEYCLOAK_REGISTER_SUCCESS);
+    }
+
+    @Bean
+    Queue orderKeycloakEventsDlQueue() {
+        return QueueBuilder.durable(QUEUE_KEYCLOAK_EVENTS_DLQ).build();
+    }
+
+    @Bean
+    Binding orderKeycloakEventsDlqBinding(
+            @Qualifier("orderKeycloakEventsDlQueue") Queue orderKeycloakEventsDlQueue,
+            @Qualifier("vibraniumDlqExchange")                 DirectExchange vibraniumDlqExchange) {
+        return BindingBuilder.bind(orderKeycloakEventsDlQueue).to(vibraniumDlqExchange).with(QUEUE_KEYCLOAK_EVENTS_DLQ);
+    }
 
     // -------------------------------------------------------------------------
-    // Fila de FundsReservedEvent (wallet → order: fundos bloqueados)
+    // Funds Events (Wallet -> Order)
     // -------------------------------------------------------------------------
+    public static final String RK_FUNDS_RESERVED = "wallet.events.funds-reserved";
+    public static final String QUEUE_FUNDS_RESERVED = "order.events.funds-reserved";
 
     @Bean
     Queue fundsReservedQueue() {
         return QueueBuilder.durable(QUEUE_FUNDS_RESERVED)
-                // Mensagens rejeitadas vão para a DLQ
-                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-exchange", VIBRANIUM_DLQ_EXCHANGE)
                 .withArgument("x-dead-letter-routing-key", QUEUE_DEAD_LETTER)
                 .build();
     }
@@ -301,21 +133,17 @@ public class RabbitMQConfig {
     @Bean
     Binding fundsReservedBinding(
             @Qualifier("fundsReservedQueue") Queue fundsReservedQueue,
-            @Qualifier("eventsExchange")     TopicExchange eventsExchange) {
-        return BindingBuilder
-                .bind(fundsReservedQueue)
-                .to(eventsExchange)
-                .with(RK_FUNDS_RESERVED);
+            @Qualifier("vibraniumEventsExchange")     TopicExchange vibraniumEventsExchange) {
+        return BindingBuilder.bind(fundsReservedQueue).to(vibraniumEventsExchange).with(RK_FUNDS_RESERVED);
     }
 
-    // -------------------------------------------------------------------------
-    // Fila de FundsReservationFailedEvent (wallet → order: reserva falhou)
-    // -------------------------------------------------------------------------
+    public static final String RK_FUNDS_FAILED = "wallet.events.funds-reservation-failed";
+    public static final String QUEUE_FUNDS_FAILED = "order.events.funds-failed";
 
     @Bean
     Queue fundsFailedQueue() {
         return QueueBuilder.durable(QUEUE_FUNDS_FAILED)
-                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-exchange", VIBRANIUM_DLQ_EXCHANGE)
                 .withArgument("x-dead-letter-routing-key", QUEUE_DEAD_LETTER)
                 .build();
     }
@@ -323,113 +151,17 @@ public class RabbitMQConfig {
     @Bean
     Binding fundsFailedBinding(
             @Qualifier("fundsFailedQueue") Queue fundsFailedQueue,
-            @Qualifier("eventsExchange")   TopicExchange eventsExchange) {
-        return BindingBuilder
-                .bind(fundsFailedQueue)
-                .to(eventsExchange)
-                .with(RK_FUNDS_FAILED);
+            @Qualifier("vibraniumEventsExchange")   TopicExchange vibraniumEventsExchange) {
+        return BindingBuilder.bind(fundsFailedQueue).to(vibraniumEventsExchange).with(RK_FUNDS_FAILED);
     }
 
-    // -------------------------------------------------------------------------
-    // Fila de eventos Keycloak (plugin aznamier → amq.topic)
-    // -------------------------------------------------------------------------
+    public static final String RK_FUNDS_SETTLEMENT_FAILED = "wallet.events.funds-settlement-failed";
+    public static final String QUEUE_FUNDS_SETTLEMENT_FAILED = "order.events.funds-settlement-failed";
 
-    /**
-     * Liga a exchange do Keycloak à fila principal de eventos do order-service.
-     *
-     * <p>Captura todos os eventos de sucesso de todos os realms:
-     * {@code KK.EVENT.*.*.SUCCESS.#}. Isso inclui tanto eventos Client
-     * (self-registration via form) quanto Admin Events (criação via API).</p>
-     */
-    @Bean
-    public Binding keycloakEventsBinding(
-            @Qualifier("orderKeycloakEventsQueue") Queue orderKeycloakEventsQueue,
-            @Qualifier("keycloakEventsExchange")   TopicExchange keycloakEventsExchange) {
-        return BindingBuilder
-                .bind(orderKeycloakEventsQueue)
-                .to(keycloakEventsExchange)
-                .with(RK_KEYCLOAK_REGISTER_SUCCESS);
-    }
-
-    /**
-     * Liga o exchange DLX à Dead Letter Queue de eventos Keycloak.
-     *
-     * <p>O {@link DirectExchange} {@value DLQ_EXCHANGE} roteia via routing key exata.
-     * A routing key {@value QUEUE_KEYCLOAK_EVENTS_DLQ} corresponde ao valor declarado
-     * em {@code x-dead-letter-routing-key} da fila {@value QUEUE_KEYCLOAK_EVENTS},
-     * garantindo que apenas mensagens mortas desta fila específica cheguem aqui.</p>
-     */
-    @Bean
-    public Binding orderKeycloakEventsDlqBinding(
-            @Qualifier("orderKeycloakEventsDlQueue") Queue orderKeycloakEventsDlQueue,
-            @Qualifier("dlqExchange")                 DirectExchange dlqExchange) {
-        return BindingBuilder
-                .bind(orderKeycloakEventsDlQueue)
-                .to(dlqExchange)
-                .with(QUEUE_KEYCLOAK_EVENTS_DLQ);
-    }
-
-
-    /**
-     * Fila que recebe eventos de criação de usuário publicados pelo plugin
-     * {@code aznamier/keycloak-event-listener-rabbitmq}.
-     *
-     * <p>Configurada com DLX para garantir que eventos de registro com falha permanente
-     * (ex: falha de banco, estado de wallet inválido) não sejam silenciosamente descartados.
-     * O {@link com.vibranium.walletservice.infrastructure.messaging.KeycloakRabbitListener}
-     * executa {@code basicNack(tag, false, false)} nesses casos; sem DLX, a mensagem
-     * seria perdida, impedindo criação de wallet e auditoria posterior.</p>
-     *
-     * <p>Usa a mesma estratégia de DLQ por declaração explícita (em vez de policy)
-     * adotada nas filas de comandos — versionada em código, reproduzível em qualquer
-     * ambiente sem configuração manual no broker.</p>
-     */
-    @Bean
-    public Queue orderKeycloakEventsQueue() {
-        return QueueBuilder.durable(QUEUE_KEYCLOAK_EVENTS)
-                // Encaminha NACKs definitivos (requeue=false) para o exchange DLX
-                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
-                // Routing key determinística na DLQ — identifica a fila de origem
-                .withArgument("x-dead-letter-routing-key", QUEUE_KEYCLOAK_EVENTS_DLQ)
-                .build();
-    }
-
-        /**
-     * Dead Letter Queue para eventos Keycloak não processáveis.
-     *
-     * <p>Mensagens aqui representam usuários cujas wallets não puderam ser criadas.
-     * Requerem análise operacional e possível reprocessamento manual supervisionado.</p>
-     *
-     * <p>Declarada como fila simples durable — sem TTL nem retry automático,
-     * para evitar loops infinitos em mensagens genuinamente inválidas (poison pill).</p>
-     */
-    @Bean
-    public Queue orderKeycloakEventsDlQueue() {
-        return QueueBuilder.durable(QUEUE_KEYCLOAK_EVENTS_DLQ).build();
-    }
-
-
-    // -------------------------------------------------------------------------
-    // Nota de topologia: as filas wallet.commands.reserve-funds e
-    // wallet.commands.release-funds são DECLARADAS pelo wallet-service (consumidor),
-    // que as configura com DLX. O order-service apenas publica nessas filas via
-    // COMMANDS_EXCHANGE (vibranium.commands) — não as declara aqui para evitar
-    // conflito de argumentos (PRECONDITION_FAILED) quando o wallet-service inicia.
-    // -------------------------------------------------------------------------
-
-    // -------------------------------------------------------------------------
-    // Fila de FundsSettlementFailedEvent (wallet → order: liquidação falhou — AT-1.1.4)
-    // -------------------------------------------------------------------------
-
-    /**
-     * Fila durable para {@code FundsSettlementFailedEvent} com DLX configurada.
-     * Falhas de processamento vão para a DLQ para intervenção manual, visto ser
-     * um evento crítico de incidente financeiro.
-     */
     @Bean
     Queue fundsSettlementFailedQueue() {
         return QueueBuilder.durable(QUEUE_FUNDS_SETTLEMENT_FAILED)
-                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-exchange", VIBRANIUM_DLQ_EXCHANGE)
                 .withArgument("x-dead-letter-routing-key", QUEUE_DEAD_LETTER)
                 .build();
     }
@@ -437,26 +169,18 @@ public class RabbitMQConfig {
     @Bean
     Binding fundsSettlementFailedBinding(
             @Qualifier("fundsSettlementFailedQueue") Queue fundsSettlementFailedQueue,
-            @Qualifier("eventsExchange")             TopicExchange eventsExchange) {
-        return BindingBuilder
-                .bind(fundsSettlementFailedQueue)
-                .to(eventsExchange)
-                .with(RK_FUNDS_SETTLEMENT_FAILED);
+            @Qualifier("vibraniumEventsExchange")             TopicExchange vibraniumEventsExchange) {
+        return BindingBuilder.bind(fundsSettlementFailedQueue).to(vibraniumEventsExchange).with(RK_FUNDS_SETTLEMENT_FAILED);
     }
 
-    // -------------------------------------------------------------------------
-    // Fila de FundsReleaseFailedEvent (wallet → order: liberação de fundos falhou)
-    // -------------------------------------------------------------------------
+    public static final String RK_FUNDS_RELEASE_FAILED = "wallet.events.funds-release-failed";
+    public static final String QUEUE_FUNDS_RELEASE_FAILED = "order.events.funds-release-failed";
+    public static final String QUEUE_FUNDS_RELEASE_FAILED_DLQ = "order.events.funds-release-failed.dlq";
 
-    /**
-     * Fila durable para {@code FundsReleaseFailedEvent} com DLX configurada.
-     * Evento crítico: fundos permanecem bloqueados indefinidamente — falhas de
-     * processamento vão para a DLQ para intervenção manual e alertas operacionais.
-     */
     @Bean
     Queue fundsReleaseFailedQueue() {
         return QueueBuilder.durable(QUEUE_FUNDS_RELEASE_FAILED)
-                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-exchange", VIBRANIUM_DLQ_EXCHANGE)
                 .withArgument("x-dead-letter-routing-key", QUEUE_FUNDS_RELEASE_FAILED_DLQ)
                 .build();
     }
@@ -464,14 +188,10 @@ public class RabbitMQConfig {
     @Bean
     Binding fundsReleaseFailedBinding(
             @Qualifier("fundsReleaseFailedQueue") Queue fundsReleaseFailedQueue,
-            @Qualifier("eventsExchange")          TopicExchange eventsExchange) {
-        return BindingBuilder
-                .bind(fundsReleaseFailedQueue)
-                .to(eventsExchange)
-                .with(RK_FUNDS_RELEASE_FAILED);
+            @Qualifier("vibraniumEventsExchange")          TopicExchange vibraniumEventsExchange) {
+        return BindingBuilder.bind(fundsReleaseFailedQueue).to(vibraniumEventsExchange).with(RK_FUNDS_RELEASE_FAILED);
     }
 
-    /** DLQ para mensagens tóxicas de {@code order.events.funds-release-failed}. */
     @Bean
     Queue fundsReleaseFailedDlq() {
         return QueueBuilder.durable(QUEUE_FUNDS_RELEASE_FAILED_DLQ).build();
@@ -480,33 +200,23 @@ public class RabbitMQConfig {
     @Bean
     Binding fundsReleaseFailedDlqBinding(
             @Qualifier("fundsReleaseFailedDlq") Queue fundsReleaseFailedDlq,
-            @Qualifier("dlqExchange")           DirectExchange dlqExchange) {
-        return BindingBuilder
-                .bind(fundsReleaseFailedDlq)
-                .to(dlqExchange)
-                .with(QUEUE_FUNDS_RELEASE_FAILED_DLQ);
+            @Qualifier("vibraniumDlqExchange")           DirectExchange vibraniumDlqExchange) {
+        return BindingBuilder.bind(fundsReleaseFailedDlq).to(vibraniumDlqExchange).with(QUEUE_FUNDS_RELEASE_FAILED_DLQ);
     }
 
     // -------------------------------------------------------------------------
-    // Filas de Projeção do Read Model (MongoDB — Query Side US-003)
-    //
-    // Cada fila abaixo recebe uma cópia independente do evento via topic exchange
-    // (fanout pattern). O consumer de projeção constrói e mantém o OrderDocument.
-    //
-    // AT-2.2.1: DLX configurada em todas as filas de projeção para capturar mensagens
-    // tóxicas (payload inválido / NullPointerException no listener) após esgotamento
-    // das tentativas. Sem DLX, mensagens não-desserializáveis causavam loop infinito
-    // quando defaultRequeueRejected=true (padrão do Spring AMQP), ou se perdiam
-    // silenciosamente com requeue=false. As DLQs correspondentes permitem inspeção
-    // e re-processamento manual via rabbitmqadmin ou Management UI.
+    // Order Projections (MongoDB - Read Model)
     // -------------------------------------------------------------------------
+
+    // Projection: Order Received
+    public static final String RK_ORDER_RECEIVED = "order.events.order-received";
+    public static final String QUEUE_ORDER_PROJECTION_RECEIVED = "order.projection.received";
+    public static final String QUEUE_ORDER_PROJECTION_RECEIVED_DLQ = "order.projection.received.dlq";
 
     @Bean
     Queue orderProjectionReceivedQueue() {
-        // AT-2.2.1: DLX configurada para capturar mensagens tóxicas (payload inválido).
-        // Routing key individual por fila permite diferenciar a origem na DLQ.
         return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_RECEIVED)
-                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-exchange", VIBRANIUM_DLQ_EXCHANGE)
                 .withArgument("x-dead-letter-routing-key", QUEUE_ORDER_PROJECTION_RECEIVED_DLQ)
                 .build();
     }
@@ -514,89 +224,10 @@ public class RabbitMQConfig {
     @Bean
     Binding orderProjectionReceivedBinding(
             @Qualifier("orderProjectionReceivedQueue") Queue orderProjectionReceivedQueue,
-            @Qualifier("eventsExchange")               TopicExchange eventsExchange) {
-        return BindingBuilder
-                .bind(orderProjectionReceivedQueue)
-                .to(eventsExchange)
-                .with(RK_ORDER_RECEIVED);
+            @Qualifier("vibraniumEventsExchange")               TopicExchange vibraniumEventsExchange) {
+        return BindingBuilder.bind(orderProjectionReceivedQueue).to(vibraniumEventsExchange).with(RK_ORDER_RECEIVED);
     }
 
-    @Bean
-    Queue orderProjectionFundsQueue() {
-        // AT-2.2.1: DLX para roteamento de mensagens tóxicas (FundsReservedEvent inválido).
-        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_FUNDS)
-                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
-                .withArgument("x-dead-letter-routing-key", QUEUE_ORDER_PROJECTION_FUNDS_DLQ)
-                .build();
-    }
-
-    @Bean
-    Binding orderProjectionFundsBinding(
-            @Qualifier("orderProjectionFundsQueue") Queue orderProjectionFundsQueue,
-            @Qualifier("eventsExchange")            TopicExchange eventsExchange) {
-        // Fanout: FundsReservedEvent já vai para order.events.funds-reserved (Command Side)
-        // E agora também para order.projection.funds-reserved (Read Model).
-        return BindingBuilder
-                .bind(orderProjectionFundsQueue)
-                .to(eventsExchange)
-                .with(RK_FUNDS_RESERVED);
-    }
-
-    @Bean
-    Queue orderProjectionMatchQueue() {
-        // AT-2.2.1: DLX para roteamento de mensagens tóxicas (MatchExecutedEvent inválido).
-        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_MATCH)
-                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
-                .withArgument("x-dead-letter-routing-key", QUEUE_ORDER_PROJECTION_MATCH_DLQ)
-                .build();
-    }
-
-    @Bean
-    Binding orderProjectionMatchBinding(
-            @Qualifier("orderProjectionMatchQueue") Queue orderProjectionMatchQueue,
-            @Qualifier("eventsExchange")            TopicExchange eventsExchange) {
-        return BindingBuilder
-                .bind(orderProjectionMatchQueue)
-                .to(eventsExchange)
-                .with(RK_MATCH_EXECUTED);
-    }
-
-    @Bean
-    Queue orderProjectionCancelledQueue() {
-        // AT-2.2.1: DLX para roteamento de mensagens tóxicas (OrderCancelledEvent inválido).
-        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_CANCELLED)
-                .withArgument("x-dead-letter-exchange", DLQ_EXCHANGE)
-                .withArgument("x-dead-letter-routing-key", QUEUE_ORDER_PROJECTION_CANCELLED_DLQ)
-                .build();
-    }
-
-    @Bean
-    Binding orderProjectionCancelledBinding(
-            @Qualifier("orderProjectionCancelledQueue") Queue orderProjectionCancelledQueue,
-            @Qualifier("eventsExchange")                TopicExchange eventsExchange) {
-        return BindingBuilder
-                .bind(orderProjectionCancelledQueue)
-                .to(eventsExchange)
-                .with(RK_ORDER_CANCELLED);
-    }
-
-    // -------------------------------------------------------------------------
-    // Dead Letter Queues das filas de projeção (AT-2.2.1)
-    //
-    // Cada DLQ captura as mensagens rejeitadas da fila correspondente.
-    // Binding: vibranium.dlq exchange → DLQ queue com routing key = nome da DLQ.
-    // Mensagens ficam nestas filas até intervenção manual (inspeção / re-processamento).
-    // -------------------------------------------------------------------------
-
-    /**
-     * DLQ para mensagens tóxicas de {@code order.projection.received}.
-     *
-     * <p>Captura payloads inválidos que causam {@code MessageConversionException}
-     * ou {@code NullPointerException} no listener {@code onOrderReceived}.
-     * O Spring AMQP emite {@code basicNack(requeue=false)} após o {@code autoAckContainerFactory}
-     * com {@code defaultRequeueRejected=false} — a mensagem é então encaminhada
-     * pela DLX {@code vibranium.dlq} com routing key {@code order.projection.received.dlq}.</p>
-     */
     @Bean
     Queue orderProjectionReceivedDlq() {
         return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_RECEIVED_DLQ).build();
@@ -605,14 +236,29 @@ public class RabbitMQConfig {
     @Bean
     Binding orderProjectionReceivedDlqBinding(
             @Qualifier("orderProjectionReceivedDlq") Queue orderProjectionReceivedDlq,
-            @Qualifier("dlqExchange")                DirectExchange dlqExchange) {
-        return BindingBuilder
-                .bind(orderProjectionReceivedDlq)
-                .to(dlqExchange)
-                .with(QUEUE_ORDER_PROJECTION_RECEIVED_DLQ);
+            @Qualifier("vibraniumDlqExchange")                DirectExchange vibraniumDlqExchange) {
+        return BindingBuilder.bind(orderProjectionReceivedDlq).to(vibraniumDlqExchange).with(QUEUE_ORDER_PROJECTION_RECEIVED_DLQ);
     }
 
-    /** DLQ para mensagens tóxicas de {@code order.projection.funds-reserved}. */
+    // Projection: Funds Reserved
+    public static final String QUEUE_ORDER_PROJECTION_FUNDS = "order.projection.funds-reserved";
+    public static final String QUEUE_ORDER_PROJECTION_FUNDS_DLQ = "order.projection.funds-reserved.dlq";
+
+    @Bean
+    Queue orderProjectionFundsQueue() {
+        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_FUNDS)
+                .withArgument("x-dead-letter-exchange", VIBRANIUM_DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-routing-key", QUEUE_ORDER_PROJECTION_FUNDS_DLQ)
+                .build();
+    }
+
+    @Bean
+    Binding orderProjectionFundsBinding(
+            @Qualifier("orderProjectionFundsQueue") Queue orderProjectionFundsQueue,
+            @Qualifier("vibraniumEventsExchange")            TopicExchange vibraniumEventsExchange) {
+        return BindingBuilder.bind(orderProjectionFundsQueue).to(vibraniumEventsExchange).with(RK_FUNDS_RESERVED);
+    }
+
     @Bean
     Queue orderProjectionFundsDlq() {
         return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_FUNDS_DLQ).build();
@@ -621,14 +267,30 @@ public class RabbitMQConfig {
     @Bean
     Binding orderProjectionFundsDlqBinding(
             @Qualifier("orderProjectionFundsDlq") Queue orderProjectionFundsDlq,
-            @Qualifier("dlqExchange")             DirectExchange dlqExchange) {
-        return BindingBuilder
-                .bind(orderProjectionFundsDlq)
-                .to(dlqExchange)
-                .with(QUEUE_ORDER_PROJECTION_FUNDS_DLQ);
+            @Qualifier("vibraniumDlqExchange")             DirectExchange vibraniumDlqExchange) {
+        return BindingBuilder.bind(orderProjectionFundsDlq).to(vibraniumDlqExchange).with(QUEUE_ORDER_PROJECTION_FUNDS_DLQ);
     }
 
-    /** DLQ para mensagens tóxicas de {@code order.projection.match-executed}. */
+    // Projection: Match Executed
+    public static final String RK_MATCH_EXECUTED = "order.events.match-executed";
+    public static final String QUEUE_ORDER_PROJECTION_MATCH = "order.projection.match-executed";
+    public static final String QUEUE_ORDER_PROJECTION_MATCH_DLQ = "order.projection.match-executed.dlq";
+
+    @Bean
+    Queue orderProjectionMatchQueue() {
+        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_MATCH)
+                .withArgument("x-dead-letter-exchange", VIBRANIUM_DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-routing-key", QUEUE_ORDER_PROJECTION_MATCH_DLQ)
+                .build();
+    }
+
+    @Bean
+    Binding orderProjectionMatchBinding(
+            @Qualifier("orderProjectionMatchQueue") Queue orderProjectionMatchQueue,
+            @Qualifier("vibraniumEventsExchange")            TopicExchange vibraniumEventsExchange) {
+        return BindingBuilder.bind(orderProjectionMatchQueue).to(vibraniumEventsExchange).with(RK_MATCH_EXECUTED);
+    }
+
     @Bean
     Queue orderProjectionMatchDlq() {
         return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_MATCH_DLQ).build();
@@ -637,14 +299,30 @@ public class RabbitMQConfig {
     @Bean
     Binding orderProjectionMatchDlqBinding(
             @Qualifier("orderProjectionMatchDlq") Queue orderProjectionMatchDlq,
-            @Qualifier("dlqExchange")             DirectExchange dlqExchange) {
-        return BindingBuilder
-                .bind(orderProjectionMatchDlq)
-                .to(dlqExchange)
-                .with(QUEUE_ORDER_PROJECTION_MATCH_DLQ);
+            @Qualifier("vibraniumDlqExchange")             DirectExchange vibraniumDlqExchange) {
+        return BindingBuilder.bind(orderProjectionMatchDlq).to(vibraniumDlqExchange).with(QUEUE_ORDER_PROJECTION_MATCH_DLQ);
     }
 
-    /** DLQ para mensagens tóxicas de {@code order.projection.cancelled}. */
+    // Projection: Order Cancelled
+    public static final String RK_ORDER_CANCELLED = "order.events.order-cancelled";
+    public static final String QUEUE_ORDER_PROJECTION_CANCELLED = "order.projection.cancelled";
+    public static final String QUEUE_ORDER_PROJECTION_CANCELLED_DLQ = "order.projection.cancelled.dlq";
+
+    @Bean
+    Queue orderProjectionCancelledQueue() {
+        return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_CANCELLED)
+                .withArgument("x-dead-letter-exchange", VIBRANIUM_DLQ_EXCHANGE)
+                .withArgument("x-dead-letter-routing-key", QUEUE_ORDER_PROJECTION_CANCELLED_DLQ)
+                .build();
+    }
+
+    @Bean
+    Binding orderProjectionCancelledBinding(
+            @Qualifier("orderProjectionCancelledQueue") Queue orderProjectionCancelledQueue,
+            @Qualifier("vibraniumEventsExchange")            TopicExchange vibraniumEventsExchange) {
+        return BindingBuilder.bind(orderProjectionCancelledQueue).to(vibraniumEventsExchange).with(RK_ORDER_CANCELLED);
+    }
+
     @Bean
     Queue orderProjectionCancelledDlq() {
         return QueueBuilder.durable(QUEUE_ORDER_PROJECTION_CANCELLED_DLQ).build();
@@ -653,314 +331,7 @@ public class RabbitMQConfig {
     @Bean
     Binding orderProjectionCancelledDlqBinding(
             @Qualifier("orderProjectionCancelledDlq") Queue orderProjectionCancelledDlq,
-            @Qualifier("dlqExchange")                 DirectExchange dlqExchange) {
-        return BindingBuilder
-                .bind(orderProjectionCancelledDlq)
-                .to(dlqExchange)
-                .with(QUEUE_ORDER_PROJECTION_CANCELLED_DLQ);
-    }
-
-    // -------------------------------------------------------------------------
-    // MessageConverter — JSON via Jackson (suporta records e DomainEvent)
-    // -------------------------------------------------------------------------
-
-    /**
-     * Converte mensagens AMQP para/de JSON usando o ObjectMapper da aplicação.
-     *
-     * <p>Injeta o {@code @Primary ObjectMapper} configurado em {@link JacksonConfig},
-     * garantindo que {@code Instant} seja serializado como epoch-millis (long)
-     * conforme o contrato de {@link com.vibranium.contracts.events.DomainEvent}.</p>
-     *
-     * <p>O Spring Boot {@code RabbitAutoConfiguration} detecta automaticamente
-     * este bean via {@code ObjectProvider<MessageConverter>} e o injeta no
-     * {@code RabbitTemplate} auto-configurado — sem necessidade de redefinir
-     * {@code RabbitTemplate} manualmente.</p>
-     */
-    @Bean
-    MessageConverter jsonMessageConverter(ObjectMapper objectMapper) {
-        return new Jackson2JsonMessageConverter(objectMapper);
-    }
-
-    /**
-     * AT-14.1 — Injeta o {@link ObservationRegistry} real no {@link RabbitTemplate} via reflexão.
-     *
-     * <p>O {@link RabbitAccessor} (superclasse do {@code RabbitTemplate}) inicializa
-     * {@code observationRegistry = ObservationRegistry.NOOP} e <strong>não expõe setter
-     * público</strong> para este campo. O mecanismo de descoberta tardia
-     * ({@code obtainObservationRegistry}) usa {@code ObjectProvider.getIfUnique()}, que
-     * retorna o fallback {@code NOOP} quando dois ou mais beans {@code ObservationRegistry}
-     * estão presentes no contexto — situação comum com test auto-configurations do Spring
-     * Boot ({@code TestObservabilityAutoConfiguration}) que adicionam instâncias auxiliares.</p>
-     *
-     * <p>Este {@link SmartInitializingSingleton} é invocado diretamente pelo
-     * {@code DefaultListableBeanFactory.preInstantiateSingletons()} <strong>após</strong>
-     * todos os singletons estarem completamente inicializados, garantindo que:</p>
-     * <ol>
-     *   <li>O {@code ObservationRegistry} da {@code ObservationAutoConfiguration} está
-     *       totalmente configurado com os {@code PropagatingTracingObservationHandler}
-     *       registrados (via {@code ObservationRegistryCustomizer}).</li>
-     *   <li>O {@code RabbitTemplate} já recebeu o callback
-     *       {@code ApplicationContextAware.setApplicationContext()}.</li>
-     *   <li>A injeção direta substitui {@code NOOP} pelo registry real antes do primeiro
-     *       {@code convertAndSend()}, habilitando a criação de spans OTel e a injeção
-     *       do header W3C {@code traceparent} em toda mensagem AMQP publicada.</li>
-     * </ol>
-     *
-     * @param rabbitTemplate      template auto-configurado pelo Spring Boot
-     * @param observationRegistry registry com {@code PropagatingTracingObservationHandler}
-     *                            registrado pelo {@code MicrometerTracingAutoConfiguration}
-     * @return singleton initializer que injeta o registry após todos os beans estarem prontos
-     */
-    /**
-     * Garante que o {@link RabbitTemplate} utiliza o {@link ObservationRegistry} correto
-     * (non-NOOP) e que o {@link PropagatingTracingObservationHandler} está registrado para
-     * propagar o header W3C {@code traceparent} nas mensagens AMQP.
-     *
-     * <p>Por que {@code SmartInitializingSingleton}: executado após todos os beans do contexto
-     * estarem criados, garantindo que {@code Tracer} e {@code Propagator} já existem.</p>
-     *
-     * <p>Por que reflexão no {@code RabbitTemplate}: o Spring Boot 3.4.x não expõe setter
-     * público para {@code observationRegistry} no {@link RabbitAccessor}; o
-     * {@code RabbitAutoConfiguration} não injeta o registry automaticamente.</p>
-     *
-     * <p><strong>Causa raiz do ContextPropagators vazio:</strong> em alguns contextos de boot
-     * o {@code OtelTracingBridgeAutoConfiguration.contextPropagators()} é instanciado com a
-     * lista de {@code TextMapPropagator} ainda vazia, resultando em um propagator sem campos
-     * ({@code fields()=[]}). O bean {@link #w3cContextPropagators()} abaixo corrige isso
-     * fornecendo um {@code ContextPropagators} explícito com {@code W3CTraceContextPropagator}.
-     * Adicionalmente, o {@code MessagePostProcessor} registrado aqui constrói o header
-     * {@code traceparent} diretamente do {@link TraceContext}, contornando o propagador
-     * potencialmente mal-configurado.</p>
-     *
-     * @param rabbitTemplate      instância gerenciada pelo Spring AMQP
-     * @param observationRegistry registry com handlers de tracing configurados pelo Actuator
-     * @param tracer              tracer OTel fornecido por {@code micrometer-tracing-bridge-otel}
-     * @param propagator          propagator W3C fornecido por {@code micrometer-tracing-bridge-otel}
-     * @return singleton initializer que injeta o registry e o header de propagação
-     */
-    @Bean
-    SmartInitializingSingleton rabbitTemplateObservationSetup(
-            RabbitTemplate rabbitTemplate,
-            ObservationRegistry observationRegistry,
-            Tracer tracer,
-            Propagator propagator) {
-        return () -> {
-            // ── 1. Pipeline de Observation: injeta ObservationRegistry real via reflexão ──
-            // Necessário porque RabbitAutoConfiguration não injeta ObservationRegistry no
-            // RabbitTemplate automaticamente no spring-rabbit 3.2.x.
-            try {
-                observationRegistry.observationConfig()
-                        .observationHandler(new PropagatingSenderTracingObservationHandler<>(tracer, propagator));
-
-                Field registryField = RabbitAccessor.class.getDeclaredField("observationRegistry");
-                registryField.setAccessible(true);
-                registryField.set(rabbitTemplate, observationRegistry);
-
-                // Bloqueia re-descoberta do registry via obtainObservationRegistry(), que
-                // poderia sobrescrever com NOOP (ObjectProvider.getIfUnique() falha quando
-                // há múltiplos beans ObservationRegistry no contexto de teste).
-                Field obtainedField = RabbitTemplate.class.getDeclaredField("observationRegistryObtained");
-                obtainedField.setAccessible(true);
-                obtainedField.set(rabbitTemplate, true);
-
-                logger.info("AT-14.1: ObservationRegistry + PropagatingTracingObservationHandler configurados no RabbitTemplate");
-            } catch (NoSuchFieldException | IllegalAccessException e) {
-                logger.warn("AT-14.1: Falha ao configurar observação via reflexão no RabbitTemplate", e);
-            }
-
-            // ── 2. MessagePostProcessor: garante traceparent W3C independente do pipeline ──
-            // Constrói o header traceparent diretamente do TraceContext, contornando o
-            // OtelPropagator cujo ContextPropagators pode estar vazio (sem W3CTraceContextPropagator)
-            // quando a auto-configuração do OTel Bridge é instanciada antes dos beans
-            // TextMapPropagator serem registrados.
-            //
-            // Formato W3C: "00-{traceId:32hex}-{spanId:16hex}-{01=sampled|00=not-sampled}"
-            // Spec: https://www.w3.org/TR/trace-context/#traceparent-header
-            rabbitTemplate.addBeforePublishPostProcessors(message -> {
-                // Não sobrescreve traceparent já presente: preserva contexto upstream
-                // (e.g., forwarding de mensagens entre serviços no mesmo trace distribuído)
-                if (message.getMessageProperties().getHeaders().containsKey("traceparent")) {
-                    return message;
-                }
-                io.micrometer.tracing.Span span = tracer.nextSpan()
-                        .name("rabbit.publish")
-                        .start();
-                if (!span.isNoop()) {
-                    TraceContext ctx = span.context();
-                    // Constrói traceparent conforme W3C TraceContext Level 1 spec
-                    String flags = Boolean.TRUE.equals(ctx.sampled()) ? "01" : "00";
-                    String traceparent = "00-" + ctx.traceId() + "-" + ctx.spanId() + "-" + flags;
-                    message.getMessageProperties().setHeader("traceparent", traceparent);
-                    logger.debug("AT-14.1: traceparent={}", traceparent);
-                } else {
-                    logger.warn("AT-14.1: OtelTracer retornou span NOOP — traceparent não injetado");
-                }
-                span.end();
-                return message;
-            });
-            logger.info("AT-14.1: MessagePostProcessor W3C traceparent registrado no RabbitTemplate");
-        };
-    }
-
-    // -------------------------------------------------------------------------
-    // Listener Container Factory — ACK Manual (idempotencia por tabela)
-    // -------------------------------------------------------------------------
-
-    /**
-     * Container factory com {@link AcknowledgeMode#MANUAL} para os consumers que
-     * utilizam idempotencia por tabela ({@link com.vibranium.orderservice.infrastructure.messaging.FundsReservedEventConsumer}
-     * e {@link com.vibranium.orderservice.infrastructure.messaging.FundsReservationFailedEventConsumer}).
-     *
-     * <p>Com ACK manual, o broker somente remove a mensagem da fila apos o consumer
-     * chamar {@code channel.basicAck(deliveryTag, false)} explicitamente.
-     * Isso garante que o ACK ocorre <strong>apos</strong> o commit JPA,
-     * eliminando a janela de duplicacao presente no ACK automatico.</p>
-     *
-     * <p>Referenciado nos listeners via {@code @RabbitListener(containerFactory = "manualAckContainerFactory")}.</p>
-     *
-     * @param connectionFactory  Conexao AMQP gerenciada pelo Spring Boot auto-configure.
-     * @param jsonMessageConverter Conversor Jackson2JSON compartilhado.
-     */
-    @Bean
-    SimpleRabbitListenerContainerFactory manualAckContainerFactory(
-            ConnectionFactory connectionFactory,
-            MessageConverter jsonMessageConverter) {
-        SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
-        factory.setConnectionFactory(connectionFactory);
-        factory.setMessageConverter(jsonMessageConverter);
-        // ACK manual: o consumer e responsavel por chamar basicAck/basicNack explicitamente
-        factory.setAcknowledgeMode(AcknowledgeMode.MANUAL);
-        // AT-09: prefetch=10 para filas de comando/evento financeiro.
-        // Opera\u00e7\u00f5es s\u00e3o idempotentes — seguro para processar em lote.
-        // N\u00e3o ultrapassar 10 para settlement (ordering financeiro).
-        factory.setPrefetchCount(10);
-        // AT-09: auto-escala de 1 a 5 threads conforme carga.
-        // Listeners individuais podem sobrescrever via @RabbitListener(concurrency="N").
-        factory.setConcurrentConsumers(1);
-        factory.setMaxConcurrentConsumers(5);
-        return factory;
-    }
-
-    // -------------------------------------------------------------------------
-    // Listener Container Factory — ACK Automático (projeção MongoDB — Query Side)
-    // -------------------------------------------------------------------------
-
-    /**
-     * Container factory com {@link AcknowledgeMode#AUTO} para os consumers de projeção
-     * ({@link com.vibranium.orderservice.application.query.consumer.OrderEventProjectionConsumer}).
-     *
-     * <h3>Por que AUTO e não MANUAL para projeção?</h3>
-     * <p>Os listeners de projeção não possuem parâmetro {@code Channel} e não chamam
-     * {@code basicAck()} explicitamente. Com o {@code acknowledge-mode: manual} global
-     * configurado em {@code application.yaml}, eles herdariam MANUAL pelo factory padrão
-     * e todas as mensagens ficariam em estado {@code unacknowledged} indefinidamente —
-     * acumulando no broker durante o ciclo de vida do serviço.</p>
-     *
-     * <h3>Justificativa de segurança</h3>
-     * <p>Filas de projeção são idempotentes: o filtro {@code $ne} no MongoDB
-     * ({@link com.vibranium.orderservice.application.query.service.OrderAtomicHistoryWriter})
-     * garante que eventos duplicados não corrompem o Read Model. O re-processamento
-     * acidental é inofensivo; a perda de evento degrada o Read Model mas não afeta
-     * o Command Side (PostgreSQL permanece íntegro).</p>
-     *
-     * <p>Com AUTO, o Spring AMQP chama {@code basicAck()} automaticamente após o método
-     * listener retornar sem exceção. Erros de processamento disparam o retry policy
-     * configurado em {@code application.yaml} (max-attempts=3) e, após esgotamento,
-     * a mensagem é descartada (sem DLX nas filas de projeção — comportamento intencional).</p>
-     *
-     * <p>Referenciado nos listeners via
-     * {@code @RabbitListener(containerFactory = "autoAckContainerFactory")}.</p>
-     *
-     * @param connectionFactory    Conexao AMQP gerenciada pelo Spring Boot auto-configure.
-     * @param jsonMessageConverter Conversor Jackson2JSON compartilhado com os demais factories.
-     */
-    @Bean
-    SimpleRabbitListenerContainerFactory autoAckContainerFactory(
-            ConnectionFactory connectionFactory,
-            MessageConverter jsonMessageConverter) {
-        SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
-        factory.setConnectionFactory(connectionFactory);
-        factory.setMessageConverter(jsonMessageConverter);
-        // AUTO: Spring AMQP confirma a mensagem automaticamente após o listener retornar.
-        // Adequado para projeções idempotentes onde mensagem perdida é preferível
-        // a mensagem acumulada indefinidamente no broker sem confirmação.
-        factory.setAcknowledgeMode(AcknowledgeMode.AUTO);
-        // AT-09: prefetch=50 para filas de projeção — leitura idempotente permite
-        // maior throughput sem risco de inconsistência.
-        factory.setPrefetchCount(50);
-        // AT-09: auto-escala de 1 a 5 threads para projeção.
-        factory.setConcurrentConsumers(1);
-        factory.setMaxConcurrentConsumers(5);
-        // AT-2.2.1: requeue=false em caso de exceção qualquer (não somente MessageConversionException).
-        // Sem este flag, NPEs e outros erros de runtime causariam loop infinito ao recolocar a
-        // mensagem na fila indefinidamente. Com false, a mensagem é rejeitada e roteada para
-        // a DLX configurada em cada fila de projeção.
-        factory.setDefaultRequeueRejected(false);
-        return factory;
-    }
-
-    // -------------------------------------------------------------------------
-    // Container Factory — Raw Message (sem conversão Jackson para Keycloak)
-    // -------------------------------------------------------------------------
-
-    /**
-     * Container factory que utiliza {@link SimpleMessageConverter} em vez de
-     * {@link Jackson2JsonMessageConverter}, entregando a mensagem AMQP crua
-     * ao listener sem tentar desserializar o payload.
-     *
-     * <p><b>Motivação:</b> o plugin {@code aznamier/keycloak-event-listener-rabbitmq}
-     * seta o header {@code __TypeId__} com a classe
-     * {@code com.github.aznamier.keycloak.event.provider.EventClientNotificationMqMsg},
-     * que não existe no classpath do order-service. O {@link Jackson2JsonMessageConverter}
-     * global tenta resolver essa classe e lança {@code MessageConversionException}
-     * ("Class not found") <b>antes</b> do handler method ser invocado.</p>
-     *
-     * <p>O {@link SimpleMessageConverter} ignora completamente o {@code __TypeId__}
-     * e entrega os bytes brutos, permitindo que o
-     * {@link com.vibranium.orderservice.infrastructure.messaging.KeycloakEventConsumer}
-     * faça o parse manual com {@code ObjectMapper}.</p>
-     *
-     * @param connectionFactory Conexão AMQP gerenciada pelo Spring Boot.
-     */
-    @Bean
-    SimpleRabbitListenerContainerFactory rawMessageContainerFactory(
-            ConnectionFactory connectionFactory) {
-        SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
-        factory.setConnectionFactory(connectionFactory);
-        // SimpleMessageConverter: não tenta resolver __TypeId__ nem desserializar JSON
-        factory.setMessageConverter(new SimpleMessageConverter());
-        // MANUAL: alinhado com ACK/NACK explícito no KeycloakEventConsumer
-        factory.setAcknowledgeMode(AcknowledgeMode.MANUAL);
-        factory.setPrefetchCount(10);
-        factory.setConcurrentConsumers(1);
-        factory.setMaxConcurrentConsumers(5);
-        return factory;
-    }
-
-    // -------------------------------------------------------------------------
-    // TransactionTemplate — Saga TCC (AT-2.1.1)
-    // -------------------------------------------------------------------------
-
-    /**
-     * {@link TransactionTemplate} utilizado pelo
-     * {@link com.vibranium.orderservice.infrastructure.messaging.FundsReservedEventConsumer}
-     * para separar as fases da Saga em transações JPA independentes.
-     *
-     * <p><strong>Motivação (AT-2.1.1):</strong> Redis não participa da transação JPA.
-     * Misturar operações Redis e JPA no mesmo {@code @Transactional} cria a ilusão
-     * de atomicidade distribuída que não existe — violação do padrão TCC
-     * (Try-Confirm-Cancel). O {@link TransactionTemplate} delimita explicitamente
-     * cada fase JPA, mantendo {@code tryMatch()} completamente fora de qualquer
-     * escopo transacional.</p>
-     *
-     * <p>Propagação {@code REQUIRED} (padrão): cria nova TX se nenhuma estiver ativa,
-     * que é justamente o caso no método listener (sem {@code @Transactional} externo).</p>
-     *
-     * @param transactionManager {@link PlatformTransactionManager} auto-configurado
-     *                           pelo Spring Boot JPA.
-     */
-    @Bean
-    TransactionTemplate sagaTransactionTemplate(PlatformTransactionManager transactionManager) {
-        return new TransactionTemplate(transactionManager);
+            @Qualifier("vibraniumDlqExchange")             DirectExchange vibraniumDlqExchange) {
+        return BindingBuilder.bind(orderProjectionCancelledDlq).to(vibraniumDlqExchange).with(QUEUE_ORDER_PROJECTION_CANCELLED_DLQ);
     }
 }
