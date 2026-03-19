@@ -1,6 +1,6 @@
 package com.vibranium.orderservice.application.service;
 
-import com.vibranium.orderservice.application.dto.KeycloakEventDto;
+import com.vibranium.utils.dto.KeycloakEventDto;
 import com.vibranium.orderservice.domain.model.UserRegistry;
 import com.vibranium.orderservice.domain.repository.UserRegistryRepository;
 import org.slf4j.Logger;
@@ -51,16 +51,17 @@ public class UserRegistryService {
         UserRegistry registry = new UserRegistry(userId);
         userRegistryRepository.save(registry);
 
+        UUID eventIdCtr = UUID.randomUUID();
         // 2. Persiste o evento bruto no Event Store para auditoria e replay
         // AggregateType "User" e AggregateId como o próprio userId do Keycloak
         eventStoreService.append(
-                UUID.randomUUID(), // ID interno do evento no Event Store
+                eventIdCtr, // ID interno do evento no Event Store
                 userId,
                 "User",
                 event.type() != null ? event.type() : "ADMIN_CREATE_USER",
                 rawPayload,
                 Instant.ofEpochMilli(event.time() > 0 ? event.time() : Instant.now().toEpochMilli()),
-                UUID.randomUUID(), // Sem correlationId formal para eventos externos, geramos um novo
+                eventIdCtr,
                 1
         );
 
