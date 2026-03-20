@@ -1,9 +1,10 @@
 package com.vibranium.walletservice.unit;
 
+import com.vibranium.walletservice.application.service.OutboxPublisherService;
 import com.vibranium.walletservice.config.OutboxProperties;
 import com.vibranium.walletservice.domain.model.OutboxMessage;
 import com.vibranium.walletservice.domain.repository.OutboxMessageRepository;
-import com.vibranium.walletservice.infrastructure.outbox.OutboxPublisherService;
+
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;

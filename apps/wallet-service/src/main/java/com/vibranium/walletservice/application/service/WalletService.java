@@ -110,15 +110,11 @@ public class WalletService {
 
         WalletCreatedEvent event = WalletCreatedEvent.of(correlationId, wallet.getId(), userId);
         String eventJson = toJson(event);
-        outboxMessageRepository.save(OutboxMessage.create(
-                "WalletCreatedEvent",
-                wallet.getId().toString(),
-                eventJson
-        ));
+
         appendToEventStore(event, "Wallet", eventJson);
 
         // Grava chave de idempotência na mesma transação — à prova de retries
-        idempotencyKeyRepository.save(new IdempotencyKey(messageId));
+        idempotencyKeyRepository.save(new IdempotencyKey(messageId)); 
 
         logger.info("Wallet created: walletId={}, userId={}", wallet.getId(), userId);
     }

@@ -144,7 +144,17 @@ public class OrderOutboxPublisherService extends AbstractOutboxPublisher<OrderOu
      */
     @Override
     protected void dispatchMessage(OrderOutboxMessage message) {
-        outboxPublishTimer.record(() -> self.publishSingle(message));
+        outboxPublishTimer.record(() -> doPublish(message));
+        
+    }
+
+    /**
+     * Claim atômico: {@code UPDATE ... WHERE processed=false}.
+     * Retorna {@code false} se outra instância já processou a mensagem.
+     */
+    @Override
+    protected boolean beforePublish(OrderOutboxMessage message) {
+        return outboxRepository.claimAndMarkPublished(message.getId()) > 0;
     }
 
     @Override
@@ -187,30 +197,6 @@ public class OrderOutboxPublisherService extends AbstractOutboxPublisher<OrderOu
     @Override
     protected String getEventType(OrderOutboxMessage msg) {
         return msg.getEventType();
-    }
-
-    // -------------------------------------------------------------------------
-    // Publicação com retry
-    // -------------------------------------------------------------------------
-
-    /**
-     * Publica uma única mensagem do outbox no RabbitMQ com retry automático.
-     *
-     * <p>Chamado via self-proxy ({@link #dispatchMessage}) para garantir
-     * interceptação do {@code @Retryable} pelo proxy AOP.</p>
-     *
-     * <p>Em caso de {@link AmqpException}, {@code @Retryable} executa backoff
-     * exponencial (500ms → 1s → 2s, máx. 3 tentativas). Se todas falharem,
-     * {@link #recoverPublishFailure} é invocado.</p>
-     *
-     * @param msg Mensagem do outbox a ser publicada.
-     */
-    @Retryable(
-            retryFor    = AmqpException.class,
-            maxAttempts = 3,
-            backoff     = @Backoff(delay = 500, multiplier = 2, maxDelay = 5000))
-    public void publishSingle(OrderOutboxMessage msg) {
-        doPublish(msg);
     }
 
     // -------------------------------------------------------------------------
