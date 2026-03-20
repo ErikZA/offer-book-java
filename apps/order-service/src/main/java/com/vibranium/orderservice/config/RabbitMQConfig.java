@@ -1,5 +1,6 @@
 package com.vibranium.orderservice.config;
 
+import com.vibranium.contracts.messaging.EventRoute;
 import com.vibranium.utils.messaging.BaseRabbitMQConfig;
 import org.springframework.amqp.core.*;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -16,9 +17,9 @@ public class RabbitMQConfig extends BaseRabbitMQConfig {
     // -------------------------------------------------------------------------
     // Order Publishing Routing Keys
     // -------------------------------------------------------------------------
-    public static final String RK_ORDER_ADDED_TO_BOOK = "order.events.order-added-to-book";
-    public static final String RK_ORDER_FILLED = "order.events.order-filled";
-    public static final String RK_ORDER_PARTIALLY_FILLED = "order.events.order-partially-filled";
+    public static final String RK_ORDER_ADDED_TO_BOOK = EventRoute.ORDER_ADDED_TO_BOOK.getRoutingKey();
+    public static final String RK_ORDER_FILLED = EventRoute.ORDER_FILLED.getRoutingKey();
+    public static final String RK_ORDER_PARTIALLY_FILLED = EventRoute.ORDER_PARTIALLY_FILLED.getRoutingKey();
     public static final String RK_SETTLE_FUNDS = "wallet.command.settle-funds";
 
     // -------------------------------------------------------------------------
@@ -119,7 +120,7 @@ public class RabbitMQConfig extends BaseRabbitMQConfig {
     // -------------------------------------------------------------------------
     // Funds Events (Wallet -> Order)
     // -------------------------------------------------------------------------
-    public static final String RK_FUNDS_RESERVED = "wallet.events.funds-reserved";
+    public static final String RK_FUNDS_RESERVED = EventRoute.FUNDS_RESERVED.getRoutingKey();
     public static final String QUEUE_FUNDS_RESERVED = "order.events.funds-reserved";
 
     @Bean
@@ -137,7 +138,7 @@ public class RabbitMQConfig extends BaseRabbitMQConfig {
         return BindingBuilder.bind(fundsReservedQueue).to(vibraniumEventsExchange).with(RK_FUNDS_RESERVED);
     }
 
-    public static final String RK_FUNDS_FAILED = "wallet.events.funds-reservation-failed";
+    public static final String RK_FUNDS_FAILED = EventRoute.FUNDS_RESERVATION_FAILED.getRoutingKey();
     public static final String QUEUE_FUNDS_FAILED = "order.events.funds-failed";
 
     @Bean
@@ -155,7 +156,7 @@ public class RabbitMQConfig extends BaseRabbitMQConfig {
         return BindingBuilder.bind(fundsFailedQueue).to(vibraniumEventsExchange).with(RK_FUNDS_FAILED);
     }
 
-    public static final String RK_FUNDS_SETTLEMENT_FAILED = "wallet.events.funds-settlement-failed";
+    public static final String RK_FUNDS_SETTLEMENT_FAILED = EventRoute.FUNDS_SETTLEMENT_FAILED.getRoutingKey();
     public static final String QUEUE_FUNDS_SETTLEMENT_FAILED = "order.events.funds-settlement-failed";
 
     @Bean
@@ -173,7 +174,7 @@ public class RabbitMQConfig extends BaseRabbitMQConfig {
         return BindingBuilder.bind(fundsSettlementFailedQueue).to(vibraniumEventsExchange).with(RK_FUNDS_SETTLEMENT_FAILED);
     }
 
-    public static final String RK_FUNDS_RELEASE_FAILED = "wallet.events.funds-release-failed";
+    public static final String RK_FUNDS_RELEASE_FAILED = EventRoute.FUNDS_RELEASE_FAILED.getRoutingKey();
     public static final String QUEUE_FUNDS_RELEASE_FAILED = "order.events.funds-release-failed";
     public static final String QUEUE_FUNDS_RELEASE_FAILED_DLQ = "order.events.funds-release-failed.dlq";
 
@@ -209,7 +210,7 @@ public class RabbitMQConfig extends BaseRabbitMQConfig {
     // -------------------------------------------------------------------------
 
     // Projection: Order Received
-    public static final String RK_ORDER_RECEIVED = "order.events.order-received";
+    public static final String RK_ORDER_RECEIVED = EventRoute.ORDER_RECEIVED.getRoutingKey();
     public static final String QUEUE_ORDER_PROJECTION_RECEIVED = "order.projection.received";
     public static final String QUEUE_ORDER_PROJECTION_RECEIVED_DLQ = "order.projection.received.dlq";
 
@@ -272,7 +273,7 @@ public class RabbitMQConfig extends BaseRabbitMQConfig {
     }
 
     // Projection: Match Executed
-    public static final String RK_MATCH_EXECUTED = "order.events.match-executed";
+    public static final String RK_MATCH_EXECUTED = EventRoute.MATCH_EXECUTED.getRoutingKey();
     public static final String QUEUE_ORDER_PROJECTION_MATCH = "order.projection.match-executed";
     public static final String QUEUE_ORDER_PROJECTION_MATCH_DLQ = "order.projection.match-executed.dlq";
 
@@ -304,7 +305,7 @@ public class RabbitMQConfig extends BaseRabbitMQConfig {
     }
 
     // Projection: Order Cancelled
-    public static final String RK_ORDER_CANCELLED = "order.events.order-cancelled";
+    public static final String RK_ORDER_CANCELLED = EventRoute.ORDER_CANCELLED.getRoutingKey();
     public static final String QUEUE_ORDER_PROJECTION_CANCELLED = "order.projection.cancelled";
     public static final String QUEUE_ORDER_PROJECTION_CANCELLED_DLQ = "order.projection.cancelled.dlq";
 

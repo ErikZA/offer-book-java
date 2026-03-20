@@ -1,7 +1,9 @@
 package com.vibranium.orderservice.application.service;
 
 import com.vibranium.utils.dto.KeycloakEventDto;
+import com.vibranium.orderservice.domain.model.ProcessedEvent;
 import com.vibranium.orderservice.domain.model.UserRegistry;
+import com.vibranium.orderservice.domain.repository.ProcessedEventRepository;
 import com.vibranium.orderservice.domain.repository.UserRegistryRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,11 +27,14 @@ public class UserRegistryService {
 
     private final UserRegistryRepository userRegistryRepository;
     private final EventStoreService eventStoreService;
+    private final ProcessedEventRepository processedEventRepository;
 
     public UserRegistryService(UserRegistryRepository userRegistryRepository,
-                               EventStoreService eventStoreService) {
+                               EventStoreService eventStoreService,
+                               ProcessedEventRepository processedEventRepository) {
         this.userRegistryRepository = userRegistryRepository;
         this.eventStoreService      = eventStoreService;
+        this.processedEventRepository = processedEventRepository;
     }
 
     /**
@@ -41,7 +46,8 @@ public class UserRegistryService {
      */
     @Transactional
     public void registerUser(String userId, KeycloakEventDto event, String rawPayload) {
-        // Idempotência
+        logger.info("Creating user: {}", userId);
+        
         if (userRegistryRepository.existsByKeycloakId(userId)) {
             logger.debug("Usuário já registrado (idempotente): keycloakId={}", userId);
             return;
@@ -64,6 +70,8 @@ public class UserRegistryService {
                 eventIdCtr,
                 1
         );
+
+        processedEventRepository.save(new ProcessedEvent(eventIdCtr));
 
         logger.info("Usuário registrado e evento persistido no Event Store: keycloakId={}", userId);
     }

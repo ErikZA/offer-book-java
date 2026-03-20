@@ -2,10 +2,8 @@ package com.vibranium.orderservice.application.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.vibranium.contracts.enums.AssetType;
 import com.vibranium.contracts.enums.FailureReason;
 import com.vibranium.contracts.enums.OrderStatus;
-import com.vibranium.contracts.enums.OrderType;
 import com.vibranium.contracts.events.order.OrderCancelledEvent;
 import com.vibranium.contracts.commands.wallet.ReleaseFundsCommand;
 import com.vibranium.orderservice.config.RabbitMQConfig;
@@ -13,7 +11,6 @@ import com.vibranium.orderservice.domain.model.Order;
 import com.vibranium.orderservice.domain.model.OrderOutboxMessage;
 import com.vibranium.orderservice.domain.repository.OrderOutboxRepository;
 import com.vibranium.orderservice.domain.repository.OrderRepository;
-import com.vibranium.orderservice.infrastructure.redis.RedisMatchEngineAdapter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -21,12 +18,10 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -71,7 +66,6 @@ public class SagaTimeoutCleanupJob {
     private final OrderOutboxRepository outboxRepository;
     private final Clock               clock;
     private final ObjectMapper        objectMapper;
-    private final RedisMatchEngineAdapter matchEngine;
 
     /**
      * Threshold configurável para ordens não-terminais. Padrão: 5 minutos.
@@ -94,18 +88,15 @@ public class SagaTimeoutCleanupJob {
      * @param outboxRepository  repositório JPA da tabela de outbox.
      * @param clock             abstração temporal injetável — nunca use {@code Instant.now()}.
      * @param objectMapper      serializador Jackson compartilhado para construir o payload do outbox.
-     * @param matchEngine       adaptador Redis para remoção de ordens do book (RC-1).
      */
     public SagaTimeoutCleanupJob(OrderRepository orderRepository,
                                   OrderOutboxRepository outboxRepository,
                                   Clock clock,
-                                  ObjectMapper objectMapper,
-                                  RedisMatchEngineAdapter matchEngine) {
+                                  ObjectMapper objectMapper) {
         this.orderRepository  = orderRepository;
         this.outboxRepository = outboxRepository;
         this.clock            = clock;
         this.objectMapper     = objectMapper;
-        this.matchEngine      = matchEngine;
     }
 
     /**
@@ -157,13 +148,8 @@ public class SagaTimeoutCleanupJob {
         logger.info("SagaTimeoutCleanupJob: {} ordem(ns) expirada(s) detectada(s) (cutoff={}).",
                 stale.size(), cutoff);
 
-        for (Order order : stale) {
-            // Captura o status PRE-cancelamento: determina se fundos já foram reservados.
-            // PENDING indica que os fundos ainda não foram reservados (Saga em andamento).
-            boolean fundsAlreadyReserved = (order.getStatus() == OrderStatus.OPEN
-                    || order.getStatus() == OrderStatus.PARTIAL);
-            
-                    // 1. Transita para CANCELLED com motivo padronizado
+        for (Order order : stale) {  
+            // 1. Transita para CANCELLED com motivo padronizado
             order.cancel("SAGA_TIMEOUT");
             orderRepository.save(order);
             
@@ -195,16 +181,6 @@ public class SagaTimeoutCleanupJob {
                         "Falha ao serializar OrderCancelledEvent para outbox (orderId=%s): %s"
                                 .formatted(order.getId(), ex.getMessage()), ex);
             }
-
-            // 3. AT-1.1.4: Compensação — emite ReleaseFundsCommand INCONDICIONALMENTE.
-            //    Emissão incondicional cobre a janela de corrida entre reserva efetiva no
-            //    wallet-service e atualização de status da ordem (PENDING → OPEN). Uma ordem
-            //    PENDING pode já ter fundos bloqueados. O wallet-service trata
-            //    InsufficientLockedFundsException graciosamente: se os fundos nunca foram
-            //    reservados, o release é um no-op idempotente.
-             if (fundsAlreadyReserved) {
-                emitReleaseFundsCommand(order);
-             }
              
             // 4. Log de auditoria estruturado — calcula time usando o clock abstrato
             //    (AT-09.2: nunca usa Instant.now() diretamente no job)
@@ -216,61 +192,4 @@ public class SagaTimeoutCleanupJob {
         logger.info("SagaTimeoutCleanupJob: {} ordem(ns) cancelada(s) por timeout.", stale.size());
     }
 
-    /**
-     * Emite {@link ReleaseFundsCommand} para desbloquear os fundos reservados quando
-     * a ordem é cancelada por timeout após já estar no livro (OPEN) ou parcialmente
-     * executada (PARTIAL).
-     *
-     * <p>Lógica de cálculo do valor a liberar:</p>
-     * <ul>
-     *   <li>BUY: libera {@code price × remainingAmount} BRL — a reserva original foi
-     *       {@code price × amount}; a parcela já liquidada foi removida do locked pelo
-     *       wallet-service durante o settlement parcial.</li>
-     *   <li>SELL: libera {@code remainingAmount} VIBRANIUM — mesma lógica proporcional.</li>
-     * </ul>
-     *
-     * @param order Ordem cancelada (já com status {@code CANCELLED}; dados pré-cancelamento
-     *              preservados nos campos imutáveis {@code walletId}, {@code price},
-     *              {@code remainingAmount}, {@code orderType}).
-     */
-    private void emitReleaseFundsCommand(Order order) {
-        // Determina o ativo e o valor a liberar conforme o tipo de ordem
-        AssetType assetToRelease;
-        BigDecimal amountToRelease;
-        if (order.getOrderType() == OrderType.BUY) {
-            // BUY: o lock foi em BRL = price × remainingAmount (saldo proporcional ainda bloqueado)
-            assetToRelease  = AssetType.BRL;
-            amountToRelease = order.getPrice().multiply(order.getRemainingAmount());
-        } else {
-            // SELL: o lock foi em VIBRANIUM = remainingAmount
-            assetToRelease  = AssetType.VIBRANIUM;
-            amountToRelease = order.getRemainingAmount();
-        }
-
-        ReleaseFundsCommand releaseCmd = new ReleaseFundsCommand(
-                order.getCorrelationId(),
-                order.getId(),
-                order.getWalletId(),
-                assetToRelease,
-                amountToRelease,
-                1
-        );
-
-        try {
-            String releaseCmdJson = objectMapper.writeValueAsString(releaseCmd);
-            outboxRepository.save(new OrderOutboxMessage(
-                    order.getId(),
-                    "Order",
-                    "ReleaseFundsCommand",
-                    RabbitMQConfig.COMMANDS_EXCHANGE,
-                    RabbitMQConfig.QUEUE_RELEASE_FUNDS,
-                    releaseCmdJson
-            ));
-        } catch (JsonProcessingException ex) {
-            // Falha de serialização força rollback — mantém consistência total do Outbox Pattern.
-            throw new IllegalStateException(
-                    "Falha ao serializar ReleaseFundsCommand para outbox (orderId=%s): %s"
-                            .formatted(order.getId(), ex.getMessage()), ex);
-        }
-    }
 }

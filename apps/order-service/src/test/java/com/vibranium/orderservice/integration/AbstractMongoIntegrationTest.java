@@ -5,8 +5,12 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.MongoDBContainer;
+import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.utility.DockerImageName;
+import org.testcontainers.containers.Container.ExecResult;
+import org.testcontainers.containers.wait.strategy.Wait;
+
+import java.time.Duration;
 
 /**
  * Base class para testes de integração do Query Side (PostgreSQL + RabbitMQ + Redis + MongoDB).
@@ -35,6 +39,7 @@ public abstract class AbstractMongoIntegrationTest extends AbstractIntegrationTe
     // =========================================================================
     // Singleton Container — iniciado uma vez, compartilhado entre test classes query-side
     // =========================================================================
+    private static final String MONGO_REPLICA_SET = "rs0";
 
     /**
      * MongoDB 7 — Read Model do Query Side (US-003).
@@ -45,14 +50,19 @@ public abstract class AbstractMongoIntegrationTest extends AbstractIntegrationTe
      * testes do Command Side não carregam o 4º container, evitando contenção de recursos
      * Docker que quebra o SLA test de concorrência (p99 ≤ 200ms).</p>
      */
-    static final MongoDBContainer MONGODB =
-            new MongoDBContainer(DockerImageName.parse("mongo:7.0"))
-                    .withReuse(true);
+    @SuppressWarnings("resource")
+    static final GenericContainer<?> MONGODB =
+            new GenericContainer<>(DockerImageName.parse("mongo:7.0"))
+                    .withExposedPorts(27017)
+                    .withCommand("mongod", "--replSet", MONGO_REPLICA_SET, "--bind_ip_all")
+                    .waitingFor(Wait.forLogMessage("(?s).*Waiting for connections.*", 1))
+                    .withStartupTimeout(Duration.ofMinutes(3));
 
     static {
         // Inicia o container MongoDB antes do contexto Spring desta hierarquia ser carregado.
         // O static block de AbstractIntegrationTest já iniciou POSTGRES, RABBITMQ, REDIS.
         MONGODB.start();
+        initializeReplicaSet();
     }
 
     // =========================================================================
@@ -65,9 +75,11 @@ public abstract class AbstractMongoIntegrationTest extends AbstractIntegrationTe
      */
     @DynamicPropertySource
     static void registerMongoProperties(DynamicPropertyRegistry registry) {
-        // getReplicaSetUrl() retorna a URI no formato mongodb://host:port/test?replicaSet=...
-        // Sobrescreve o placeholder em application-test.yml com a URL real do container.
-        registry.add("spring.data.mongodb.uri", MONGODB::getReplicaSetUrl);
+        // URI explícita com directConnection=true evita problemas de resolução DNS
+        // do hostname interno do container no host Windows.
+        registry.add("spring.data.mongodb.uri", () ->
+                "mongodb://%s:%d/vibranium_orders_test?replicaSet=%s&directConnection=true"
+                        .formatted(MONGODB.getHost(), MONGODB.getMappedPort(27017), MONGO_REPLICA_SET));
     }
 
     // =========================================================================
@@ -82,4 +94,49 @@ public abstract class AbstractMongoIntegrationTest extends AbstractIntegrationTe
      */
     @Autowired
     protected MongoTemplate mongoTemplate;
+
+    private static void initializeReplicaSet() {
+        try {
+            String initiateScript = """
+                    try {
+                      rs.initiate({
+                        _id: '%s',
+                        members: [{ _id: 0, host: 'localhost:27017' }]
+                      });
+                    } catch (e) {
+                      if (!String(e).includes('already initialized')) {
+                        throw e;
+                      }
+                    }
+                    """.formatted(MONGO_REPLICA_SET);
+
+            ExecResult initResult = MONGODB.execInContainer(
+                    "mongosh", "--quiet", "--eval", initiateScript
+            );
+
+            if (initResult.getExitCode() != 0) {
+                throw new IllegalStateException(
+                        "Falha ao iniciar replica set MongoDB: " + initResult.getStderr()
+                );
+            }
+
+            waitForPrimary();
+        } catch (Exception exception) {
+            throw new IllegalStateException("Não foi possível inicializar o replica set MongoDB para testes", exception);
+        }
+    }
+
+    private static void waitForPrimary() throws Exception {
+        for (int attempt = 1; attempt <= 90; attempt++) {
+            ExecResult status = MONGODB.execInContainer(
+                    "mongosh", "--quiet", "--eval", "db.hello().isWritablePrimary"
+            );
+
+            if (status.getExitCode() == 0 && "true".equalsIgnoreCase(status.getStdout().trim())) {
+                return;
+            }
+            Thread.sleep(1_000);
+        }
+        throw new IllegalStateException("MongoDB replica set não ficou PRIMARY dentro do timeout");
+    }
 }

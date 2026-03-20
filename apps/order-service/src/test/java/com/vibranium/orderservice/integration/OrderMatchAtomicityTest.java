@@ -1,5 +1,6 @@
 package com.vibranium.orderservice.integration;
 
+import com.mongodb.MongoException;
 import com.vibranium.contracts.enums.OrderType;
 import com.vibranium.contracts.events.order.MatchExecutedEvent;
 import com.vibranium.contracts.events.order.OrderReceivedEvent;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.mock.mockito.SpyBean;
+import org.springframework.dao.DataIntegrityViolationException;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -290,6 +292,77 @@ class OrderMatchAtomicityTest extends AbstractMongoIntegrationTest {
             assertThat(sellerMatches)
                     .as("Seller deve ter exatamente 1 MATCH_EXECUTED após retry (aplicado no retry)")
                     .isEqualTo(1L);
+        });
+    }
+
+    // =========================================================================
+    // TC-AT05.3-3 — Retry local para WriteConflict transiente
+    // =========================================================================
+
+    /**
+     * [AT-05.3 / TC-AT05.3-3] — Conflito transiente de escrita deve ser resolvido localmente.
+     *
+     * <p>Simula um {@code WriteConflict} (código Mongo 112) no segundo update da primeira
+     * tentativa. O consumer deve retentar localmente, reaplicar buyer+seller na segunda
+     * tentativa e concluir sem propagar exceção para o broker.</p>
+     */
+    @Test
+    @DisplayName("TC-AT05.3-3: WriteConflict transiente deve ser resolvido com retry local")
+    void whenTransientWriteConflictOccurs_thenConsumerRetriesAndSucceeds() {
+        createOrderDocument(buyOrderId, buyerId, buyerWalletId, "BUY");
+        createOrderDocument(sellOrderId, sellerId, sellerWalletId, "SELL");
+
+        MatchExecutedEvent event = MatchExecutedEvent.of(
+                correlationId,
+                buyOrderId,
+                sellOrderId,
+                buyerId,
+                sellerId,
+                buyerWalletId,
+                sellerWalletId,
+                new BigDecimal("50000.00"),
+                new BigDecimal("1.0")
+        );
+
+        AtomicInteger callCount = new AtomicInteger(0);
+        doAnswer(invocation -> {
+            int call = callCount.incrementAndGet();
+            if (call == 2) {
+                throw new DataIntegrityViolationException(
+                        "WriteConflict transiente simulado",
+                        new MongoException(112, "WriteConflict")
+                );
+            }
+            return invocation.callRealMethod();
+        }).when(atomicWriterSpy).appendMatchAndDecrement(any(), any(), any(), any());
+
+        // Não deve propagar exceção: o retry local resolve o conflito temporário.
+        orderEventProjectionConsumer.onMatchExecuted(event);
+
+        // 1ª tentativa: buyer + seller(falha), 2ª tentativa: buyer + seller(sucesso) => >= 4 chamadas.
+        assertThat(callCount.get())
+                .as("Retry local deve reexecutar buyer+seller após WriteConflict transiente")
+                .isGreaterThanOrEqualTo(4);
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> {
+            OrderDocument buyerDoc = orderHistoryRepository
+                    .findById(buyOrderId.toString())
+                    .orElseThrow(() -> new AssertionError("Documento buyer não encontrado"));
+
+            OrderDocument sellerDoc = orderHistoryRepository
+                    .findById(sellOrderId.toString())
+                    .orElseThrow(() -> new AssertionError("Documento seller não encontrado"));
+
+            long buyerMatches = buyerDoc.getHistory().stream()
+                    .filter(h -> "MATCH_EXECUTED".equals(h.eventType()))
+                    .count();
+
+            long sellerMatches = sellerDoc.getHistory().stream()
+                    .filter(h -> "MATCH_EXECUTED".equals(h.eventType()))
+                    .count();
+
+            assertThat(buyerMatches).isEqualTo(1L);
+            assertThat(sellerMatches).isEqualTo(1L);
         });
     }
 

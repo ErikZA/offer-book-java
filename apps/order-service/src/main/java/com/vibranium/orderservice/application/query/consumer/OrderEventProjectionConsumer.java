@@ -1,5 +1,7 @@
 package com.vibranium.orderservice.application.query.consumer;
 
+import com.mongodb.MongoCommandException;
+import com.mongodb.MongoException;
 import com.vibranium.contracts.events.order.MatchExecutedEvent;
 import com.vibranium.contracts.events.order.OrderCancelledEvent;
 import com.vibranium.contracts.events.order.OrderReceivedEvent;
@@ -14,10 +16,14 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Consumer de projeção que constrói e mantém o Read Model de Ordens no MongoDB.
@@ -67,14 +73,36 @@ import java.math.BigDecimal;
 public class OrderEventProjectionConsumer {
 
     private static final Logger logger = LoggerFactory.getLogger(OrderEventProjectionConsumer.class);
+    private static final int MONGO_WRITE_CONFLICT_CODE = 112;
+    private static final String TRANSIENT_TRANSACTION_ERROR_LABEL = "TransientTransactionError";
+    private static final String UNKNOWN_TRANSACTION_COMMIT_RESULT_LABEL = "UnknownTransactionCommitResult";
 
     // OrderAtomicHistoryWriter encapsula todas as escritas atômicas via MongoTemplate.
     // OrderHistoryRepository (MongoRepository.save) foi removido do caminho de escrita
     // para evitar o padrão replace-document não-atômico.
     private final OrderAtomicHistoryWriter atomicWriter;
+    private final TransactionTemplate mongoTransactionTemplate;
 
-    public OrderEventProjectionConsumer(OrderAtomicHistoryWriter atomicWriter) {
+    @Value("${app.projection.match.retry.max-attempts:6}")
+    private int matchRetryMaxAttempts;
+
+    @Value("${app.projection.match.retry.initial-delay-ms:80}")
+    private long matchRetryInitialDelayMs;
+
+    @Value("${app.projection.match.retry.max-delay-ms:1200}")
+    private long matchRetryMaxDelayMs;
+
+    @Value("${app.projection.match.retry.multiplier:2.0}")
+    private double matchRetryMultiplier;
+
+    @Value("${app.projection.match.retry.jitter-factor:0.35}")
+    private double matchRetryJitterFactor;
+
+    public OrderEventProjectionConsumer(OrderAtomicHistoryWriter atomicWriter,
+                                        @Qualifier("mongoTransactionManager")
+                                        PlatformTransactionManager mongoTransactionManager) {
         this.atomicWriter = atomicWriter;
+        this.mongoTransactionTemplate = new TransactionTemplate(mongoTransactionManager);
     }
 
     // =========================================================================
@@ -244,12 +272,6 @@ public class OrderEventProjectionConsumer {
             // (buyer e seller geram eventIds distintos — veja updateDocumentWithMatch).
             containerFactory = "autoAckContainerFactory"
     )
-    // AT-05.3 — Atomicidade cross-document: os dois findAndModify (buyer + seller) são
-    // envolvidos em uma única sessão MongoDB com startTransaction. Se qualquer um falha,
-    // session.abortTransaction() reverte ambos — zero inconsistência parcial.
-    // Qualificador "mongoTransactionManager" é obrigatório para coexistir com o
-    // JpaTransactionManager do Command Side sem ambiguidade.
-    @Transactional("mongoTransactionManager")
     public void onMatchExecuted(MatchExecutedEvent event) {
         // AT-14.2: para MatchExecutedEvent não há um orderId único (afeta buyer e seller).
         // Usamos matchId como orderId no MDC — identifica o match que está sendo projetado.
@@ -259,12 +281,9 @@ public class OrderEventProjectionConsumer {
                 logger.debug("Projeção MATCH_EXECUTED: matchId={} buyOrderId={} sellOrderId={}",
                         event.matchId(), event.buyOrderId(), event.sellOrderId());
 
-                // Atualiza ambos os lados do trade dentro da mesma transação MongoDB.
-                // Se updateDocumentWithMatch(seller) lançar exceção, o @Transactional
-                // instrui o MongoTransactionManager a fazer abortTransaction(),
-                // revertendo automaticamente a modificação do buyer — sem estado parcial.
-                updateDocumentWithMatch(event.buyOrderId().toString(), event);
-                updateDocumentWithMatch(event.sellOrderId().toString(), event);
+                // Atualiza buyer + seller na MESMA transação MongoDB, com retry local
+                // somente para conflitos transientes de escrita (WriteConflict).
+                processMatchWithRetry(event);
 
             } finally {
                 MDC.remove("orderId");
@@ -310,6 +329,95 @@ public class OrderEventProjectionConsumer {
 
         logger.info("Read Model atualizado atomicamente: orderId={} status={} remaining={}",
                 orderId, updated.getStatus(), updated.getRemainingQty());
+    }
+
+    /**
+     * Processa MATCH_EXECUTED dentro de uma transação MongoDB com retry local
+     * para conflitos transientes (WriteConflict / TransientTransactionError).
+     *
+     * <p>Objetivo: reduzir mensagens encaminhadas para DLQ quando o conflito é
+     * temporário e pode ser resolvido com curto backoff.</p>
+     */
+    private void processMatchWithRetry(MatchExecutedEvent event) {
+        RuntimeException lastException = null;
+
+        for (int attempt = 1; attempt <= matchRetryMaxAttempts; attempt++) {
+            try {
+                mongoTransactionTemplate.executeWithoutResult(status -> {
+                    updateDocumentWithMatch(event.buyOrderId().toString(), event);
+                    updateDocumentWithMatch(event.sellOrderId().toString(), event);
+                });
+
+                if (attempt > 1) {
+                    logger.info(
+                            "MATCH_EXECUTED aplicado após retry local: attempt={} eventId={} matchId={}",
+                            attempt, event.eventId(), event.matchId()
+                    );
+                }
+                return;
+            } catch (RuntimeException ex) {
+                lastException = ex;
+                boolean transientConflict = isTransientMongoConflict(ex);
+
+                if (!transientConflict || attempt >= matchRetryMaxAttempts) {
+                    throw ex;
+                }
+
+                long backoffMs = computeBackoffWithJitter(attempt);
+                logger.warn(
+                        "Conflito transiente no MATCH_EXECUTED; retry local {}/{} em {}ms. eventId={} matchId={}",
+                        attempt, matchRetryMaxAttempts, backoffMs, event.eventId(), event.matchId(), ex
+                );
+                sleepBackoff(backoffMs);
+            }
+        }
+
+        if (lastException != null) {
+            throw lastException;
+        }
+    }
+
+    private boolean isTransientMongoConflict(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof MongoCommandException commandException) {
+                if (commandException.getErrorCode() == MONGO_WRITE_CONFLICT_CODE) {
+                    return true;
+                }
+                if (commandException.hasErrorLabel(TRANSIENT_TRANSACTION_ERROR_LABEL)
+                        || commandException.hasErrorLabel(UNKNOWN_TRANSACTION_COMMIT_RESULT_LABEL)) {
+                    return true;
+                }
+            }
+            if (current instanceof MongoException mongoException) {
+                if (mongoException.getCode() == MONGO_WRITE_CONFLICT_CODE) {
+                    return true;
+                }
+                if (mongoException.hasErrorLabel(TRANSIENT_TRANSACTION_ERROR_LABEL)
+                        || mongoException.hasErrorLabel(UNKNOWN_TRANSACTION_COMMIT_RESULT_LABEL)) {
+                    return true;
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private long computeBackoffWithJitter(int attempt) {
+        double exponentialDelay = matchRetryInitialDelayMs * Math.pow(matchRetryMultiplier, Math.max(0, attempt - 1));
+        long baseDelay = Math.min((long) exponentialDelay, matchRetryMaxDelayMs);
+        long jitterWindow = Math.max(1L, Math.round(baseDelay * matchRetryJitterFactor));
+        long jitter = ThreadLocalRandom.current().nextLong(-jitterWindow, jitterWindow + 1);
+        return Math.max(1L, baseDelay + jitter);
+    }
+
+    private static void sleepBackoff(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Retry de projeção interrompido", interrupted);
+        }
     }
 
     // =========================================================================

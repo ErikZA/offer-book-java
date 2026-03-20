@@ -1,5 +1,6 @@
-package com.vibranium.walletservice.infrastructure.outbox;
+package com.vibranium.walletservice.application.service;
 
+import com.vibranium.contracts.messaging.EventRoute;
 import com.vibranium.utils.outbox.AbstractOutboxPublisher;
 import com.vibranium.walletservice.config.OutboxProperties;
 import com.vibranium.walletservice.domain.model.OutboxMessage;
@@ -8,11 +9,10 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageBuilder;
+import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.core.MessagePropertiesBuilder;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
-import org.springframework.retry.annotation.Backoff;
 import org.springframework.retry.annotation.Recover;
-import org.springframework.retry.annotation.Retryable;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -132,7 +132,7 @@ public class OutboxPublisherService extends AbstractOutboxPublisher<OutboxMessag
                 .andProperties(
                     MessagePropertiesBuilder.newInstance()
                         .setMessageId(msg.getId().toString())
-                        .setContentType("application/json")
+                        .setContentType(MessageProperties.CONTENT_TYPE_JSON)
                         .setHeader("aggregate-id", msg.getAggregateId())
                         .setHeader("event-type",   msg.getEventType())
                         .build())
@@ -158,50 +158,7 @@ public class OutboxPublisherService extends AbstractOutboxPublisher<OutboxMessag
     protected String getEventType(OutboxMessage msg) {
         return msg.getEventType();
     }
-
-    // -------------------------------------------------------------------------
-    // Retry + Recover (preservados para backward compatibility)
-    // -------------------------------------------------------------------------
-
-    /**
-     * Publicação com retry — anotação preservada para compatibilidade.
-     * Chamada internamente via {@link #dispatchMessage} (default: this.doPublish).
-     */
-    @Retryable(
-        retryFor  = { Exception.class },
-        maxAttempts = 5,
-        backoff   = @Backoff(delay = 500, multiplier = 2, maxDelay = 10_000))
-    public void claimAndPublish(UUID eventId, String eventType,
-                                String aggregateId, String payload) {
-
-        // Método preservado para backward compatibility com chamadores externos.
-        // Internamente o fluxo agora passa por pollAndPublish → doPublish.
-        int claimed = outboxRepository.claimAndMarkProcessed(eventId);
-        if (claimed == 0) {
-            logger.debug("Outbox event {} já processado por outra instância — descartando.",
-                    eventId);
-            return;
-        }
-
-        EventRoute route = EventRoute.fromEventType(eventType);
-
-        Message message = MessageBuilder
-                .withBody(payload.getBytes(StandardCharsets.UTF_8))
-                .andProperties(
-                    MessagePropertiesBuilder.newInstance()
-                        .setMessageId(eventId.toString())
-                        .setContentType("application/json")
-                        .setHeader("aggregate-id", aggregateId)
-                        .setHeader("event-type",   eventType)
-                        .build())
-                .build();
-
-        getRabbitTemplate().send(route.getExchange(), route.getRoutingKey(), message);
-
-        logger.info("Outbox event publicado: id={} type={} exchange={} routingKey={}",
-                eventId, eventType, route.getExchange(), route.getRoutingKey());
-    }
-
+    
     /**
      * Chamado pelo Spring Retry após esgotar as {@code maxAttempts} tentativas.
      *

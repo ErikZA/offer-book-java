@@ -9,6 +9,7 @@
 	"verifyEmail": false,
 	"loginWithEmailAllowed": true,
 	"duplicateEmailsAllowed": false,
+	"accessTokenLifespan": 3600,
 
 	"eventsListeners": ["jboss-logging", "keycloak-to-rabbitmq"],
 	"eventsEnabled": true,

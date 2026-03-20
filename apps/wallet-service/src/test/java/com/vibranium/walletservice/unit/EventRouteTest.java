@@ -1,6 +1,6 @@
 package com.vibranium.walletservice.unit;
 
-import com.vibranium.walletservice.infrastructure.outbox.EventRoute;
+import com.vibranium.contracts.messaging.EventRoute;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -9,12 +9,12 @@ import org.junit.jupiter.params.provider.CsvSource;
 import static org.assertj.core.api.Assertions.*;
 
 /**
- * [RED] Testes unitários para o enum {@link EventRoute}.
+ * Testes unitários para o contrato comum {@link EventRoute}.
  *
  * <p>Valida o mapeamento de {@code eventType} (String) para
- * exchange + routing-key corretos. Falha até que {@code EventRoute} seja criado.</p>
+ * exchange + routing-key corretos para os eventos de wallet-service e order-service.</p>
  */
-@DisplayName("[RED] EventRoute - Roteamento dinâmico de eventos do Outbox")
+@DisplayName("EventRoute - Roteamento dinâmico de eventos do Outbox")
 class EventRouteTest {
 
     // -------------------------------------------------------------------------
@@ -28,7 +28,14 @@ class EventRouteTest {
         "FundsSettledEvent,           vibranium.events, wallet.events.funds-settled",
         "WalletCreatedEvent,          vibranium.events, wallet.events.wallet-created",
         "FundsReleasedEvent,          vibranium.events, wallet.events.funds-released",
-        "FundsReleaseFailedEvent,     vibranium.events, wallet.events.funds-release-failed"
+        "FundsReleaseFailedEvent,     vibranium.events, wallet.events.funds-release-failed",
+        "FundsSettlementFailedEvent,  vibranium.events, wallet.events.funds-settlement-failed",
+        "OrderReceivedEvent,          vibranium.events, order.events.order-received",
+        "OrderAddedToBookEvent,       vibranium.events, order.events.order-added-to-book",
+        "MatchExecutedEvent,          vibranium.events, order.events.match-executed",
+        "OrderFilledEvent,            vibranium.events, order.events.order-filled",
+        "OrderPartiallyFilledEvent,   vibranium.events, order.events.order-partially-filled",
+        "OrderCancelledEvent,         vibranium.events, order.events.order-cancelled"
     })
     @DisplayName("fromEventType deve retornar exchange e routing-key corretos")
     void shouldResolveCorrectRouteForEventType(String eventType, String exchange, String routingKey) {
@@ -79,12 +86,12 @@ class EventRouteTest {
     }
 
     // -------------------------------------------------------------------------
-    // Enum deve ter exatamente os 4 tipos esperados
+    // Enum deve ter exatamente os eventos de wallet + order
     // -------------------------------------------------------------------------
 
     @Test
-    @DisplayName("EventRoute deve conter exatamente 7 rotas")
-    void shouldHaveExactlySevenRoutes() {
-        assertThat(EventRoute.values()).hasSize(7);
+    @DisplayName("EventRoute deve conter exatamente 13 rotas")
+    void shouldHaveExactlyThirteenRoutes() {
+        assertThat(EventRoute.values()).hasSize(13);
     }
 }
