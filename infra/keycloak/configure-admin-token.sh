@@ -60,9 +60,9 @@ while [ "$attempt" -lt "$login_deadline" ]; do
         --user "$ADMIN_USER" \
         --password "$ADMIN_PASSWORD" >/dev/null 2>&1; then
 
-        # ── master realm: aumenta lifespan do token admin ──────────────────────
-        /opt/keycloak/bin/kcadm.sh update realms/master -s accessTokenLifespan=1800 >/dev/null
-        echo "Configured master realm admin access token lifespan to 1800 seconds."
+        # ── master realm: garante lifespan mínimo de 60 min para token admin ───
+        /opt/keycloak/bin/kcadm.sh update realms/master -s accessTokenLifespan=3600 >/dev/null
+        echo "Configured master realm admin access token lifespan to 3600 seconds."
 
         # ── orderbook-realm: garante auto-registro e eventos habilitados ────────
         # Usa 'get' + 'update' idempotente: não falha se o realm já estiver correto.
@@ -75,12 +75,13 @@ while [ "$attempt" -lt "$login_deadline" ]; do
                 -s verifyEmail=false \
                 -s loginWithEmailAllowed=true \
                 -s duplicateEmailsAllowed=false \
+                -s accessTokenLifespan=3600 \
                 -s eventsEnabled=true \
                 -s adminEventsEnabled=true \
                 -s adminEventsDetailsEnabled=true \
                 -s 'eventsListeners=["jboss-logging","keycloak-to-rabbitmq"]' \
                 >/dev/null 2>&1 && \
-                echo "orderbook-realm: registro e eventos Keycloak configurados com sucesso." || \
+                echo "orderbook-realm: registro, eventos e access token lifespan (3600s) configurados com sucesso." || \
                 echo "AVISO: Falha ao configurar orderbook-realm — verifique os logs do Keycloak." >&2
 
         else

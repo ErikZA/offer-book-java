@@ -13,8 +13,8 @@ COPY apps/order-service apps/order-service
 COPY tests/e2e/pom.xml tests/e2e/pom.xml
 COPY tests/performance/pom.xml tests/performance/pom.xml
 
-# Build
-RUN mvn clean package -DskipTests -am -pl apps/wallet-service
+# Build (não compila nem executa testes dentro da imagem de runtime)
+RUN mvn clean package -Dmaven.test.skip=true -am -pl apps/wallet-service
 
 # Stage 2: Runtime
 FROM eclipse-temurin:21-jre-alpine

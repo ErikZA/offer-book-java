@@ -25,7 +25,7 @@ import static io.gatling.javaapi.http.HttpDsl.*;
  * <p>Corrige o problema das simulações anteriores que utilizavam walletIds aleatórios.
  * Esta simulação:</p>
  * <ol>
- *   <li>Cria 4 usuários reais no Keycloak (que disparam criação automática de carteiras)</li>
+ *   <li>Cria 4 usuários reais no Keycloak</li>
  *   <li>Deposita saldo inicial em cada carteira via API</li>
  *   <li>Executa rodadas de 10 BUY + 15 SELL com carteiras válidas</li>
  *   <li>Valida que o saldo final corresponde ao esperado</li>
@@ -112,7 +112,7 @@ public class OrderMatchingValidationSimulation extends Simulation {
         System.out.println("╚══════════════════════════════════════════════════════════════╝");
 
         // 1. Criar usuários no Keycloak (idempotente)
-        System.out.println("[1/5] Creating " + NUM_USERS + " test users in Keycloak...");
+        System.out.println("[1/4] Creating " + NUM_USERS + " test users in Keycloak...");
         KeycloakAdminHelper keycloak = new KeycloakAdminHelper(
                 KEYCLOAK_BASE_URL, KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID,
                 KEYCLOAK_ADMIN_USER, KEYCLOAK_ADMIN_PASSWORD
@@ -120,23 +120,17 @@ public class OrderMatchingValidationSimulation extends Simulation {
         List<TestUser> users = keycloak.createTestUsers(NUM_USERS);
         TEST_USERS.addAll(users);
 
-        // 2. Publicar eventos REGISTER no RabbitMQ para disparar criação de carteiras
-        // (Admin API do Keycloak não gera eventos CLIENT REGISTER automaticamente)
-        System.out.println("[2/5] Publishing REGISTER events to RabbitMQ...");
+        // 2. Aguardar criação automática de carteiras pelo fluxo nativo do sistema
+        // (eventos de criação de usuário no Keycloak → RabbitMQ → wallet-service).
+        System.out.println("[2/4] Waiting for wallets to be created by Keycloak events...");
         WalletApiHelper walletApi = new WalletApiHelper(WALLET_SERVICE_URLS);
-        for (TestUser user : TEST_USERS) {
-            walletApi.publishRegisterEvent(user, KEYCLOAK_REALM);
-        }
-
-        // 3. Aguardar criação automática de carteiras (RabbitMQ → wallet-service)
-        System.out.println("[3/5] Waiting for wallets to be created via REGISTER events...");
         for (TestUser user : TEST_USERS) {
             java.util.UUID walletId = walletApi.waitForWallet(user, 30, 2000);
             user.setWalletId(walletId);
         }
 
-        // 4. Depositar saldo inicial em cada carteira
-        System.out.println("[4/5] Depositing initial balances (BRL=" + INITIAL_DEPOSIT
+        // 3. Depositar saldo inicial em cada carteira
+        System.out.println("[3/4] Depositing initial balances (BRL=" + INITIAL_DEPOSIT
                 + ", VIB=" + INITIAL_DEPOSIT + " per user)...");
         for (TestUser user : TEST_USERS) {
             walletApi.adjustBalance(user, INITIAL_DEPOSIT, INITIAL_DEPOSIT);
@@ -145,8 +139,8 @@ public class OrderMatchingValidationSimulation extends Simulation {
         // Pausa curta para consolidação do saldo
         sleep(3000);
 
-        // 5. Registrar saldos iniciais para validação posterior
-        System.out.println("[5/5] Recording initial balances...");
+        // 4. Registrar saldos iniciais para validação posterior
+        System.out.println("[4/4] Recording initial balances...");
         for (TestUser user : TEST_USERS) {
             BigDecimal[] balance = walletApi.getBalance(user);
             INITIAL_BALANCES.put(user.getKeycloakId(), balance);

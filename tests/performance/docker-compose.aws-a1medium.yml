@@ -572,7 +572,7 @@ services:
             interval: 15s
             timeout: 5s
             retries: 5
-            start_period: 120s
+            start_period: 420s
 
     order-service-2:
         image: order-service:a1m
@@ -617,7 +617,7 @@ services:
             interval: 15s
             timeout: 5s
             retries: 5
-            start_period: 120s
+            start_period: 420s
 
     # ================== Wallet Service (2 Replicas — AWS a1.medium) ==================
     # Simulação de a1.medium: 1 vCPU, 2 GiB RAM
@@ -664,7 +664,7 @@ services:
             interval: 15s
             timeout: 5s
             retries: 5
-            start_period: 120s
+            start_period: 420s
 
     wallet-service-2:
         image: wallet-service:a1m
@@ -703,7 +703,7 @@ services:
             interval: 15s
             timeout: 5s
             retries: 5
-            start_period: 120s
+            start_period: 420s
 
     # ================== Keycloak DB ==================
     keycloak-db:
